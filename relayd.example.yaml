@@ -1,0 +1,65 @@
+listen: "127.0.0.1:8080"
+admin_listen: "127.0.0.1:8081"
+auth_tokens: ["sk-local-change-me"]
+request_timeout: 300s
+max_buffered_body: 8MB
+
+circuit:
+  fail_threshold: 3
+  open_base: 30s
+  open_max: 30m
+  half_open_probes: 1
+  success_to_close: 2
+
+probe_schedule:
+  concurrency: 8
+  jitter: 0.2
+  budget_per_minute: 60
+  mode: all
+
+models:
+  claude-sonnet-4:
+    protocol_hint: claude
+    aliases: [claude-3-5-sonnet-20241022, anthropic/claude-sonnet-4]
+  gpt-4o:
+    protocol_hint: openai
+    aliases: [gpt-4o-2024-11-20, openai/gpt-4o]
+
+providers:
+  newapi-station:
+    protocol: openai
+    probes:
+      - type: balance
+        interval: 5m
+        request:
+          method: GET
+          path: /api/user/self
+          auth: {in: header, name: Authorization, template: "Bearer {api_key}"}
+        extract: {value: "data.quota", scale: 0.000002}  # adjust per station
+        rule: {disable_below: 0.01}
+
+  anthropic-direct:
+    protocol: claude
+    probes:
+      - type: ping
+        interval: 30m
+        slow_threshold: 8s
+
+credentials:
+  - provider: newapi-station
+    name: st-01
+    base_url: https://your-station.example.com
+    api_key: sk-xxx
+    models: [claude-3-5-sonnet-20241022, gpt-4o]
+    priority: 0
+    weight: 10
+
+  - provider: anthropic-direct
+    name: claude-01
+    base_url: https://api.anthropic.com
+    api_key: sk-ant-xxx
+    models: [claude-sonnet-4]
+    priority: 1
+    weight: 1
+
+# credential_files: ["./creds/*.yaml"]

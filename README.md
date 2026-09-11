@@ -1,55 +1,82 @@
 # relayd
 
-个人 LLM 中转网关：把多个订阅/API 上游聚合成**一个出口**，同时暴露 OpenAI (`/v1/chat/completions`) 与 Anthropic (`/v1/messages`) 协议，支持任意协议互转；按模型路由、余额探测自动禁用/恢复、429 冷却、熔断与半开恢复。Flutter Windows 客户端可视化监控与手动控制。
+四通八达的 LLM 协议转换网关：客户端可以用 **Anthropic / OpenAI Chat / OpenAI Responses / Gemini** 任一协议接入，上游可以是其中任一协议。所有转换经由统一中间表示（IR）中转，协议两两之间不存在直转代码。
 
-## 一键本地演示
+## 入口矩阵
 
-```powershell
-# 构建（首次）
-go build -o relayd.exe ./cmd/relayd
-go build -o relaymock.exe ./cmd/relaymock
-cd frontend && flutter build windows && cd ..
+单一监听地址（如 `http://1.1.1.1:8080`），按路径前缀区分接入协议：
 
-# 启动全部（3 个 localhost mock 上游 + relayd + 客户端）
-powershell demo/start.ps1        # 或 git bash: bash demo/start.sh
-```
+| 客户端入口 | 协议 |
+|---|---|
+| `POST /anthropic/v1/messages` | anthropic |
+| `POST /anthropic/v1/messages/count_tokens` | anthropic 计数（无 anthropic 上游时本地粗估） |
+| `POST /openai/v1/chat/completions` | openai-chat |
+| `POST /openai/v1/responses` | openai-responses |
+| `POST /gemini/v1beta/models/{model}:generateContent` | gemini（非流式） |
+| `POST /gemini/v1beta/models/{model}:streamGenerateContent` | gemini（流式） |
+| `GET /openai/v1/models` | 模型列表 |
 
-启动后：
+无前缀的原生路径（`/v1/messages`、`/v1/chat/completions` 等）同样保留可用。
 
-- 业务出口 `http://127.0.0.1:8080`（OpenAI + Anthropic 双协议）
-- 管理 API `http://127.0.0.1:8081`，客户端 Settings 页填 token `sk-local-change-me`
-- 发请求：`curl -N -X POST http://127.0.0.1:8080/v1/chat/completions -H "Authorization: Bearer sk-local-change-me" -H "Content-Type: application/json" -d '{"model":"claude-sonnet-4","stream":true,"messages":[{"role":"user","content":"hi"}]}'`
+4 客户端协议 × 4 上游协议 × 流式/非流式 = 32 条路径全部支持（`backend/server/e2e_cross_test.go` 矩阵覆盖）。
 
-故障注入演示（客户端 Events 页可见状态流转）：
-
-```bash
-# 耗尽 st-a 余额 → 余额探测自动禁用 st-a → 流量切到 st-b
-curl -X POST http://127.0.0.1:9001/mock/control -d '{"quota": 0}'
-# 让 st-b 限流 429 → 进入冷却
-curl -X POST http://127.0.0.1:9002/mock/control -d '{"mode":"ratelimit"}'
-# 恢复
-curl -X POST http://127.0.0.1:9002/mock/control -d '{"mode":"normal"}'
-curl -X POST http://127.0.0.1:9001/mock/control -d '{"quota": 50000000}'
-```
-
-## 结构
+## 架构
 
 ```
-strategy/   零 I/O 决策核心：信号 → 状态机（熔断/冷却/半开）→ 路由（优先级 + SWRR）
-backend/    catalog(配置/模型归并) ingress(入口/重试) egress(转发/relaykit 转换)
-            probe(余额/ping 探测与调度) admin(管理 API) obs(事件环)
-frontend/   Flutter Windows 客户端（KiroaaS 视觉风格）
-cmd/relayd      主程序
-cmd/relaymock   本地上游模拟器（双协议应答 + /mock/control 故障注入）
+backend/ir/         统一中间表示：Request/Response/Block/流式事件/Usage/Error
+                    事件词汇以 Anthropic streaming 为超集；Usage 以 Anthropic 口径为规范
+backend/normalize/  消息规整流水线：合并同角色、首条 user、强制交替、空内容占位、
+                    孤儿 tool_result 降级、tool_use/tool_result 配对、schema 清洗
+backend/proto/      Codec 接口与注册表；每协议一个子包，init() 自注册：
+                    anthropic / openaichat / openairesponses / gemini
+                    每个 codec 只做 协议<->IR 双向转换（请求、流式、非流式、错误）
+backend/relay/      转发层：上游永远流式、SSE 读取、非流式客户端缓冲聚合
+backend/server/     HTTP 入口：按路径识别客户端协议，鉴权后交给 relay
+cmd/relayd/         主程序
+cmd/relaymock/      本地上游模拟器（OpenAI/Anthropic 应答 + /mock/control 故障注入）
 ```
+
+核心设计（调研 new-api / sub2api / kiro-gateway 后的提炼，详见 `docs/protocol-conversion-study.md`）：
+
+- **IR 枢纽**：跨协议转换 = 解码为 IR + 从 IR 编码，无 N² 直转。
+- **上游永远流式**：强制 `stream=true`；客户端要非流式时网关聚合 SSE 后一次性返回 JSON。
+- **block 开合不变式**：编码器保证 start→delta*→stop，断流由 Finish 兜底补齐终止事件。
+- **签名互认**：Anthropic thinking.signature ↔ Responses reasoning.encrypted_content；无法伪造的方向按调研结论丢弃。
+- **能力声明 + 诊断**：codec 声明能力（`Caps()`：thinking 签名/图片/托管工具），转发前对比请求特征，必然有损项记日志并写入 `X-Relayd-Notes` 响应头，不再静默丢失。
+- **字节未出前可重试**：连接失败 / 429 / 5xx / 首事件超时（`first_token_timeout`，默认 30s）且尚未向客户端写字节时，换下一个候选上游重发；写出第一字节后锁死，错误只在流内渲染。
+- **托管工具声明映射**：Anthropic `web_search`/`code_execution` ↔ Responses `web_search`/`code_interpreter` ↔ Gemini `google_search`/`code_execution` 三向互转（仍由上游服务器执行，网关不做仿真）；Chat Completions 无此能力，丢弃并记诊断。
+- **usage 估算兜底（opt-in）**：`estimate_usage: true` 后上游不上报 usage 时按文本粗估并在日志标注，默认关闭（估算值不代表真实计费）。
 
 ## 配置
 
-见 `relayd.yaml`（本地演示）与 `relayd.example.yaml`（真实上游模板，含 `credential_files` 批量接入说明）。
+见 `relayd.example.yaml`。每个上游声明 `protocol`（anthropic / openai-chat / openai-responses / gemini）、`base_url`、`api_key` 与可选的 `models` 映射（canonical model → 上游 native model；省略则为透传型兜底上游）。
 
-## 测试
+```yaml
+listen: "127.0.0.1:8080"
+api_key: "sk-replace-me"
+upstreams:
+  - name: claude
+    protocol: anthropic
+    base_url: https://api.anthropic.com
+    api_key: sk-ant-xxx
+    models: {claude-sonnet-4: claude-sonnet-4-20250514}
+```
+
+## 运行与测试
 
 ```bash
-go test ./...
-cd frontend && flutter analyze
+go build -o relayd.exe ./cmd/relayd
+./relayd.exe -config relayd.yaml   # 本地演示配置（配合 relaymock）
+
+go test ./backend/...              # 单元 + 4x4 跨协议矩阵
+go vet ./...
+```
+
+调用示例：
+
+```bash
+# Anthropic 客户端 -> 任意协议上游
+curl -N -X POST http://127.0.0.1:8080/v1/messages \
+  -H "Authorization: Bearer sk-local-change-me" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```

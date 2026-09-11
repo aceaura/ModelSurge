@@ -1,65 +1,62 @@
+# relayd 配置模板（脱敏示例）
+#
+# relayd 是协议转换网关：客户端可以用 Anthropic / OpenAI Chat /
+# OpenAI Responses / Gemini 任一协议接入，上游可以是其中任一协议。
+#
+# 客户端入口（单一 listen 地址，按路径前缀区分协议）：
+#   POST /anthropic/v1/messages                                 -> anthropic
+#   POST /anthropic/v1/messages/count_tokens                    -> anthropic 计数（无 anthropic 上游时本地粗估）
+#   POST /openai/v1/chat/completions                            -> openai-chat
+#   POST /openai/v1/responses                                   -> openai-responses
+#   POST /gemini/v1beta/models/{model}:generateContent          -> gemini（非流式）
+#   POST /gemini/v1beta/models/{model}:streamGenerateContent    -> gemini（流式）
+# 无前缀的原生路径（/v1/messages 等）同样可用。
+
 listen: "127.0.0.1:8080"
-admin_listen: "127.0.0.1:8081"
-auth_tokens: ["sk-local-change-me"]
-request_timeout: 300s
-max_buffered_body: 8MB
+api_key: "sk-replace-me" # 客户端鉴权 key（Bearer 或 x-api-key 均可）
 
-circuit:
-  fail_threshold: 3
-  open_base: 30s
-  open_max: 30m
-  half_open_probes: 1
-  success_to_close: 2
+# 等上游首个 SSE 事件的超时：超时且未向客户端写字节时换下一个候选上游重发。
+# 空 = 30s，"0" 禁用。
+first_token_timeout: "30s"
 
-probe_schedule:
-  concurrency: 8
-  jitter: 0.2
-  budget_per_minute: 60
-  mode: all
+# 上游未上报 usage 时本地粗估兜底（估算值不代表真实计费口径，默认关）。
+estimate_usage: false
 
-models:
-  claude-sonnet-4:
-    protocol_hint: claude
-    aliases: [claude-3-5-sonnet-20241022, anthropic/claude-sonnet-4]
-  gpt-4o:
-    protocol_hint: openai
-    aliases: [gpt-4o-2024-11-20, openai/gpt-4o]
-
-providers:
-  newapi-station:
-    protocol: openai
-    probes:
-      - type: balance
-        interval: 5m
-        request:
-          method: GET
-          path: /api/user/self
-          auth: {in: header, name: Authorization, template: "Bearer {api_key}"}
-        extract: {value: "data.quota", scale: 0.000002}  # adjust per station
-        rule: {disable_below: 0.01}
-
-  anthropic-direct:
-    protocol: claude
-    probes:
-      - type: ping
-        interval: 30m
-        slow_threshold: 8s
-
-credentials:
-  - provider: newapi-station
-    name: st-01
-    base_url: https://your-station.example.com
-    api_key: sk-xxx
-    models: [claude-3-5-sonnet-20241022, gpt-4o]
-    priority: 0
-    weight: 10
-
-  - provider: anthropic-direct
-    name: claude-01
+upstreams:
+  # Anthropic 订阅 / API
+  - name: claude-main
+    protocol: anthropic
     base_url: https://api.anthropic.com
     api_key: sk-ant-xxx
-    models: [claude-sonnet-4]
-    priority: 1
-    weight: 1
+    models: # canonical model -> 上游 native model
+      claude-sonnet-4: claude-sonnet-4-20250514
 
-# credential_files: ["./creds/*.yaml"]
+  # OpenAI 兼容站（new-api / one-api 等）
+  - name: openai-station
+    protocol: openai-chat
+    base_url: https://your-station.example.com
+    api_key: sk-xxx
+    models:
+      gpt-4o: gpt-4o
+
+  # OpenAI Responses 上游（如 Codex 兼容端点）
+  - name: codex
+    protocol: openai-responses
+    base_url: https://api.openai.com
+    api_key: sk-xxx
+    models:
+      gpt-5: gpt-5
+
+  # Gemini AI Studio
+  - name: gemini
+    protocol: gemini
+    base_url: https://generativelanguage.googleapis.com
+    api_key: AIza-xxx
+    models:
+      gemini-2.5-pro: gemini-2.5-pro
+
+  # models 省略 = 透传型上游：接受任意模型名原样转发（作为兜底）
+  # - name: catch-all
+  #   protocol: openai-chat
+  #   base_url: https://openrouter.ai
+  #   api_key: sk-or-xxx

@@ -1,0 +1,334 @@
+package anthropic
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"relayd/backend/ir"
+	"relayd/backend/normalize"
+	"relayd/backend/proto"
+)
+
+// Name 协议标识。
+const Name = "anthropic"
+
+func init() { proto.Register(codec{}) }
+
+type codec struct{}
+
+// New 返回 codec（便于测试直接构造）。
+func New() proto.Codec { return codec{} }
+
+func (codec) Name() string { return Name }
+
+// Caps Anthropic 是全能力协议：签名、图片、托管工具均原生支持。
+func (codec) Caps() proto.Capabilities {
+	return proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true}
+}
+
+// ---- 请求解码：Anthropic -> IR ----
+
+func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
+	var req request
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, fmt.Errorf("anthropic: decode request: %w", err)
+	}
+	out := &ir.Request{
+		Model:         req.Model,
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		TopK:          req.TopK,
+		StopSequences: req.StopSequences,
+		Stream:        req.Stream,
+	}
+	out.System = decodeSystem(req.System)
+	for _, m := range req.Messages {
+		out.Messages = append(out.Messages, ir.Message{Role: ir.Role(m.Role), Content: decodeContent(m.Content)})
+	}
+	for _, t := range req.Tools {
+		hosted := ""
+		if t.Type != "" && t.Type != "custom" {
+			hosted = ir.CanonicalHosted(t.Type)
+		}
+		out.Tools = append(out.Tools, ir.Tool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+			Hosted:      hosted,
+		})
+	}
+	if tc := req.ToolChoice; tc != nil {
+		out.ToolChoice = &ir.ToolChoice{
+			Mode:            ir.ChoiceMode(tc.Type),
+			ToolName:        tc.Name,
+			DisableParallel: tc.DisableParallelToolUse,
+		}
+	}
+	if req.Thinking != nil {
+		out.Thinking = &ir.ThinkingConfig{
+			Enabled:      req.Thinking.Type == "enabled",
+			BudgetTokens: req.Thinking.BudgetTokens,
+		}
+	}
+	if req.Metadata != nil && req.Metadata.UserID != "" {
+		out.Metadata = map[string]string{"user_id": req.Metadata.UserID}
+	}
+	return out, nil
+}
+
+func decodeSystem(raw json.RawMessage) []ir.Block {
+	if len(raw) == 0 {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if s == "" {
+			return nil
+		}
+		return []ir.Block{{Type: ir.BlockText, Text: s}}
+	}
+	var blocks []block
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil
+	}
+	return decodeBlocks(blocks)
+}
+
+// decodeContent 消息 content：Anthropic 允许纯字符串或 block 数组两种形态。
+func decodeContent(raw json.RawMessage) []ir.Block {
+	if len(raw) == 0 {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if s == "" {
+			return nil
+		}
+		return []ir.Block{{Type: ir.BlockText, Text: s}}
+	}
+	var blocks []block
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil
+	}
+	return decodeBlocks(blocks)
+}
+
+func decodeBlocks(bs []block) []ir.Block {
+	out := make([]ir.Block, 0, len(bs))
+	for _, b := range bs {
+		out = append(out, decodeBlock(b))
+	}
+	return out
+}
+
+func decodeBlock(b block) ir.Block {
+	out := ir.Block{CacheCtl: cacheCtlString(b.CacheCtl)}
+	switch b.Type {
+	case "text":
+		out.Type = ir.BlockText
+		out.Text = b.Text
+	case "image":
+		out.Type = ir.BlockImage
+		if b.Source != nil {
+			out.Image = &ir.Image{MediaType: b.Source.MediaType, Data: b.Source.Data, URL: b.Source.URL}
+		}
+	case "tool_use":
+		out.Type = ir.BlockToolUse
+		out.ToolUse = &ir.ToolUse{ID: b.ID, Name: b.Name, Input: b.Input}
+	case "tool_result":
+		out.Type = ir.BlockToolResult
+		out.ToolResult = &ir.ToolResult{ToolUseID: b.ToolUseID, IsError: b.IsError, Content: decodeToolResultContent(b.Content)}
+	case "thinking":
+		out.Type = ir.BlockThinking
+		out.Thinking = &ir.Thinking{Text: b.Thinking, Signature: b.Signature}
+	default:
+		// 未知块降级为文本，保证不丢信息
+		out.Type = ir.BlockText
+		out.Text = b.Text
+	}
+	return out
+}
+
+func decodeToolResultContent(raw json.RawMessage) []ir.Block {
+	if len(raw) == 0 {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return []ir.Block{{Type: ir.BlockText, Text: s}}
+	}
+	var blocks []block
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil
+	}
+	return decodeBlocks(blocks)
+}
+
+func cacheCtlString(c *cacheControl) string {
+	if c == nil {
+		return ""
+	}
+	return c.Type
+}
+
+// ---- 请求编码：IR -> Anthropic ----
+
+// defaultMaxTokens 对齐 sub2api 的缺省值；Anthropic 强制要求 max_tokens。
+const defaultMaxTokens = 8192
+
+// nativeHosted 规范托管工具种类 -> Anthropic 带版本的 type 与固定 name。
+// 未识别种类原样作为 type 透传（同协议往返场景）。
+func nativeHosted(canonical string) (typ, name string) {
+	switch canonical {
+	case ir.HostedWebSearch:
+		return "web_search_20250305", "web_search"
+	case ir.HostedCodeExecution:
+		return "code_execution_20250522", "code_execution"
+	default:
+		return canonical, ""
+	}
+}
+
+func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
+	r := req.Clone()
+	if err := normalize.Request(r, normalize.Strict()); err != nil {
+		return nil, err
+	}
+	out := request{
+		Model:         r.Model,
+		MaxTokens:     r.MaxTokens,
+		Temperature:   r.Temperature,
+		TopP:          r.TopP,
+		TopK:          r.TopK,
+		StopSequences: r.StopSequences,
+		Stream:        r.Stream,
+	}
+	if out.MaxTokens <= 0 {
+		out.MaxTokens = defaultMaxTokens
+	}
+	for _, m := range r.Messages {
+		out.Messages = append(out.Messages, message{Role: string(m.Role), Content: marshal(encodeBlocks(m.Content))})
+	}
+	if len(r.System) > 0 {
+		out.System = marshal(encodeBlocks(r.System))
+	}
+	for _, t := range r.Tools {
+		if t.Hosted != "" {
+			typ, name := nativeHosted(t.Hosted)
+			if name == "" {
+				name = t.Name
+			}
+			out.Tools = append(out.Tools, tool{Type: typ, Name: name})
+			continue
+		}
+		out.Tools = append(out.Tools, tool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
+	if tc := r.ToolChoice; tc != nil {
+		out.ToolChoice = &toolChoice{
+			Type:                   string(tc.Mode),
+			Name:                   tc.ToolName,
+			DisableParallelToolUse: tc.DisableParallel,
+		}
+	}
+	if r.Thinking != nil && r.Thinking.Enabled {
+		budget := r.Thinking.BudgetTokens
+		if budget <= 0 {
+			budget = 4096
+		}
+		out.Thinking = &thinkingCfg{Type: "enabled", BudgetTokens: budget}
+	}
+	if uid := r.Metadata["user_id"]; uid != "" {
+		out.Metadata = &metadata{UserID: uid}
+	}
+	return json.Marshal(out)
+}
+
+func encodeBlocks(bs []ir.Block) []block {
+	out := make([]block, 0, len(bs))
+	for _, b := range bs {
+		out = append(out, encodeBlock(b))
+	}
+	return out
+}
+
+func encodeBlock(b ir.Block) block {
+	out := block{CacheCtl: encodeCacheCtl(b.CacheCtl)}
+	switch b.Type {
+	case ir.BlockText:
+		out.Type = "text"
+		out.Text = b.Text
+	case ir.BlockImage:
+		out.Type = "image"
+		if b.Image != nil {
+			if b.Image.URL != "" {
+				out.Source = &imageSource{Type: "url", URL: b.Image.URL}
+			} else {
+				out.Source = &imageSource{Type: "base64", MediaType: b.Image.MediaType, Data: b.Image.Data}
+			}
+		}
+	case ir.BlockToolUse:
+		out.Type = "tool_use"
+		if b.ToolUse != nil {
+			out.ID = b.ToolUse.ID
+			out.Name = b.ToolUse.Name
+			out.Input = b.ToolUse.Input
+			if len(out.Input) == 0 {
+				out.Input = json.RawMessage(`{}`)
+			}
+		}
+	case ir.BlockToolResult:
+		out.Type = "tool_result"
+		if b.ToolResult != nil {
+			out.ToolUseID = b.ToolResult.ToolUseID
+			out.IsError = b.ToolResult.IsError
+			out.Content = marshal(encodeBlocks(b.ToolResult.Content))
+		}
+	case ir.BlockThinking:
+		out.Type = "thinking"
+		if b.Thinking != nil {
+			out.Thinking = b.Thinking.Text
+			out.Signature = b.Thinking.Signature
+		}
+	default:
+		out.Type = "text"
+		out.Text = b.Text
+	}
+	return out
+}
+
+func encodeCacheCtl(s string) *cacheControl {
+	if s == "" {
+		return nil
+	}
+	return &cacheControl{Type: s}
+}
+
+// ---- 错误渲染 ----
+
+func (codec) RenderError(e *ir.Error) (int, []byte) {
+	status := e.StatusCode
+	if status == 0 {
+		status = 500
+	}
+	return status, marshal(errorResponse{
+		Type:  "error",
+		Error: errorBody{Type: e.Type, Message: e.Message},
+	})
+}
+
+func (codec) RenderStreamError(e *ir.Error) []byte {
+	return sseFrame("error", marshal(streamEvent{
+		Type:  "error",
+		Error: &errorBody{Type: e.Type, Message: e.Message},
+	}))
+}
+
+// sseFrame 生成 Anthropic 风格的 event:+data: 双行帧。
+func sseFrame(event string, data []byte) []byte {
+	return []byte("event: " + event + "\ndata: " + string(data) + "\n\n")
+}

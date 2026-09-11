@@ -1,71 +1,20 @@
+# relayd 本地演示配置（配合 cmd/relaymock 使用）
 listen: "127.0.0.1:8080"
-admin_listen: "127.0.0.1:8081"
-auth_tokens: ["sk-local-change-me"]
-request_timeout: 300s
-max_buffered_body: 8MB
+api_key: "sk-local-change-me"
 
-circuit:
-  fail_threshold: 3
-  open_base: 10s
-  open_max: 5m
-  half_open_probes: 1
-  success_to_close: 2
-
-probe_schedule:
-  concurrency: 4
-  jitter: 0.2
-  budget_per_minute: 30
-  mode: all
-
-models:
-  claude-sonnet-4:
-    protocol_hint: claude
-    aliases: [claude-3-5-sonnet-20241022]
-  gpt-4o:
-    protocol_hint: openai
-    aliases: [gpt-4o-2024-11-20]
-
-providers:
-  mock-station:
-    protocol: openai
-    probes:
-      - type: balance
-        interval: 15s
-        request:
-          method: GET
-          path: /api/user/self
-          auth: {in: header, name: Authorization, template: "Bearer {api_key}"}
-        extract: {value: "data.quota", scale: 0.000002}
-        rule: {disable_below: 0.01}
-
-  mock-anthropic:
-    protocol: claude
-    probes:
-      - type: ping
-        interval: 30s
-        slow_threshold: 5s
-
-credentials:
-  - provider: mock-station
-    name: st-a
+upstreams:
+  # OpenAI 协议 mock
+  - name: st-a
+    protocol: openai-chat
     base_url: http://127.0.0.1:9001
     api_key: sk-mock-a
-    models: [gpt-4o, claude-3-5-sonnet-20241022]
-    priority: 0
-    weight: 10
+    models:
+      gpt-4o: gpt-4o
 
-  - provider: mock-station
-    name: st-b
-    base_url: http://127.0.0.1:9002
-    api_key: sk-mock-b
-    models: [gpt-4o, claude-3-5-sonnet-20241022]
-    priority: 1
-    weight: 5
-
-  - provider: mock-anthropic
-    name: cl-01
+  # Anthropic 协议 mock
+  - name: cl-01
+    protocol: anthropic
     base_url: http://127.0.0.1:9003
     api_key: sk-mock-c
-    models: [claude-sonnet-4]
-    priority: 2
-    weight: 1
+    models:
+      claude-sonnet-4: claude-sonnet-4

@@ -1,4 +1,4 @@
-# Start the full local demo: 3 mock upstreams + relayd + Flutter client.
+# Start the local demo: mock upstreams + relayd.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -13,14 +13,8 @@ Start-Process -FilePath "$root\relayd.exe" -ArgumentList '-config','relayd.yaml'
 Start-Sleep -Seconds 1
 
 try {
-  $s = Invoke-RestMethod -Headers @{Authorization='Bearer sk-local-change-me'} http://127.0.0.1:8081/admin/summary
-  Write-Host "relayd up: relay=:8080 admin=:8081 total=$($s.total)"
+  $null = Invoke-WebRequest http://127.0.0.1:8080/health
+  Write-Host "relayd up: http://127.0.0.1:8080 (api key: sk-local-change-me)"
 } catch {
   Write-Host "relayd not responding: $_"; exit 1
-}
-
-$client = "$root\frontend\build\windows\x64\runner\Release\relayd_client.exe"
-if (Test-Path $client) {
-  Start-Process -FilePath $client -WorkingDirectory (Split-Path $client)
-  Write-Host 'client started (Settings token: sk-local-change-me)'
 }

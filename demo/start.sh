@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the full local demo: 3 mock upstreams + relayd + Flutter client.
+# Start the local demo: mock upstreams + relayd.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -11,11 +11,5 @@ sleep 1
 ./relayd.exe -config relayd.yaml > relayd.log 2>&1 &
 sleep 1
 
-curl -sf -H "Authorization: Bearer sk-local-change-me" http://127.0.0.1:8081/admin/summary \
-  && echo && echo "relayd up: relay=:8080 admin=:8081"
-
-CLIENT=frontend/build/windows/x64/runner/Release/relayd_client.exe
-if [ -f "$CLIENT" ]; then
-  (cd "$(dirname "$CLIENT")" && ./relayd_client.exe > /dev/null 2>&1 &)
-  echo "client started (token: sk-local-change-me)"
-fi
+curl -sf http://127.0.0.1:8080/health \
+  && echo && echo "relayd up: http://127.0.0.1:8080 (api key: sk-local-change-me)"

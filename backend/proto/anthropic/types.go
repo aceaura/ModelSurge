@@ -1,0 +1,141 @@
+// Package anthropic 实现 Anthropic Messages 协议（/v1/messages）的 codec。
+// Anthropic 是 IR 事件词汇的来源协议，转换最接近恒等映射。
+package anthropic
+
+import "encoding/json"
+
+// ---- 请求 DTO ----
+
+type request struct {
+	Model         string          `json:"model"`
+	Messages      []message       `json:"messages"`
+	System        json.RawMessage `json:"system,omitempty"` // string 或 []block
+	MaxTokens     int             `json:"max_tokens"`
+	Temperature   *float64        `json:"temperature,omitempty"`
+	TopP          *float64        `json:"top_p,omitempty"`
+	TopK          *int            `json:"top_k,omitempty"`
+	StopSequences []string        `json:"stop_sequences,omitempty"`
+	Stream        bool            `json:"stream,omitempty"`
+	Tools         []tool          `json:"tools,omitempty"`
+	ToolChoice    *toolChoice     `json:"tool_choice,omitempty"`
+	Thinking      *thinkingCfg    `json:"thinking,omitempty"`
+	Metadata      *metadata       `json:"metadata,omitempty"`
+}
+
+type metadata struct {
+	UserID string `json:"user_id,omitempty"`
+}
+
+type thinkingCfg struct {
+	Type         string `json:"type"` // "enabled" / "disabled"
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+}
+
+type message struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"` // string 或 []block
+}
+
+// block 是 Anthropic content block 的万能结构：
+// 同一结构承载 text/image/tool_use/tool_result/thinking 与流式 delta。
+type block struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	Source    *imageSource    `json:"source,omitempty"`    // image
+	ID        string          `json:"id,omitempty"`        // tool_use
+	Name      string          `json:"name,omitempty"`      // tool_use
+	Input     json.RawMessage `json:"input,omitempty"`     // tool_use
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`   // tool_result（string 或 []block）
+	IsError   bool            `json:"is_error,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	CacheCtl  *cacheControl   `json:"cache_control,omitempty"`
+}
+
+type imageSource struct {
+	Type      string `json:"type"` // "base64" / "url"
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
+type cacheControl struct {
+	Type string `json:"type"` // "ephemeral"
+}
+
+type tool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+	Type        string          `json:"type,omitempty"` // 服务端托管工具，如 "web_search_20250305"
+}
+
+type toolChoice struct {
+	Type                   string `json:"type"` // auto/any/none/tool
+	Name                   string `json:"name,omitempty"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
+}
+
+// ---- 流式事件 DTO ----
+
+// streamEvent 统一解析所有 SSE 事件的 data 载荷，按 Type 分派。
+type streamEvent struct {
+	Type         string          `json:"type"`
+	Index        int             `json:"index,omitempty"`
+	Message      *eventMessage   `json:"message,omitempty"`       // message_start
+	ContentBlock *block          `json:"content_block,omitempty"` // content_block_start
+	Delta        *delta          `json:"delta,omitempty"`         // content_block_delta / message_delta
+	Usage        *usage          `json:"usage,omitempty"`         // message_delta
+	Error        *errorBody      `json:"error,omitempty"`         // error
+}
+
+type eventMessage struct {
+	ID    string `json:"id"`
+	Model string `json:"model"`
+	Usage *usage `json:"usage,omitempty"`
+}
+
+type delta struct {
+	Type        string          `json:"type"` // text_delta / input_json_delta / thinking_delta / signature_delta / (message_delta 时为空)
+	Text        string          `json:"text,omitempty"`
+	PartialJSON string          `json:"partial_json,omitempty"`
+	Thinking    string          `json:"thinking,omitempty"`
+	Signature   string          `json:"signature,omitempty"`
+	StopReason  string          `json:"stop_reason,omitempty"` // message_delta
+}
+
+type usage struct {
+	InputTokens              int `json:"input_tokens,omitempty"`
+	OutputTokens             int `json:"output_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+type errorBody struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// ---- 非流式响应 DTO ----
+
+type response struct {
+	ID         string   `json:"id"`
+	Type       string   `json:"type"`
+	Role       string   `json:"role"`
+	Model      string   `json:"model"`
+	Content    []block  `json:"content"`
+	StopReason string   `json:"stop_reason"`
+	Usage      usage    `json:"usage"`
+}
+
+// errorResponse 是 Anthropic 错误外形：{"type":"error","error":{...}}。
+type errorResponse struct {
+	Type  string    `json:"type"` // 恒 "error"
+	Error errorBody `json:"error"`
+}
+
+func marshal(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
+}

@@ -246,3 +246,56 @@ func TestLoad_ExampleYAML(t *testing.T) {
 		t.Fatal("example kiro account seed expected")
 	}
 }
+
+// request_overrides 解析（upstream 级 yaml）。
+func TestLoad_RequestOverrides(t *testing.T) {
+	p := writeCfg(t, `
+upstreams:
+  - name: u
+    protocol: anthropic
+    base_url: https://api.anthropic.com
+    api_key: k
+    request_overrides:
+      temperature: 1
+      top_p: 0.95
+      thinking:
+        enabled: true
+        budget_tokens: 4096
+        effort: max
+`)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ov := c.Upstreams[0].RequestOverrides
+	if ov == nil {
+		t.Fatal("request_overrides expected")
+	}
+	if ov.Temperature == nil || *ov.Temperature != 1 {
+		t.Errorf("temperature = %v, want 1", ov.Temperature)
+	}
+	if ov.TopP == nil || *ov.TopP != 0.95 {
+		t.Errorf("top_p = %v, want 0.95", ov.TopP)
+	}
+	if ov.Thinking == nil || !ov.Thinking.Enabled || ov.Thinking.BudgetTokens != 4096 || ov.Thinking.Effort != "max" {
+		t.Errorf("thinking = %+v, want enabled/4096/max", ov.Thinking)
+	}
+}
+
+// 不配 request_overrides 时为 nil（透传）。
+func TestLoad_RequestOverridesAbsent(t *testing.T) {
+	p := writeCfg(t, `
+upstreams:
+  - name: u
+    protocol: anthropic
+    base_url: https://api.anthropic.com
+    api_key: k
+`)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Upstreams[0].RequestOverrides != nil {
+		t.Errorf("request_overrides = %+v, want nil", c.Upstreams[0].RequestOverrides)
+	}
+}

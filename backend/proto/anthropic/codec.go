@@ -26,6 +26,22 @@ func (codec) Caps() proto.Capabilities {
 	return proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true}
 }
 
+// ClampThinking 把 thinking 预算归一成线上可携带形态：缺省补默认值；
+// Anthropic 约束 budget_tokens < max_tokens，越界夹紧（夹紧到 0 则编码时
+// omitempty 丢弃）。relay 在转发日志前经可选接口调用，使上游视角参数行
+// 反映实发值；EncodeRequest 内同款逻辑保持幂等兜底。
+func (codec) ClampThinking(r *ir.Request) {
+	if r.Thinking == nil || !r.Thinking.Enabled || r.MaxTokens <= 0 {
+		return
+	}
+	if r.Thinking.BudgetTokens <= 0 {
+		r.Thinking.BudgetTokens = 4096
+	}
+	if r.Thinking.BudgetTokens >= r.MaxTokens {
+		r.Thinking.BudgetTokens = r.MaxTokens - 1
+	}
+}
+
 // ---- 请求解码：Anthropic -> IR ----
 
 func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
@@ -282,6 +298,11 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		budget := r.Thinking.BudgetTokens
 		if budget <= 0 {
 			budget = 4096
+		}
+		// Anthropic 约束 budget_tokens < max_tokens：账号级覆盖的强制预算
+		// 可能与客户端 max_tokens 冲突，越界时夹紧（夹紧到 0 则 omitempty 丢弃）。
+		if budget >= out.MaxTokens {
+			budget = out.MaxTokens - 1
 		}
 		out.Thinking = &thinkingCfg{Type: "enabled", BudgetTokens: budget}
 	}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"relayd/backend/ir"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -76,6 +78,9 @@ type Upstream struct {
 	BaseURL  string            `yaml:"base_url"` // 如 "https://api.anthropic.com"（kiro 不需要）
 	APIKey   string            `yaml:"api_key"`
 	Models   map[string]string `yaml:"models"` // canonical model -> 上游 native model；为空则接受任意模型并透传模型名
+	// RequestOverrides 转发前覆盖请求参数（thinking/temperature/top_p/max_tokens）；
+	// nil = 透传客户端值。账号池模式下经 SyncAccounts 落库随账号生效。
+	RequestOverrides *ir.Overrides `yaml:"request_overrides"`
 	// Kiro protocol=kiro 时的账号种子（凭据三选一；仅 scheduler 模式生效）。
 	Kiro *UpstreamKiro `yaml:"kiro"`
 }

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"relayd/backend/account"
+	"relayd/backend/ir"
 )
 
 // mountAdmin 挂载管理路由（sched 与 admin key 均就位时）。
@@ -66,15 +67,16 @@ func adminError(w http.ResponseWriter, status int, field, msg string) {
 // accountDTO 管理面账号输入（凭据全量；enabled 缺省 true；
 // json.RawMessage 不用——直接复用 account 字段，Enabled 需三态故包一层）。
 type accountDTO struct {
-	Name            string               `json:"name"`
-	Type            string               `json:"type"`
-	Enabled         *bool                `json:"enabled"`
-	Protocol        string               `json:"protocol"`
-	BaseURL         string               `json:"base_url"`
-	APIKey          string               `json:"api_key"`
-	Models          map[string]string    `json:"models"`
-	ModelsAllowlist []string             `json:"models_allowlist"`
-	Kiro            *account.KiroAccount `json:"kiro"`
+	Name             string            `json:"name"`
+	Type             string            `json:"type"`
+	Enabled          *bool             `json:"enabled"`
+	Protocol         string            `json:"protocol"`
+	BaseURL          string            `json:"base_url"`
+	APIKey           string            `json:"api_key"`
+	Models           map[string]string `json:"models"`
+	ModelsAllowlist  []string          `json:"models_allowlist"`
+	RequestOverrides *ir.Overrides     `json:"request_overrides"`
+	Kiro             *account.KiroAccount `json:"kiro"`
 }
 
 // validProtocols api-key 型账号可用的上游协议。
@@ -130,15 +132,16 @@ func (d *accountDTO) validate() error {
 // toAccount DTO -> Account（enabled 缺省 true）。
 func (d *accountDTO) toAccount() *account.Account {
 	a := &account.Account{
-		Name:            d.Name,
-		Type:            d.Type,
-		Enabled:         d.Enabled == nil || *d.Enabled,
-		Protocol:        d.Protocol,
-		BaseURL:         d.BaseURL,
-		APIKey:          d.APIKey,
-		Models:          d.Models,
-		ModelsAllowlist: d.ModelsAllowlist,
-		Kiro:            d.Kiro,
+		Name:             d.Name,
+		Type:             d.Type,
+		Enabled:          d.Enabled == nil || *d.Enabled,
+		Protocol:         d.Protocol,
+		BaseURL:          d.BaseURL,
+		APIKey:           d.APIKey,
+		Models:           d.Models,
+		ModelsAllowlist:  d.ModelsAllowlist,
+		Overrides:        d.RequestOverrides,
+		Kiro:             d.Kiro,
 	}
 	if a.Models == nil {
 		a.Models = map[string]string{}
@@ -287,6 +290,9 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if d.ModelsAllowlist == nil {
 		d.ModelsAllowlist = existing.ModelsAllowlist
+	}
+	if d.RequestOverrides == nil {
+		d.RequestOverrides = existing.Overrides
 	}
 	if err := d.validate(); err != nil {
 		adminError(w, 400, "", err.Error())

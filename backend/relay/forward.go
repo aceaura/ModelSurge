@@ -72,6 +72,7 @@ type candidate struct {
 	acc     *account.Account // 调度模式下的账号（nil = 静态上游）
 	native  string
 	codec   proto.Codec
+	ov      *ir.Overrides    // 账号/上游级请求参数覆盖（nil = 透传）
 	resolve endpointResolver // 每请求解析 URL 与鉴权头（kiro 动态取 token/host）
 }
 
@@ -115,9 +116,9 @@ func (f *Forwarder) candidates(model string) []candidate {
 			continue
 		}
 		if native, ok := u.Models[model]; ok {
-			mapped = append(mapped, candidate{up: u, native: native, codec: c, resolve: staticEndpoint(u, native)})
+			mapped = append(mapped, candidate{up: u, native: native, codec: c, ov: u.RequestOverrides, resolve: staticEndpoint(u, native)})
 		} else if len(u.Models) == 0 {
-			passthrough = append(passthrough, candidate{up: u, native: model, codec: c, resolve: staticEndpoint(u, model)})
+			passthrough = append(passthrough, candidate{up: u, native: model, codec: c, ov: u.RequestOverrides, resolve: staticEndpoint(u, model)})
 		}
 	}
 	return append(mapped, passthrough...)
@@ -226,6 +227,7 @@ func (f *Forwarder) accountCandidate(a *account.Account, model string) (candidat
 		acc:    a,
 		native: native,
 		codec:  c,
+		ov:     a.Overrides,
 	}
 	if a.Type == account.TypeKiro {
 		rt := f.sched.KiroRuntimeOf(a.Name)
@@ -356,7 +358,14 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	upReq := req.Clone()
 	upReq.Model = cand.native
 	upReq.Stream = true
+	cand.ov.Apply(upReq) // 账号级请求覆盖（未配置时 no-op）
+	if cl, ok := cand.codec.(interface{ ClampThinking(*ir.Request) }); ok {
+		cl.ClampThinking(upReq) // 协议级预算归一/夹紧，日志反映实发值
+	}
 	f.prepareKiroMetadata(cand, upReq) // profileArn 载荷必带 + web_search 注入标志
+	if f.paramLog {
+		log.Printf("relay: upstream request %s: %s", cand.up.Name, requestParams(cand.codec.Name(), upReq))
+	}
 	body, encErr := cand.codec.EncodeRequest(upReq)
 	if encErr != nil {
 		return false, ir.NewHTTPError(400, "encode upstream request: "+encErr.Error())
@@ -682,6 +691,9 @@ func (f *Forwarder) CountTokens(ctx context.Context, req *ir.Request) (int, []by
 		body, err := cand.codec.EncodeRequest(upReq)
 		if err != nil {
 			break
+		}
+		if f.paramLog {
+			log.Printf("relay: upstream request %s (count_tokens): %s", cand.up.Name, requestParams(cand.codec.Name(), upReq))
 		}
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			cand.up.BaseURL+"/v1/messages/count_tokens", bytes.NewReader(body))

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"relayd/backend/ir"
 )
 
 // InsertAccount 落库一个新账号（管理 API 创建路径）。
@@ -20,10 +22,10 @@ func (s *Store) InsertAccount(a *Account) error {
 		disabled = 1
 	}
 	if _, err := s.db.Exec(`INSERT INTO accounts
-		(name, type, enabled, protocol, base_url, api_key, models, models_allowlist, kiro, disabled, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		(name, type, enabled, protocol, base_url, api_key, models, models_allowlist, kiro, overrides, disabled, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.Name, a.Type, enabled, a.Protocol, a.BaseURL, a.APIKey,
-		string(models), string(allowlist), kiro, disabled, time.Now().Unix()); err != nil {
+		string(models), string(allowlist), kiro, encodeOverrides(a.Overrides), disabled, time.Now().Unix()); err != nil {
 		return fmt.Errorf("account: insert %q: %w", a.Name, err)
 	}
 	return nil
@@ -41,9 +43,9 @@ func (s *Store) UpdateAccount(a *Account) error {
 	}
 	res, err := s.db.Exec(`UPDATE accounts SET
 		type=?, enabled=?, protocol=?, base_url=?, api_key=?, models=?,
-		models_allowlist=?, kiro=?, updated_at=? WHERE name=?`,
+		models_allowlist=?, kiro=?, overrides=?, updated_at=? WHERE name=?`,
 		a.Type, enabled, a.Protocol, a.BaseURL, a.APIKey, string(models),
-		string(allowlist), kiro, time.Now().Unix(), a.Name)
+		string(allowlist), kiro, encodeOverrides(a.Overrides), time.Now().Unix(), a.Name)
 	if err != nil {
 		return fmt.Errorf("account: update %q: %w", a.Name, err)
 	}
@@ -97,5 +99,14 @@ func encodeKiro(k *KiroAccount) string {
 		return ""
 	}
 	b, _ := json.Marshal(k)
+	return string(b)
+}
+
+// encodeOverrides ir.Overrides -> JSON（nil -> 空串，列默认值）。
+func encodeOverrides(o *ir.Overrides) string {
+	if o == nil {
+		return ""
+	}
+	b, _ := json.Marshal(o)
 	return string(b)
 }

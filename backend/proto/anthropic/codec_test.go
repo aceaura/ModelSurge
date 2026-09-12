@@ -204,3 +204,44 @@ func TestServerToolBlocks_Stream(t *testing.T) {
 		}
 	}
 }
+
+// 预算夹紧：强制预算（账号级覆盖常见）超过客户端 max_tokens 时夹紧到 max_tokens-1，
+// 避免发出 Anthropic 协议非法请求（budget_tokens 必须 < max_tokens）。
+func TestEncodeRequest_ThinkingBudgetClamp(t *testing.T) {
+	req := &ir.Request{
+		Model:     "m",
+		MaxTokens: 2048,
+		Messages:  []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+		Thinking:  &ir.ThinkingConfig{Enabled: true, BudgetTokens: 4096},
+	}
+	out, err := New().EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(out); !strings.Contains(s, `"budget_tokens":2047`) {
+		t.Errorf("budget not clamped to max_tokens-1: %s", s)
+	}
+}
+
+// ClampThinking：缺省补默认预算；越界夹紧到 max_tokens-1；未启用不动。
+func TestClampThinking(t *testing.T) {
+	cl, ok := New().(interface{ ClampThinking(*ir.Request) })
+	if !ok {
+		t.Fatal("anthropic codec must implement ClampThinking")
+	}
+	r := &ir.Request{MaxTokens: 2048, Thinking: &ir.ThinkingConfig{Enabled: true, BudgetTokens: 4096}}
+	cl.ClampThinking(r)
+	if r.Thinking.BudgetTokens != 2047 {
+		t.Errorf("budget = %d, want 2047", r.Thinking.BudgetTokens)
+	}
+	r = &ir.Request{MaxTokens: 8192, Thinking: &ir.ThinkingConfig{Enabled: true}}
+	cl.ClampThinking(r)
+	if r.Thinking.BudgetTokens != 4096 {
+		t.Errorf("default budget = %d, want 4096", r.Thinking.BudgetTokens)
+	}
+	r = &ir.Request{MaxTokens: 100, Thinking: &ir.ThinkingConfig{Enabled: false, BudgetTokens: 4096}}
+	cl.ClampThinking(r)
+	if r.Thinking.BudgetTokens != 4096 {
+		t.Errorf("disabled thinking must not be touched: %d", r.Thinking.BudgetTokens)
+	}
+}

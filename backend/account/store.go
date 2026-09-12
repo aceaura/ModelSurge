@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"relayd/backend/ir"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -33,6 +35,9 @@ type Account struct {
 	BaseURL  string            `json:"base_url,omitempty"`
 	APIKey   string            `json:"api_key,omitempty"`
 	Models   map[string]string `json:"models,omitempty"` // canonical -> native
+	// Overrides 转发前请求参数覆盖（两种账号类型通用；nil = 透传客户端值）。
+	// ir.Overrides 是 config/account/relay 共享的 IR 层类型，ir 为叶包无环。
+	Overrides *ir.Overrides `json:"request_overrides,omitempty"`
 
 	// kiro 型
 	Kiro *KiroAccount `json:"kiro,omitempty"`
@@ -162,6 +167,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 	models_allowlist TEXT NOT NULL DEFAULT '',
 	kiro             TEXT NOT NULL DEFAULT '',
 	token_state      TEXT NOT NULL DEFAULT '',
+	overrides        TEXT NOT NULL DEFAULT '',
 	disabled         INTEGER NOT NULL DEFAULT 0,
 	limit_kind       TEXT NOT NULL DEFAULT '',
 	cooldown_until   INTEGER NOT NULL DEFAULT 0,
@@ -189,6 +195,7 @@ var v2Columns = []string{
 	`ALTER TABLE accounts ADD COLUMN models_allowlist TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN kiro TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN token_state TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN overrides TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN failures INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE accounts ADD COLUMN last_failure INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE accounts ADD COLUMN stats TEXT NOT NULL DEFAULT '{}'`,
@@ -255,11 +262,12 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // SeedUpstream yaml 侧的账号种子（与 config.Upstream 同形，避免 account 依赖 config）。
 type SeedUpstream struct {
-	Name     string
-	Protocol string
-	BaseURL  string
-	APIKey   string
-	Models   map[string]string
+	Name      string
+	Protocol  string
+	BaseURL   string
+	APIKey    string
+	Models    map[string]string
+	Overrides *ir.Overrides
 }
 
 // SeedKiro yaml 侧的 kiro 账号种子（config.Upstream.Kiro 的 account 形态）。
@@ -282,13 +290,14 @@ func (s *Store) SyncAccounts(seeds []SeedUpstream) error {
 	for _, u := range seeds {
 		models, _ := json.Marshal(u.Models)
 		if _, err := tx.Exec(`INSERT INTO accounts
-			(name, type, protocol, base_url, api_key, models, updated_at)
-			VALUES (?,?,?,?,?,?,?)
+			(name, type, protocol, base_url, api_key, models, overrides, updated_at)
+			VALUES (?,?,?,?,?,?,?,?)
 			ON CONFLICT(name) DO UPDATE SET
 				protocol=excluded.protocol, base_url=excluded.base_url,
 				api_key=excluded.api_key, models=excluded.models,
+				overrides=excluded.overrides,
 				updated_at=excluded.updated_at`,
-			u.Name, TypeAPIKey, u.Protocol, u.BaseURL, u.APIKey, string(models), now); err != nil {
+			u.Name, TypeAPIKey, u.Protocol, u.BaseURL, u.APIKey, string(models), encodeOverrides(u.Overrides), now); err != nil {
 			return fmt.Errorf("account: sync %q: %w", u.Name, err)
 		}
 	}
@@ -321,17 +330,17 @@ func (s *Store) SyncKiroAccounts(seeds []SeedKiro) error {
 
 // accountSelect 全字段读取（与 scanAccount 对应）。
 const accountSelect = `SELECT name, type, enabled, protocol, base_url, api_key, models,
-	models_allowlist, kiro, token_state, disabled, limit_kind, cooldown_until,
+	models_allowlist, kiro, token_state, overrides, disabled, limit_kind, cooldown_until,
 	failures, last_failure, stats, updated_at FROM accounts`
 
 // scanAccount 一行 -> Account。
 func scanAccount(s interface{ Scan(...any) error }) (Account, error) {
 	var a Account
-	var typ, protocol, baseURL, apiKey, models, allowlist, kiroJSON, tokenJSON, statsJSON string
+	var typ, protocol, baseURL, apiKey, models, allowlist, kiroJSON, tokenJSON, overridesJSON, statsJSON string
 	var enabled, disabled, failures int
 	var cooldown, lastFailure, updatedAt int64
 	if err := s.Scan(&a.Name, &typ, &enabled, &protocol, &baseURL, &apiKey, &models,
-		&allowlist, &kiroJSON, &tokenJSON, &disabled, &a.LimitKind, &cooldown,
+		&allowlist, &kiroJSON, &tokenJSON, &overridesJSON, &disabled, &a.LimitKind, &cooldown,
 		&failures, &lastFailure, &statsJSON, &updatedAt); err != nil {
 		return a, err
 	}
@@ -341,6 +350,12 @@ func scanAccount(s interface{ Scan(...any) error }) (Account, error) {
 	_ = json.Unmarshal([]byte(models), &a.Models)
 	_ = json.Unmarshal([]byte(allowlist), &a.ModelsAllowlist)
 	_ = json.Unmarshal([]byte(statsJSON), &a.Stats)
+	if overridesJSON != "" {
+		var ov ir.Overrides
+		if err := json.Unmarshal([]byte(overridesJSON), &ov); err == nil {
+			a.Overrides = &ov
+		}
+	}
 	if kiroJSON != "" {
 		var k KiroAccount
 		if err := json.Unmarshal([]byte(kiroJSON), &k); err == nil {

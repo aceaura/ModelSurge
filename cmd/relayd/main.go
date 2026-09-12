@@ -96,7 +96,7 @@ func main() {
 			}
 			seeds = append(seeds, account.SeedUpstream{
 				Name: u.Name, Protocol: u.Protocol, BaseURL: u.BaseURL,
-				APIKey: u.APIKey, Models: u.Models,
+				APIKey: u.APIKey, Models: u.Models, Overrides: u.RequestOverrides,
 			})
 		}
 		cd := cfg.Scheduler.CooldownsDur

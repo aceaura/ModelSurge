@@ -1,7 +1,9 @@
 package server_test
 
 import (
+	"bytes"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 
 	"relayd/backend/account"
 	"relayd/backend/config"
+	"relayd/backend/ir"
 	"relayd/backend/server"
 )
 
@@ -25,7 +28,7 @@ func newSchedGateway(t *testing.T, ups []config.Upstream) (*httptest.Server, *ac
 	t.Cleanup(func() { store.Close() })
 	seeds := make([]account.SeedUpstream, len(ups))
 	for i, u := range ups {
-		seeds[i] = account.SeedUpstream{Name: u.Name, Protocol: u.Protocol, BaseURL: u.BaseURL, APIKey: u.APIKey, Models: u.Models}
+		seeds[i] = account.SeedUpstream{Name: u.Name, Protocol: u.Protocol, BaseURL: u.BaseURL, APIKey: u.APIKey, Models: u.Models, Overrides: u.RequestOverrides}
 	}
 	m, err := account.NewManager(store, seeds, nil, account.Cooldowns{}, account.ManagerDeps{})
 	if err != nil {
@@ -205,5 +208,84 @@ func TestSchedUsageRecorded(t *testing.T) {
 	}
 	if u.InputTokens != 10 || u.OutputTokens != 5 {
 		t.Errorf("recorded usage = %+v, want input=10 output=5", u)
+	}
+}
+
+// 账号级 request_overrides：客户端自带参数被强制替换，上游收到覆盖后形态；
+// 参数日志双视角——客户端行保持原值，上游行体现转化后参数。
+func TestSchedRequestOverrides(t *testing.T) {
+	var got atomic.Value
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got.Store(string(b))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(upstreamStream("anthropic", "OVR")))
+	}))
+	defer up.Close()
+
+	temp, topP := 1.0, 0.95
+	ups := []config.Upstream{
+		{Name: "a", Protocol: "anthropic", BaseURL: up.URL, APIKey: "k",
+			Models: map[string]string{"m": "m"},
+			RequestOverrides: &ir.Overrides{
+				Thinking:    &ir.ThinkingOverride{Enabled: true, BudgetTokens: 4096, Effort: "max"},
+				Temperature: &temp,
+				TopP:        &topP,
+			}},
+	}
+	store, err := account.Open(filepath.Join(t.TempDir(), "sched.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	m, err := account.NewManager(store, []account.SeedUpstream{
+		{Name: "a", Protocol: "anthropic", BaseURL: up.URL, APIKey: "k", Models: ups[0].Models, Overrides: ups[0].RequestOverrides},
+	}, nil, account.Cooldowns{}, account.ManagerDeps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(server.New(&config.Config{
+		Upstreams: ups, Scheduler: &config.Scheduler{SameAccountRetries: 2}, AccessLogEnabled: true,
+	}, m).Handler())
+	t.Cleanup(gw.Close)
+
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prev)
+
+	// 客户端自带 temperature=0.3 且无 thinking：应被账号覆盖替换
+	body := `{"model":"m","max_tokens":8192,"temperature":0.3,"messages":[{"role":"user","content":"topsecret-payload-9f3a"}]}`
+	resp, err := http.Post(gw.URL+"/v1/messages", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	upBody := got.Load().(string)
+	for _, want := range []string{`"temperature":1`, `"top_p":0.95`, `"thinking":{"type":"enabled","budget_tokens":4096}`} {
+		if !strings.Contains(upBody, want) {
+			t.Errorf("upstream body missing %s: %s", want, upBody)
+		}
+	}
+	if strings.Contains(upBody, `"temperature":0.3`) {
+		t.Errorf("client temperature not overridden: %s", upBody)
+	}
+
+	// 参数日志双视角：客户端行原值，上游行转化后（不含消息内容）
+	logs := logBuf.String()
+	for _, want := range []string{
+		"relay: request proto=anthropic model=m stream=false max_tokens=8192 msgs=1 temp=0.3 thinking=absent",
+		"relay: upstream request a: proto=anthropic model=m stream=true max_tokens=8192 msgs=1 temp=1 top_p=0.95 thinking=on budget=4096 effort=max",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("param log missing %q in:\n%s", want, logs)
+		}
+	}
+	if strings.Contains(logs, "topsecret-payload-9f3a") {
+		t.Errorf("param log must not contain message content:\n%s", logs)
 	}
 }

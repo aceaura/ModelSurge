@@ -183,3 +183,51 @@ func (r *Request) Clone() *Request {
 	}
 	return &c
 }
+
+// Overrides 请求参数覆盖（账号/上游级）：转发前覆盖 IR 请求的对应字段，
+// 客户端发了什么不重要。每个字段独立生效，nil = 透传客户端值。
+// json 标签供账号存储与管理面 API；yaml 标签供 upstream 配置。
+type Overrides struct {
+	Thinking    *ThinkingOverride `json:"thinking,omitempty" yaml:"thinking,omitempty"`
+	Temperature *float64          `json:"temperature,omitempty" yaml:"temperature,omitempty"`
+	TopP        *float64          `json:"top_p,omitempty" yaml:"top_p,omitempty"`
+	MaxTokens   *int              `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+}
+
+// ThinkingOverride thinking 配置覆盖，强制语义：
+// Enabled=true 强制开启（BudgetTokens<=0 时由目标 codec 兜底默认值）；
+// Enabled=false 强制剥掉 thinking 参数（对上游不发送该字段）。
+// Effort 为 OpenAI 风格等级，仅 openai/kiro/gemini 上游取用。
+type ThinkingOverride struct {
+	Enabled      bool   `json:"enabled" yaml:"enabled"`
+	BudgetTokens int    `json:"budget_tokens,omitempty" yaml:"budget_tokens,omitempty"`
+	Effort       string `json:"effort,omitempty" yaml:"effort,omitempty"`
+}
+
+// Apply 把覆盖应用到请求（原地修改，调用方负责先 Clone）。
+func (o *Overrides) Apply(req *Request) {
+	if o == nil {
+		return
+	}
+	if o.Thinking != nil {
+		req.Thinking = &ThinkingConfig{
+			Enabled:      o.Thinking.Enabled,
+			BudgetTokens: o.Thinking.BudgetTokens,
+			Effort:       o.Thinking.Effort,
+		}
+	}
+	if o.Temperature != nil {
+		req.Temperature = o.Temperature
+	}
+	if o.TopP != nil {
+		req.TopP = o.TopP
+	}
+	if o.MaxTokens != nil {
+		req.MaxTokens = *o.MaxTokens
+	}
+}
+
+// Configured 返回是否有任一字段被配置（全空则无需应用与记日志）。
+func (o *Overrides) Configured() bool {
+	return o != nil && (o.Thinking != nil || o.Temperature != nil || o.TopP != nil || o.MaxTokens != nil)
+}

@@ -21,9 +21,13 @@ type Config struct {
 	FirstTokenTimeout string `yaml:"first_token_timeout"`
 	// EstimateUsage 上游未给 usage 时本地粗估兜底（估算值仅作参考，默认关）。
 	EstimateUsage bool `yaml:"estimate_usage"`
+	// AccessLog 访问日志开关（method/path/status/耗时）；nil = 默认开。
+	AccessLog *bool `yaml:"access_log"`
 
 	// FirstTokenTimeoutDur FirstTokenTimeout 的解析结果（Load 填充；测试可直接设置）。
 	FirstTokenTimeoutDur time.Duration `yaml:"-"`
+	// AccessLogEnabled AccessLog 的最终值（Load 填充；测试可直接设置）。
+	AccessLogEnabled bool `yaml:"-"`
 }
 
 // Upstream 一个上游端点。
@@ -48,6 +52,7 @@ func Load(path string) (*Config, error) {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8080"
 	}
+	c.AccessLogEnabled = c.AccessLog == nil || *c.AccessLog
 	c.FirstTokenTimeoutDur = 30 * time.Second
 	if c.FirstTokenTimeout != "" {
 		d, err := time.ParseDuration(c.FirstTokenTimeout)

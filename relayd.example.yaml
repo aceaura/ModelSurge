@@ -22,6 +22,9 @@ first_token_timeout: "30s"
 # 上游未上报 usage 时本地粗估兜底（估算值不代表真实计费口径，默认关）。
 estimate_usage: false
 
+# 访问日志（method/path/status/耗时），默认开；设为 false 关闭。
+access_log: true
+
 upstreams:
   # Anthropic 订阅 / API
   - name: claude-main

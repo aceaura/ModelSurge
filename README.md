@@ -41,11 +41,13 @@ cmd/relaymock/      本地上游模拟器（OpenAI/Anthropic 应答 + /mock/cont
 - **IR 枢纽**：跨协议转换 = 解码为 IR + 从 IR 编码，无 N² 直转。
 - **上游永远流式**：强制 `stream=true`；客户端要非流式时网关聚合 SSE 后一次性返回 JSON。
 - **block 开合不变式**：编码器保证 start→delta*→stop，断流由 Finish 兜底补齐终止事件。
-- **签名互认**：Anthropic thinking.signature ↔ Responses reasoning.encrypted_content；无法伪造的方向按调研结论丢弃。
+- **签名链保真与防 400**：签名按到达时的协议形态标记（`SignatureFrom`）。同协议往返原样透传；跨协议回放时保守降级（Anthropic 降为 text 块 / Responses 不构造 reasoning item / Gemini 置空 thoughtSignature）——Anthropic 对历史 thinking 块强制签名校验、Gemini 3 校验 functionCall 签名，透传外族签名必 400，宁可断签名链保住请求。降级均记入诊断。
 - **能力声明 + 诊断**：codec 声明能力（`Caps()`：thinking 签名/图片/托管工具），转发前对比请求特征，必然有损项记日志并写入 `X-Relayd-Notes` 响应头，不再静默丢失。
 - **字节未出前可重试**：连接失败 / 429 / 5xx / 首事件超时（`first_token_timeout`，默认 30s）且尚未向客户端写字节时，换下一个候选上游重发；写出第一字节后锁死，错误只在流内渲染。
 - **托管工具声明映射**：Anthropic `web_search`/`code_execution` ↔ Responses `web_search`/`code_interpreter` ↔ Gemini `google_search`/`code_execution` 三向互转（仍由上游服务器执行，网关不做仿真）；Chat Completions 无此能力，丢弃并记诊断。
 - **usage 估算兜底（opt-in）**：`estimate_usage: true` 后上游不上报 usage 时按文本粗估并在日志标注，默认关闭（估算值不代表真实计费）。
+- **访问日志**：`access_log`（默认开）记录每请求的 method/path/status/耗时（含鉴权失败的 401）。
+- **优雅停机**：SIGINT/SIGTERM 后停止收新请求，等在途请求（含流式响应）最多 15s 完成再退出。
 
 ## 配置
 

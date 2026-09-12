@@ -4,9 +4,11 @@ package server
 
 import (
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"relayd/backend/config"
 	"relayd/backend/ir"
@@ -22,18 +24,20 @@ import (
 
 // Server 入口服务。
 type Server struct {
-	fwd    *relay.Forwarder
-	apiKey string
-	mux    *http.ServeMux
-	models []string // 已配置的 canonical model 列表（/v1/models 用）
+	fwd       *relay.Forwarder
+	apiKey    string
+	mux       *http.ServeMux
+	models    []string // 已配置的 canonical model 列表（/v1/models 用）
+	accessLog bool
 }
 
 // New 按配置构造服务。
 func New(cfg *config.Config) *Server {
 	s := &Server{
-		fwd:    relay.NewForwarder(cfg),
-		apiKey: cfg.APIKey,
-		mux:    http.NewServeMux(),
+		fwd:       relay.NewForwarder(cfg),
+		apiKey:    cfg.APIKey,
+		mux:       http.NewServeMux(),
+		accessLog: cfg.AccessLogEnabled,
 	}
 	seen := map[string]bool{}
 	for _, u := range cfg.Upstreams {
@@ -64,9 +68,42 @@ func New(cfg *config.Config) *Server {
 	return s
 }
 
-// Handler 返回根 handler（含鉴权中间件）。
+// Handler 返回根 handler（访问日志 -> 鉴权 -> 路由）。
 func (s *Server) Handler() http.Handler {
-	return s.auth(s.mux)
+	return s.accessLogMiddleware(s.auth(s.mux))
+}
+
+// statusRecorder 记录中间件层拿不到的响应状态码。
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// Flush 透传底层 Flusher：流式响应依赖逐块刷新，包装后不能丢。
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// accessLog 记录 method/path/status/耗时；鉴权失败（401）也在本层之内。
+func (s *Server) accessLogMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.accessLog {
+			next.ServeHTTP(w, r)
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		start := time.Now()
+		next.ServeHTTP(rec, r)
+		log.Printf("relayd: %d %s %s %s %s", rec.status, r.Method, r.URL.Path,
+			time.Since(start).Round(time.Millisecond), r.RemoteAddr)
+	})
 }
 
 // auth 校验客户端 key：兼容 Authorization: Bearer 与 x-api-key。

@@ -52,9 +52,9 @@ func TestEncodeRequest_ThinkingDegradation(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ sig, from string }{
-		{"sig", "gemini"},  // 外族签名
-		{"sig", ""},        // 来源不明的签名
-		{"", "anthropic"},  // 无签名
+		{"sig", "gemini"}, // 外族签名
+		{"sig", ""},       // 来源不明的签名
+		{"", "anthropic"}, // 无签名
 	} {
 		out, err := New().EncodeRequest(thinkingReq(tc.sig, tc.from))
 		if err != nil {
@@ -88,5 +88,119 @@ func TestEncodeResponse_ThinkingPassthrough(t *testing.T) {
 	s := string(out)
 	if !strings.Contains(s, `"thinking"`) || !strings.Contains(s, `"signature":"sig"`) {
 		t.Errorf("response thinking must not be degraded: %s", s)
+	}
+}
+
+// server_tool_use / web_search_tool_result 块：请求解码（会话重放）与
+// 响应编码（块往返）两方向不丢字段。
+func TestServerToolBlocks_RoundTrip(t *testing.T) {
+	// 请求重放：assistant 含 server_tool_use，user 含 web_search_tool_result
+	body := `{"model":"claude-x","max_tokens":64,"messages":[
+		{"role":"user","content":"search go"},
+		{"role":"assistant","content":[
+			{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"go"}},
+			{"type":"text","text":"<web_search>results</web_search>"}]},
+		{"role":"user","content":[
+			{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[
+				{"type":"web_search_result","title":"Go","url":"https://go.dev","encrypted_content":"fast"}]},
+			{"type":"text","text":"summarize"}]}]}`
+	req, err := New().DecodeRequest([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stu := req.Messages[1].Content[0]
+	if stu.Type != ir.BlockServerToolUse || stu.ServerToolUse == nil {
+		t.Fatalf("server_tool_use block = %+v", stu)
+	}
+	if stu.ServerToolUse.ID != "srvtoolu_1" || stu.ServerToolUse.Name != "web_search" {
+		t.Errorf("server_tool_use = %+v", stu.ServerToolUse)
+	}
+	if string(stu.ServerToolUse.Input) != `{"query":"go"}` {
+		t.Errorf("input = %s", stu.ServerToolUse.Input)
+	}
+	wsr := req.Messages[2].Content[0]
+	if wsr.Type != ir.BlockWebSearchToolResult || wsr.WebSearchToolResult == nil {
+		t.Fatalf("web_search_tool_result block = %+v", wsr)
+	}
+	if wsr.WebSearchToolResult.ToolUseID != "srvtoolu_1" || len(wsr.WebSearchToolResult.Results) != 1 {
+		t.Fatalf("results = %+v", wsr.WebSearchToolResult)
+	}
+	r := wsr.WebSearchToolResult.Results[0]
+	if r.Title != "Go" || r.URL != "https://go.dev" || r.Snippet != "fast" {
+		t.Errorf("result = %+v", r)
+	}
+
+	// 响应编码：块按原形态输出
+	resp := &ir.Response{
+		ID: "msg_1", Model: "claude-x", StopReason: ir.StopEndTurn,
+		Content: []ir.Block{
+			{Type: ir.BlockServerToolUse, ServerToolUse: &ir.ServerToolUse{
+				ID: "srvtoolu_2", Name: "web_search", Input: []byte(`{"query":"go"}`)}},
+			{Type: ir.BlockWebSearchToolResult, WebSearchToolResult: &ir.WebSearchToolResult{
+				ToolUseID: "srvtoolu_2",
+				Results:   []ir.WebSearchResult{{Title: "Go", URL: "https://go.dev", Snippet: "fast"}}}},
+			{Type: ir.BlockText, Text: "summary"},
+		},
+	}
+	out, err := New().EncodeResponse(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"type":"server_tool_use"`,
+		`"srvtoolu_2"`,
+		`"type":"web_search_tool_result"`,
+		`"encrypted_content":"fast"`,
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("response missing %s: %s", want, out)
+		}
+	}
+}
+
+// 流式编码：server_tool_use 块参数经 input_json_delta 下发，
+// web_search_tool_result 块 content 全量随块开始下发。
+func TestServerToolBlocks_Stream(t *testing.T) {
+	enc := New().NewStreamEncoder()
+	var out []byte
+	feed := func(ev ir.Event) {
+		t.Helper()
+		frames, err := enc.Encode(ev)
+		if err != nil {
+			t.Fatalf("encode %v: %v", ev.Type, err)
+		}
+		for _, fr := range frames {
+			out = append(out, fr...)
+		}
+	}
+	stu := ir.Event{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{
+		Type:          ir.BlockServerToolUse,
+		ServerToolUse: &ir.ServerToolUse{ID: "srvtoolu_3", Name: "web_search", Input: []byte(`{"query":"go"}`)},
+	}}
+	feed(stu)
+	feed(ir.Event{Type: ir.EvToolInput, Index: 0, Text: `{"query":"go"}`})
+	feed(ir.Event{Type: ir.EvBlockStop, Index: 0})
+	feed(ir.Event{Type: ir.EvBlockStart, Index: 1, Block: &ir.Block{
+		Type: ir.BlockWebSearchToolResult,
+		WebSearchToolResult: &ir.WebSearchToolResult{ToolUseID: "srvtoolu_3",
+			Results: []ir.WebSearchResult{{Title: "Go", URL: "https://go.dev", Snippet: "fast"}}},
+	}})
+	feed(ir.Event{Type: ir.EvBlockStop, Index: 1})
+	for _, fr := range enc.Finish() {
+		out = append(out, fr...)
+	}
+
+	s := string(out)
+	for _, want := range []string{
+		`"type":"server_tool_use"`,
+		`"id":"srvtoolu_3"`,
+		`"input":{}`,
+		`"partial_json":"{\"query\":\"go\"}"`,
+		`"type":"web_search_tool_result"`,
+		`"encrypted_content":"fast"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("stream missing %s:\n%s", want, s)
+		}
 	}
 }

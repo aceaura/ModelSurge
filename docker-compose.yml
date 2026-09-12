@@ -1,0 +1,11 @@
+services:
+  relayd:
+    build: .
+    image: relayd:latest
+    container_name: relayd
+    ports:
+      - "127.0.0.1:18099:18099"
+    volumes:
+      - ./relayd-ark.yaml:/app/relayd.yaml:ro
+      - ./data:/data
+    restart: unless-stopped

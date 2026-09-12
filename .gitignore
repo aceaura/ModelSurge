@@ -15,3 +15,11 @@ frontend/.flutter-plugins-dependencies
 .DS_Store
 Thumbs.db
 .vscode/
+.kiro/
+
+# Local configs with real keys (never commit)
+relayd-ark.yaml
+relayd-local.yaml
+
+# Runtime SQLite data (accounts table contains real upstream keys)
+data/

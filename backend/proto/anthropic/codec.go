@@ -142,6 +142,12 @@ func decodeBlock(b block) ir.Block {
 	case "thinking":
 		out.Type = ir.BlockThinking
 		out.Thinking = &ir.Thinking{Text: b.Thinking, Signature: b.Signature, SignatureFrom: ir.SigFrom(Name, b.Signature)}
+	case "server_tool_use":
+		out.Type = ir.BlockServerToolUse
+		out.ServerToolUse = &ir.ServerToolUse{ID: b.ID, Name: b.Name, Input: b.Input}
+	case "web_search_tool_result":
+		out.Type = ir.BlockWebSearchToolResult
+		out.WebSearchToolResult = decodeWebSearchToolResult(b.ToolUseID, b.Content)
 	default:
 		// 未知块降级为文本，保证不丢信息
 		out.Type = ir.BlockText
@@ -163,6 +169,23 @@ func decodeToolResultContent(raw json.RawMessage) []ir.Block {
 		return nil
 	}
 	return decodeBlocks(blocks)
+}
+
+// decodeWebSearchToolResult web_search_tool_result.content 子块数组 -> IR 结果。
+func decodeWebSearchToolResult(toolUseID string, raw json.RawMessage) *ir.WebSearchToolResult {
+	var rs []webSearchResultBlock
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &rs); err != nil {
+			rs = nil
+		}
+	}
+	out := &ir.WebSearchToolResult{ToolUseID: toolUseID}
+	for _, r := range rs {
+		out.Results = append(out.Results, ir.WebSearchResult{
+			Title: r.Title, URL: r.URL, Snippet: r.EncryptedContent,
+		})
+	}
+	return out
 }
 
 func cacheCtlString(c *cacheControl) string {
@@ -313,6 +336,28 @@ func encodeBlock(b ir.Block) block {
 		if b.Thinking != nil {
 			out.Thinking = b.Thinking.Text
 			out.Signature = b.Thinking.Signature
+		}
+	case ir.BlockServerToolUse:
+		out.Type = "server_tool_use"
+		if b.ServerToolUse != nil {
+			out.ID = b.ServerToolUse.ID
+			out.Name = b.ServerToolUse.Name
+			out.Input = b.ServerToolUse.Input
+			if len(out.Input) == 0 {
+				out.Input = json.RawMessage(`{}`)
+			}
+		}
+	case ir.BlockWebSearchToolResult:
+		out.Type = "web_search_tool_result"
+		if b.WebSearchToolResult != nil {
+			out.ToolUseID = b.WebSearchToolResult.ToolUseID
+			rs := make([]webSearchResultBlock, 0, len(b.WebSearchToolResult.Results))
+			for _, r := range b.WebSearchToolResult.Results {
+				rs = append(rs, webSearchResultBlock{
+					Type: "web_search_result", Title: r.Title, URL: r.URL, EncryptedContent: r.Snippet,
+				})
+			}
+			out.Content = marshal(rs)
 		}
 	default:
 		out.Type = "text"

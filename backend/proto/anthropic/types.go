@@ -37,20 +37,30 @@ type message struct {
 }
 
 // block 是 Anthropic content block 的万能结构：
-// 同一结构承载 text/image/tool_use/tool_result/thinking 与流式 delta。
+// 同一结构承载 text/image/tool_use/tool_result/thinking 与流式 delta；
+// server_tool_use 复用 ID/Name/Input，web_search_tool_result 复用
+// ToolUseID/Content（Content 为 web_search_result 子块数组）。
 type block struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
-	Source    *imageSource    `json:"source,omitempty"`    // image
-	ID        string          `json:"id,omitempty"`        // tool_use
-	Name      string          `json:"name,omitempty"`      // tool_use
-	Input     json.RawMessage `json:"input,omitempty"`     // tool_use
+	Source    *imageSource    `json:"source,omitempty"` // image
+	ID        string          `json:"id,omitempty"`     // tool_use / server_tool_use
+	Name      string          `json:"name,omitempty"`   // tool_use / server_tool_use
+	Input     json.RawMessage `json:"input,omitempty"`  // tool_use / server_tool_use
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`   // tool_result（string 或 []block）
+	Content   json.RawMessage `json:"content,omitempty"` // tool_result / web_search_tool_result
 	IsError   bool            `json:"is_error,omitempty"`
 	Thinking  string          `json:"thinking,omitempty"`
 	Signature string          `json:"signature,omitempty"`
 	CacheCtl  *cacheControl   `json:"cache_control,omitempty"`
+}
+
+// webSearchResultBlock web_search_tool_result.content 的子块形态。
+type webSearchResultBlock struct {
+	Type             string `json:"type"` // "web_search_result"
+	Title            string `json:"title"`
+	URL              string `json:"url"`
+	EncryptedContent string `json:"encrypted_content"` // 原文摘要（KiroaaS 语义）
 }
 
 type imageSource struct {
@@ -81,13 +91,13 @@ type toolChoice struct {
 
 // streamEvent 统一解析所有 SSE 事件的 data 载荷，按 Type 分派。
 type streamEvent struct {
-	Type         string          `json:"type"`
-	Index        int             `json:"index,omitempty"`
-	Message      *eventMessage   `json:"message,omitempty"`       // message_start
-	ContentBlock *block          `json:"content_block,omitempty"` // content_block_start
-	Delta        *delta          `json:"delta,omitempty"`         // content_block_delta / message_delta
-	Usage        *usage          `json:"usage,omitempty"`         // message_delta
-	Error        *errorBody      `json:"error,omitempty"`         // error
+	Type         string        `json:"type"`
+	Index        int           `json:"index,omitempty"`
+	Message      *eventMessage `json:"message,omitempty"`       // message_start
+	ContentBlock *block        `json:"content_block,omitempty"` // content_block_start
+	Delta        *delta        `json:"delta,omitempty"`         // content_block_delta / message_delta
+	Usage        *usage        `json:"usage,omitempty"`         // message_delta
+	Error        *errorBody    `json:"error,omitempty"`         // error
 }
 
 type eventMessage struct {
@@ -97,12 +107,12 @@ type eventMessage struct {
 }
 
 type delta struct {
-	Type        string          `json:"type"` // text_delta / input_json_delta / thinking_delta / signature_delta / (message_delta 时为空)
-	Text        string          `json:"text,omitempty"`
-	PartialJSON string          `json:"partial_json,omitempty"`
-	Thinking    string          `json:"thinking,omitempty"`
-	Signature   string          `json:"signature,omitempty"`
-	StopReason  string          `json:"stop_reason,omitempty"` // message_delta
+	Type        string `json:"type"` // text_delta / input_json_delta / thinking_delta / signature_delta / (message_delta 时为空)
+	Text        string `json:"text,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
+	Thinking    string `json:"thinking,omitempty"`
+	Signature   string `json:"signature,omitempty"`
+	StopReason  string `json:"stop_reason,omitempty"` // message_delta
 }
 
 type usage struct {
@@ -120,13 +130,13 @@ type errorBody struct {
 // ---- 非流式响应 DTO ----
 
 type response struct {
-	ID         string   `json:"id"`
-	Type       string   `json:"type"`
-	Role       string   `json:"role"`
-	Model      string   `json:"model"`
-	Content    []block  `json:"content"`
-	StopReason string   `json:"stop_reason"`
-	Usage      usage    `json:"usage"`
+	ID         string  `json:"id"`
+	Type       string  `json:"type"`
+	Role       string  `json:"role"`
+	Model      string  `json:"model"`
+	Content    []block `json:"content"`
+	StopReason string  `json:"stop_reason"`
+	Usage      usage   `json:"usage"`
 }
 
 // errorResponse 是 Anthropic 错误外形：{"type":"error","error":{...}}。

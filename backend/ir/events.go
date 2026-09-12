@@ -5,17 +5,17 @@ package ir
 type EventType string
 
 const (
-	EvMessageStart  EventType = "message_start"   // 流开始，携带 MessageID/Model，可含初始 Usage
-	EvBlockStart    EventType = "block_start"     // 内容块开始，Block 携带类型（text/thinking/tool_use 含 id+name）
-	EvTextDelta     EventType = "text_delta"      // 文本增量，Text 为增量内容
-	EvThinkingDelta EventType = "thinking_delta"  // 推理增量
-	EvSigDelta      EventType = "signature_delta" // thinking 签名增量（BlockThinking 块的 Signature）
-	EvToolInput     EventType = "input_json_delta"// tool_use 参数 JSON 增量，Text 为 JSON 片段
-	EvBlockStop     EventType = "block_stop"      // 内容块结束
-	EvMessageDelta  EventType = "message_delta"   // 携带 StopReason 与最终 Usage
-	EvMessageStop   EventType = "message_stop"    // 流正常结束
-	EvPing          EventType = "ping"            // 保活
-	EvError         EventType = "error"           // 流内错误，Err 非空
+	EvMessageStart  EventType = "message_start"    // 流开始，携带 MessageID/Model，可含初始 Usage
+	EvBlockStart    EventType = "block_start"      // 内容块开始，Block 携带类型（text/thinking/tool_use 含 id+name）
+	EvTextDelta     EventType = "text_delta"       // 文本增量，Text 为增量内容
+	EvThinkingDelta EventType = "thinking_delta"   // 推理增量
+	EvSigDelta      EventType = "signature_delta"  // thinking 签名增量（BlockThinking 块的 Signature）
+	EvToolInput     EventType = "input_json_delta" // tool_use 参数 JSON 增量，Text 为 JSON 片段
+	EvBlockStop     EventType = "block_stop"       // 内容块结束
+	EvMessageDelta  EventType = "message_delta"    // 携带 StopReason 与最终 Usage
+	EvMessageStop   EventType = "message_stop"     // 流正常结束
+	EvPing          EventType = "ping"             // 保活
+	EvError         EventType = "error"            // 流内错误，Err 非空
 )
 
 // Event 一个流式事件。Index 为内容块序号（block 级事件有效）。

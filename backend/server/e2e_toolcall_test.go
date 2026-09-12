@@ -42,7 +42,7 @@ data: [DONE]
 	s := server.New(&config.Config{Upstreams: []config.Upstream{{
 		Name: "mock", Protocol: "openai-chat", BaseURL: upSrv.URL, APIKey: "sk-mock",
 		Models: map[string]string{"test-model": "native-model"},
-	}}})
+	}}}, nil)
 	gw := httptest.NewServer(s.Handler())
 	defer gw.Close()
 

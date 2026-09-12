@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"relayd/backend/account"
 	"relayd/backend/config"
 	"relayd/backend/ir"
 	"relayd/backend/proto"
@@ -22,46 +23,123 @@ import (
 // 重试原则：只要还没向客户端写出任何字节（连接失败、429/5xx、
 // 首事件超时、非流式聚合失败），就换下一个候选上游重发；
 // 一旦写出第一个字节即锁死，错误只能在流内就地渲染。
+//
+// 调度模式（sched != nil，账号池）：候选来自 account.Manager。
+// 限流（429）→ 账号冷却并切号；鉴权失败（401/403）→ 账号禁用并切号；
+// 瞬时错误（5xx/网络/超时）→ 原地重试同账号，不轻易切（保缓存命中）。
 type Forwarder struct {
-	client            *http.Client
-	upstreams         []config.Upstream
-	firstTokenTimeout time.Duration
-	estimateUsage     bool
+	client             *http.Client
+	upstreams          []config.Upstream
+	firstTokenTimeout  time.Duration
+	estimateUsage      bool
+	sched              *account.Manager
+	sameAccountRetries int
+	trunc              *TruncationTracker
+
+	// kiro 段运行参数（零值 = 不生效）。
+	kiroFirstTokenTimeout    time.Duration // kiro 候选首事件超时；0 = 沿用全局
+	kiroStreamingReadTimeout time.Duration // kiro 流式 chunk 间看门狗；0 = 禁用
+	kiroWebSearchInject      bool          // web_search 注入全局默认（账号级可另开）
 }
 
-// NewForwarder 构造转发器。
-func NewForwarder(cfg *config.Config) *Forwarder {
-	return &Forwarder{
-		client:            &http.Client{Timeout: 0}, // 流式请求不设整体超时
+// NewForwarder 构造转发器。sched 为 nil 时纯静态（config.Upstreams 顺序）。
+func NewForwarder(cfg *config.Config, sched *account.Manager) *Forwarder {
+	f := &Forwarder{
+		// Kiro 出站流量经云中转/调试 transport（按配置，两项都关时为默认）
+		client:            &http.Client{Timeout: 0, Transport: account.KiroTransport()},
 		upstreams:         cfg.Upstreams,
 		firstTokenTimeout: cfg.FirstTokenTimeoutDur,
 		estimateUsage:     cfg.EstimateUsage,
+		sched:             sched,
+		trunc:             NewTruncationTracker(cfg.TruncationRecoveryEnabled),
 	}
+	if sched != nil && cfg.Scheduler != nil {
+		f.sameAccountRetries = cfg.Scheduler.SameAccountRetries
+	}
+	if k := cfg.Kiro; k != nil {
+		f.kiroFirstTokenTimeout = k.FirstTokenTimeoutDur
+		f.kiroStreamingReadTimeout = k.StreamingReadTimeoutDur
+		f.kiroWebSearchInject = k.WebSearchInject
+	}
+	return f
 }
 
 // candidate 一个可服务某 canonical model 的上游及其 native 模型名与 codec。
 type candidate struct {
-	up     config.Upstream
-	native string
-	codec  proto.Codec
+	up      config.Upstream  // 静态上游配置；账号模式下仅承载 Name/Protocol 等基础信息
+	acc     *account.Account // 调度模式下的账号（nil = 静态上游）
+	native  string
+	codec   proto.Codec
+	resolve endpointResolver // 每请求解析 URL 与鉴权头（kiro 动态取 token/host）
+}
+
+// endpointResolver 解析一次上游请求的 URL 与请求头。静态上游构造时固化；
+// kiro 账号每次请求现取 token（含预刷新）与 host 分流。
+type endpointResolver func(ctx context.Context) (url string, headers map[string]string, err *ir.Error)
+
+// staticEndpoint 静态上游 / api-key 账号：URL 与鉴权头固定。
+func staticEndpoint(u config.Upstream, nativeModel string) endpointResolver {
+	url, headers := endpoint(u, nativeModel)
+	return func(context.Context) (string, map[string]string, *ir.Error) {
+		return url, headers, nil
+	}
+}
+
+// kiroEndpoint kiro 账号：每次请求现取 token（GetAccessToken 含预刷新），
+// host 按 profileArn 分流（runtime/q），头伪造 KiroIDE 指纹。
+func kiroEndpoint(rt *account.KiroRuntime) endpointResolver {
+	return func(ctx context.Context) (string, map[string]string, *ir.Error) {
+		token, _, err := rt.Auth.GetAccessToken(ctx)
+		if err != nil {
+			return "", nil, &ir.Error{StatusCode: 401, Type: ir.ErrTypeAuth,
+				Message: "kiro token: " + err.Error(), Retryable: true}
+		}
+		headers := account.KiroHeaders(rt.Auth.Fingerprint(), token, account.TargetGenerateAssistantResponse)
+		return rt.Auth.ChatHost() + "/generateAssistantResponse", headers, nil
+	}
 }
 
 // candidates 按 canonical model 列出候选上游（每个上游至多一次）：
 // 显式 models 映射优先，透传型上游（models 为空）兜底。
+// kiro 协议只经账号池调度（凭据在 KiroAccount，静态 upstream 无从解析）。
 func (f *Forwarder) candidates(model string) []candidate {
 	var mapped, passthrough []candidate
 	for _, u := range f.upstreams {
+		if u.Protocol == "kiro" {
+			continue
+		}
 		c, err := proto.Get(u.Protocol)
 		if err != nil {
 			continue
 		}
 		if native, ok := u.Models[model]; ok {
-			mapped = append(mapped, candidate{u, native, c})
+			mapped = append(mapped, candidate{up: u, native: native, codec: c, resolve: staticEndpoint(u, native)})
 		} else if len(u.Models) == 0 {
-			passthrough = append(passthrough, candidate{u, model, c})
+			passthrough = append(passthrough, candidate{up: u, native: model, codec: c, resolve: staticEndpoint(u, model)})
 		}
 	}
 	return append(mapped, passthrough...)
+}
+
+// candidatesFor 统一候选列表：调度模式来自账号管理器（跳过冷却/禁用），
+// 静态模式来自配置。
+func (f *Forwarder) candidatesFor(model string) []candidate {
+	if f.sched == nil {
+		return f.candidates(model)
+	}
+	var out []candidate
+	tried := map[string]bool{}
+	for {
+		acc, ok := f.sched.Next(model, tried)
+		if !ok {
+			break
+		}
+		tried[acc.Name] = true
+		if cand, err := f.accountCandidate(acc, model); err == nil {
+			out = append(out, cand)
+		}
+	}
+	return out
 }
 
 // endpoint 上游请求的 URL 与鉴权头。
@@ -88,6 +166,11 @@ const maxErrBody = 4 * 1024
 // Forward 执行一次转发。clientCodec 为客户端协议 codec（用于错误渲染与响应编码），
 // req.Stream 表示客户端是否要求流式。所有响应直接写入 w。
 func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, req *ir.Request) {
+	f.trunc.InjectNotices(req) // 上次截断的恢复提示（命中才修改）
+	if f.sched != nil {
+		f.forwardScheduled(ctx, w, clientCodec, req)
+		return
+	}
 	cands := f.candidates(req.Model)
 	if len(cands) == 0 {
 		writeError(w, clientCodec, ir.NewHTTPError(404, fmt.Sprintf("no upstream serves model %q", req.Model)))
@@ -101,7 +184,7 @@ func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCo
 		if i > 0 {
 			log.Printf("relay: model %q retry with upstream %s (%s): %s", req.Model, cand.up.Name, cand.up.Protocol, lastErr)
 		}
-		wrote, err := f.attempt(ctx, w, clientCodec, cand, req)
+		wrote, err := f.attempt(ctx, w, clientCodec, cand, req, nil)
 		if err == nil {
 			return
 		}
@@ -119,18 +202,165 @@ func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCo
 	}
 }
 
+// accountCandidate 把账号转为转发候选。api-key 走静态端点；
+// kiro 走动态端点（每次请求现取 token）并要求运行时就位。
+func (f *Forwarder) accountCandidate(a *account.Account, model string) (candidate, error) {
+	protocol := a.Protocol
+	if a.Type == account.TypeKiro {
+		protocol = "kiro"
+	}
+	c, err := proto.Get(protocol)
+	if err != nil {
+		return candidate{}, err
+	}
+	native, _ := a.Serving(model)
+	cand := candidate{
+		up: config.Upstream{
+			Name: a.Name, Protocol: protocol, BaseURL: a.BaseURL, APIKey: a.APIKey,
+		},
+		acc:    a,
+		native: native,
+		codec:  c,
+	}
+	if a.Type == account.TypeKiro {
+		rt := f.sched.KiroRuntimeOf(a.Name)
+		if rt == nil {
+			return candidate{}, fmt.Errorf("kiro runtime missing for account %q", a.Name)
+		}
+		cand.resolve = kiroEndpoint(rt)
+	} else {
+		cand.resolve = staticEndpoint(cand.up, native)
+	}
+	return cand, nil
+}
+
+// forwardScheduled 账号池调度模式：粘性取号 + 错误分类处置。
+func (f *Forwarder) forwardScheduled(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, req *ir.Request) {
+	tried := map[string]bool{}
+	var lastErr *ir.Error
+	for {
+		if ctx.Err() != nil {
+			return // 客户端已断开
+		}
+		acc, ok := f.sched.Next(req.Model, tried)
+		if !ok {
+			if lastErr == nil {
+				lastErr = ir.NewHTTPError(503, "no available account: all cooling down or disabled")
+			}
+			writeError(w, clientCodec, lastErr)
+			return
+		}
+		tried[acc.Name] = true
+		cand, err := f.accountCandidate(acc, req.Model)
+		if err != nil {
+			lastErr = ir.NewHTTPError(500, err.Error())
+			continue
+		}
+		if len(tried) > 1 {
+			log.Printf("relay: model %q switch to account %s: %s", req.Model, acc.Name, lastErr)
+		}
+		isKiro := acc.Type == account.TypeKiro
+		forceRefreshed := false
+		switchAccount := false
+		for try := 0; ; try++ {
+			onUsage := func(u *ir.Usage) {
+				if u == nil || u.Estimated {
+					return // 估算值不入库
+				}
+				f.sched.ReportUsage(acc.Name, account.Usage{
+					InputTokens:   int64(u.InputTokens),
+					OutputTokens:  int64(u.OutputTokens),
+					CacheRead:     int64(u.CacheReadTokens),
+					CacheCreation: int64(u.CacheCreationTokens),
+				})
+			}
+			wrote, aerr := f.attempt(ctx, w, clientCodec, cand, req, onUsage)
+			if aerr == nil {
+				f.sched.ReportSuccess(acc.Name)
+				return
+			}
+			lastErr = aerr
+			if wrote {
+				f.sched.ReportSuccess(acc.Name) // 已写出字节，流已结束——按成功结算
+				return
+			}
+			switch {
+			case aerr.StatusCode == 429:
+				f.sched.ReportLimit(acc.Name, aerr.Message)
+				switchAccount = true
+			case isKiro && aerr.StatusCode == 402:
+				// 配额超限：冷却到 GetUsageLimits 重置日期（不可得兜底 1h）+ 切号
+				until := f.quotaCooldownUntil(ctx, acc)
+				f.sched.ReportRecoverable(acc.Name, until)
+				log.Printf("relay: kiro account %s quota exceeded, cooling until %s", acc.Name, until.Format(time.RFC3339))
+				switchAccount = true
+			case aerr.StatusCode == 401 || aerr.StatusCode == 403:
+				// kiro：强刷 token 原地重试 1 次；仍败才禁用
+				if isKiro && !forceRefreshed {
+					forceRefreshed = true
+					if rt := f.sched.KiroRuntimeOf(acc.Name); rt != nil {
+						if ferr := rt.Auth.ForceRefresh(ctx); ferr == nil {
+							log.Printf("relay: kiro account %s %d, token force refreshed, retrying in place", acc.Name, aerr.StatusCode)
+							continue
+						} else {
+							log.Printf("relay: kiro account %s force refresh failed: %v", acc.Name, ferr)
+						}
+					}
+				}
+				f.sched.ReportAuthFailure(acc.Name)
+				switchAccount = true
+			case isKiro && aerr.Reason == account.ReasonInvalidModelID:
+				// 订阅不含该模型：换号试试，不惩罚本账号
+				log.Printf("relay: kiro account %s rejects model %q (subscription), switching", acc.Name, req.Model)
+				switchAccount = true
+			case !aerr.Retryable:
+				writeError(w, clientCodec, aerr)
+				return
+			case try >= f.sameAccountRetries:
+				log.Printf("relay: account %s transient failure persisted, switching", acc.Name)
+				f.sched.ReportTransientFailure(acc.Name)
+				switchAccount = true
+			default:
+				log.Printf("relay: account %s transient error, retrying in place (try %d): %s", acc.Name, try+1, aerr)
+			}
+			if switchAccount {
+				break
+			}
+		}
+	}
+}
+
+// quotaFallbackCooldown GetUsageLimits 不可得（免费账号无 profileArn 等）时
+// 402 配额冷却的兜底时长。
+const quotaFallbackCooldown = time.Hour
+
+// quotaCooldownUntil kiro 402 的冷却时刻：resetDate 拉取失败/缺失兜底 1h。
+func (f *Forwarder) quotaCooldownUntil(ctx context.Context, acc *account.Account) time.Time {
+	if rt := f.sched.KiroRuntimeOf(acc.Name); rt != nil {
+		if until := rt.QuotaCooldownUntil(ctx); until.After(time.Now()) {
+			return until
+		}
+	}
+	return time.Now().Add(quotaFallbackCooldown)
+}
+
 // attempt 对单个上游做一次转发尝试。wrote 表示是否已向客户端写出字节。
-func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request) (wrote bool, err *ir.Error) {
+// onUsage 非空时上报响应中的真实 usage（调度模式记账用；估算值不调）。
+func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, onUsage func(*ir.Usage)) (wrote bool, err *ir.Error) {
 	// 上游永远流式
 	upReq := req.Clone()
 	upReq.Model = cand.native
 	upReq.Stream = true
+	f.prepareKiroMetadata(cand, upReq) // profileArn 载荷必带 + web_search 注入标志
 	body, encErr := cand.codec.EncodeRequest(upReq)
 	if encErr != nil {
 		return false, ir.NewHTTPError(400, "encode upstream request: "+encErr.Error())
 	}
 
-	url, headers := endpoint(cand.up, cand.native)
+	url, headers, rerr := cand.resolve(ctx)
+	if rerr != nil {
+		return false, rerr
+	}
 	actx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	httpReq, reqErr := http.NewRequestWithContext(actx, http.MethodPost, url, bytes.NewReader(body))
@@ -150,11 +380,20 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		}
 		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream unreachable: " + doErr.Error(), Retryable: true}
 	}
+	// kiro 候选的 chunk 间读超时看门狗（须在 defer Close 前装上，
+	// 使 defer 关闭的是看门狗 body——停表并关底层连接）。
+	if f.kiroStreamingReadTimeout > 0 && cand.acc != nil && cand.acc.Type == account.TypeKiro {
+		resp.Body = newIdleTimeoutBody(resp.Body, f.kiroStreamingReadTimeout)
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
-		return false, ir.NewHTTPError(resp.StatusCode, excerpt(string(errBody)))
+		e := ir.NewHTTPError(resp.StatusCode, excerpt(string(errBody)))
+		if cand.acc != nil && cand.acc.Type == account.TypeKiro {
+			e.Reason, _ = account.ParseKiroErrorReason(errBody) // 调度分类用（INVALID_MODEL_ID 等）
+		}
+		return false, e
 	}
 
 	// 已锁定该上游：落有损转换诊断（日志 + 响应头，须在 WriteHeader 前设置）
@@ -163,9 +402,20 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		w.Header().Set("X-Relayd-Notes", strings.Join(notes, "; "))
 	}
 
+	// body 形态适配（可选 codec 缝）：kiro 二进制 eventstream -> SSE；
+	// 适配过的 body 一律走流式路径。
+	var upBody io.Reader = resp.Body
+	isSSE := strings.Contains(resp.Header.Get("Content-Type"), "event-stream")
+	if bw, ok := cand.codec.(interface{ WrapResponseBody(io.Reader) io.Reader }); ok {
+		upBody = bw.WrapResponseBody(resp.Body)
+		isSSE = true
+	}
+
+	dec := f.newDecoder(cand, req)
+
 	// 兜底：上游忽略 stream=true 返回完整 JSON
-	if !strings.Contains(resp.Header.Get("Content-Type"), "event-stream") {
-		full, readErr := io.ReadAll(resp.Body)
+	if !isSSE {
+		full, readErr := io.ReadAll(upBody)
 		if readErr != nil {
 			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: readErr.Error(), Retryable: true}
 		}
@@ -174,20 +424,61 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "decode upstream response: " + decErr.Error(), Retryable: true}
 		}
 		f.estimateUsageOnResponse(req, irResp, cand.up.Name)
+		if onUsage != nil {
+			onUsage(&irResp.Usage)
+		}
 		writeResponse(w, clientCodec, irResp, req.Stream)
 		return true, nil
 	}
 
 	if req.Stream {
-		return f.streamUpstreamToClient(cancel, w, clientCodec, cand, req, resp.Body)
+		return f.streamUpstreamToClient(ctx, cancel, w, clientCodec, cand, req, dec, upBody, onUsage)
 	}
-	return f.collectUpstreamToClient(cancel, w, clientCodec, cand, req, resp.Body)
+	return f.collectUpstreamToClient(ctx, cancel, w, clientCodec, cand, req, dec, upBody, onUsage)
+}
+
+// newDecoder 构造上游流解码器；kiro 解码器注入模型名（message_start 回显）
+// 与输入上限（context_usage -> input 换算）。注入走可选接口，relay 不依赖具体类型。
+func (f *Forwarder) newDecoder(cand candidate, req *ir.Request) proto.StreamDecoder {
+	dec := cand.codec.NewStreamDecoder()
+	if cand.acc == nil || cand.acc.Type != account.TypeKiro {
+		return dec
+	}
+	if sd, ok := dec.(interface{ SetModel(string) }); ok {
+		sd.SetModel(req.Model)
+	}
+	if f.sched != nil {
+		if rt := f.sched.KiroRuntimeOf(cand.acc.Name); rt != nil {
+			if sd, ok := dec.(interface{ SetMaxInputTokens(int) }); ok {
+				sd.SetMaxInputTokens(int(rt.Models.MaxInputTokens(cand.native)))
+			}
+		}
+	}
+	return dec
+}
+
+// recordTruncation 流结束后探测解码器的截断上报缝并记录（kiro 实现）。
+func (f *Forwarder) recordTruncation(dec proto.StreamDecoder, upName string) {
+	tr, ok := dec.(proto.TruncationReporter)
+	if !ok {
+		return
+	}
+	f.trunc.Record(upName, tr.TruncatedTools(), tr.ContentTruncated(), tr.TruncatedContent())
+}
+
+// candidateFirstTokenTimeout 某候选等上游首事件的有效超时：
+// kiro 候选配置了专用值则覆盖，否则沿用全局。
+func (f *Forwarder) candidateFirstTokenTimeout(cand candidate) time.Duration {
+	if f.kiroFirstTokenTimeout > 0 && cand.acc != nil && cand.acc.Type == account.TypeKiro {
+		return f.kiroFirstTokenTimeout
+	}
+	return f.firstTokenTimeout
 }
 
 // awaitFirstEvent 等上游的第一个 SSE 事件；超时则取消本次请求并返回可重试错误。
 // 参考 kiro-gateway stream_with_first_token_retry：建连成功不代表上游健康，
 // 迟迟不出首 chunk 应视为失败换上游。
-func (f *Forwarder) awaitFirstEvent(er *EventReader, cancel context.CancelFunc) (SSEEvent, bool, *ir.Error) {
+func (f *Forwarder) awaitFirstEvent(er *EventReader, cancel context.CancelFunc, timeout time.Duration) (SSEEvent, bool, *ir.Error) {
 	type result struct {
 		ev  SSEEvent
 		ok  bool
@@ -201,7 +492,7 @@ func (f *Forwarder) awaitFirstEvent(er *EventReader, cancel context.CancelFunc) 
 	wrapErr := func(err error) *ir.Error {
 		return &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream stream read: " + err.Error(), Retryable: true}
 	}
-	if f.firstTokenTimeout <= 0 {
+	if timeout <= 0 {
 		r := <-ch
 		if r.err != nil {
 			return SSEEvent{}, false, wrapErr(r.err)
@@ -214,21 +505,21 @@ func (f *Forwarder) awaitFirstEvent(er *EventReader, cancel context.CancelFunc) 
 			return SSEEvent{}, false, wrapErr(r.err)
 		}
 		return r.ev, r.ok, nil
-	case <-time.After(f.firstTokenTimeout):
+	case <-time.After(timeout):
 		cancel() // 杀掉阻塞中的 body 读取
 		<-ch     // 等读取 goroutine 退出，避免泄露
 		return SSEEvent{}, false, &ir.Error{
 			StatusCode: 504, Type: ir.ErrTypeUpstream,
-			Message:   fmt.Sprintf("upstream produced no event within %s", f.firstTokenTimeout),
+			Message:   fmt.Sprintf("upstream produced no event within %s", timeout),
 			Retryable: true,
 		}
 	}
 }
 
 // streamUpstreamToClient 上游 SSE -> IR 事件 -> 客户端 SSE，逐 chunk 透传转换。
-func (f *Forwarder) streamUpstreamToClient(cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, body io.Reader) (bool, *ir.Error) {
+func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	er := NewEventReader(body)
-	first, ok, firstErr := f.awaitFirstEvent(er, cancel)
+	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand))
 	if firstErr != nil {
 		return false, firstErr
 	}
@@ -242,12 +533,20 @@ func (f *Forwarder) streamUpstreamToClient(cancel context.CancelFunc, w http.Res
 	w.WriteHeader(200)
 	flush, _ := w.(http.Flusher)
 
-	dec := cand.codec.NewStreamDecoder()
 	enc := clientCodec.NewStreamEncoder()
 	var outText strings.Builder
+	var startUsage ir.Usage // message_start 携带的 input/cache 用量，记账时与 delta 合并
 	emit := func(events []ir.Event) bool {
 		for _, ev := range events {
+			if ev.Type == ir.EvMessageStart && ev.Usage != nil {
+				startUsage = *ev.Usage
+			}
 			ev = f.estimateUsageOnEvent(req, &outText, ev, cand.up.Name)
+			if onUsage != nil && ev.Type == ir.EvMessageDelta && ev.Usage != nil {
+				merged := startUsage
+				merged.MergeNonZero(*ev.Usage)
+				onUsage(&merged)
+			}
 			frames, err := enc.Encode(ev)
 			if err != nil {
 				frames = [][]byte{clientCodec.RenderStreamError(&ir.Error{Type: ir.ErrTypeUpstream, Message: err.Error()})}
@@ -288,7 +587,8 @@ func (f *Forwarder) streamUpstreamToClient(cancel context.CancelFunc, w http.Res
 			return true, nil
 		}
 	}
-	emit(dec.Finish())
+	emit(f.interceptWebSearch(ctx, cand, req, dec.Finish()))
+	f.recordTruncation(dec, cand.up.Name)
 	for _, fr := range enc.Finish() {
 		_, _ = w.Write(fr)
 	}
@@ -301,9 +601,9 @@ func (f *Forwarder) streamUpstreamToClient(cancel context.CancelFunc, w http.Res
 // collectUpstreamToClient 聚合上游流，向非流式客户端一次性返回完整 JSON。
 // 聚合期间不向客户端写任何字节，因此聚合失败仍可换上游重试
 // （代价是失败上游可能已计费——pre-write 重试的固有取舍）。
-func (f *Forwarder) collectUpstreamToClient(cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, body io.Reader) (bool, *ir.Error) {
+func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	er := NewEventReader(body)
-	first, ok, firstErr := f.awaitFirstEvent(er, cancel)
+	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand))
 	if firstErr != nil {
 		return false, firstErr
 	}
@@ -311,7 +611,6 @@ func (f *Forwarder) collectUpstreamToClient(cancel context.CancelFunc, w http.Re
 		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream closed stream without any event", Retryable: true}
 	}
 
-	dec := cand.codec.NewStreamDecoder()
 	agg := ir.NewAggregator()
 	feed := func(ev SSEEvent) {
 		events, err := dec.Feed(ev.Event, ev.Data)
@@ -334,9 +633,10 @@ func (f *Forwarder) collectUpstreamToClient(cancel context.CancelFunc, w http.Re
 		}
 		feed(ev)
 	}
-	for _, e := range dec.Finish() {
+	for _, e := range f.interceptWebSearch(ctx, cand, req, dec.Finish()) {
 		agg.Feed(e)
 	}
+	f.recordTruncation(dec, cand.up.Name)
 	resp, aggErr := agg.Finish()
 	if aggErr != nil {
 		// 未写任何字节：强制可重试，换上游重发
@@ -344,14 +644,19 @@ func (f *Forwarder) collectUpstreamToClient(cancel context.CancelFunc, w http.Re
 		return false, aggErr
 	}
 	f.estimateUsageOnResponse(req, resp, cand.up.Name)
+	if onUsage != nil {
+		onUsage(&resp.Usage)
+	}
 	writeResponse(w, clientCodec, resp, false)
 	return true, nil
 }
 
 // CountTokens 处理 Anthropic count_tokens 请求：优先转发给 anthropic 上游
-// 原生计数；无可用上游时本地粗估并记日志。
+// 原生计数；无可用上游时本地粗估并记日志。粗估按首个候选的协议语义
+// （kiro 账号 → kiro tokenizer；其余 → IR 通用估算）。
 func (f *Forwarder) CountTokens(ctx context.Context, req *ir.Request) (int, []byte) {
-	for _, cand := range f.candidates(req.Model) {
+	cands := f.candidatesFor(req.Model)
+	for _, cand := range cands {
 		if cand.up.Protocol != "anthropic" {
 			continue
 		}
@@ -383,6 +688,16 @@ func (f *Forwarder) CountTokens(ctx context.Context, req *ir.Request) (int, []by
 		log.Printf("relay: count_tokens upstream %s returned %d: %s", cand.up.Name, resp.StatusCode, excerpt(string(respBody)))
 	}
 	est := ir.EstimateRequestTokens(req)
+	// 协议语义估算缝：kiro codec 实现按 kiro tokenizer 语义估算
+	// （tiktoken 结构 × 1.15 Claude 修正），其余协议用 IR 通用估算。
+	for _, cand := range cands {
+		if te, ok := cand.codec.(interface {
+			EstimateRequestTokens(*ir.Request) int
+		}); ok {
+			est = te.EstimateRequestTokens(req)
+			break
+		}
+	}
 	log.Printf("relay: count_tokens estimated locally: %d tokens", est)
 	return 200, []byte(fmt.Sprintf(`{"input_tokens":%d}`, est))
 }
@@ -486,7 +801,8 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 				ir.Event{Type: ir.EvBlockStop, Index: i})
 			continue
 		}
-		events = append(events, ir.Event{Type: ir.EvBlockStart, Index: i, Block: &ir.Block{Type: blk.Type}})
+		// 全块透传（server_tool_use / web_search_tool_result 的载荷在块上）
+		events = append(events, ir.Event{Type: ir.EvBlockStart, Index: i, Block: &blk})
 		switch blk.Type {
 		case ir.BlockText:
 			if blk.Text != "" {

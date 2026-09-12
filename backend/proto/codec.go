@@ -71,6 +71,24 @@ type StreamEncoder interface {
 	Finish() [][]byte
 }
 
+// TruncatedTool 一次被上游截断的工具调用（kiro 上游会截断大工具参数）。
+type TruncatedTool struct {
+	ID     string
+	Name   string // 客户端可见名（别名已还原）
+	Reason string // 截断诊断（如 "missing 2 closing brace(s)"）
+}
+
+// TruncationReporter 流式解码器可选缝：上报上游截断（Finish 后有效）。
+// relay 探测本接口记录截断状态，供下次请求注入恢复提示。
+type TruncationReporter interface {
+	// TruncatedTools 参数形似被上游截断的工具调用列表。
+	TruncatedTools() []TruncatedTool
+	// ContentTruncated 流无完成信号但已有正文（且无工具调用）。
+	ContentTruncated() bool
+	// TruncatedContent 被截断的正文全文（内容哈希关联下次请求用）。
+	TruncatedContent() string
+}
+
 var registry = map[string]Codec{}
 
 // Register 注册 codec，重名 panic（启动期编程错误）。

@@ -118,9 +118,10 @@ func (e *streamEncoder) blockStartFrame(index int, b *ir.Block) []byte {
 		if cb.Type == "thinking" {
 			cb.Thinking = ""
 		}
-		if cb.Type == "tool_use" {
-			cb.Input = json.RawMessage(`{}`)
+		if cb.Type == "tool_use" || cb.Type == "server_tool_use" {
+			cb.Input = json.RawMessage(`{}`) // 参数经 input_json_delta 增量下发
 		}
+		// web_search_tool_result 的 content 无增量形态，全量随块开始下发
 	} else {
 		cb = block{Type: "text"}
 	}

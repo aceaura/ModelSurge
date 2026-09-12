@@ -6,6 +6,7 @@ type Error struct {
 	StatusCode int    // HTTP 状态码；流内错误时为推断值
 	Type       string // 规范错误类型，如 "rate_limit_error"、"invalid_request_error"
 	Code       string // 协议相关错误码，原样保留
+	Reason     string // 上游错误原因码（如 Kiro "INVALID_MODEL_ID"），调度决策用
 	Message    string // 脱敏后的用户可读信息
 	Retryable  bool   // 是否可换上游重试
 }

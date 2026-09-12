@@ -15,7 +15,7 @@ import (
 
 func newGateway(t *testing.T, cfg *config.Config) *httptest.Server {
 	t.Helper()
-	gw := httptest.NewServer(server.New(cfg).Handler())
+	gw := httptest.NewServer(server.New(cfg, nil).Handler())
 	t.Cleanup(gw.Close)
 	return gw
 }

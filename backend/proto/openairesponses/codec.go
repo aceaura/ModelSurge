@@ -81,7 +81,7 @@ func decodeItem(req *ir.Request, it inputItem) {
 		appendAssistantBlock(req, b)
 	case "function_call_output":
 		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: []ir.Block{{
-			Type:      ir.BlockToolResult,
+			Type:       ir.BlockToolResult,
 			ToolResult: &ir.ToolResult{ToolUseID: it.CallID, Content: []ir.Block{{Type: ir.BlockText, Text: it.Output}}},
 		}}})
 	case "reasoning":

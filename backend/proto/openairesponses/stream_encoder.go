@@ -27,12 +27,12 @@ type streamEncoder struct {
 }
 
 type encBlock struct {
-	typ            ir.BlockType
-	itemID         string
+	typ              ir.BlockType
+	itemID           string
 	toolID, toolName string
-	text           string // text / thinking / arguments 累积
-	sig            string
-	closed         bool
+	text             string // text / thinking / arguments 累积
+	sig              string
+	closed           bool
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {

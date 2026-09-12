@@ -12,16 +12,19 @@ import (
 // streamEncoder IR 事件 -> OpenAI chunk 流。
 // 块序号 -> 工具稠密索引重映射；message_start -> role chunk；
 // message_delta -> finish chunk + 独立 usage chunk；message_stop -> [DONE]。
+// server_tool_use / web_search_tool_result 块无 OpenAI 对应形态，
+// 跳过（内容经其后的摘要文本块送达）。
 type streamEncoder struct {
 	id, model string
 	created   int64
-	toolIdx   map[int]int // block index -> dense tool index
+	toolIdx   map[int]int  // block index -> dense tool index
+	skipIdx   map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
 	nextTool  int
 	stopped   bool
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{created: time.Now().Unix(), toolIdx: map[int]int{}}
+	return &streamEncoder{created: time.Now().Unix(), toolIdx: map[int]int{}, skipIdx: map[int]bool{}}
 }
 
 func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
@@ -46,6 +49,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 				Function: functionCall{Name: ev.Block.ToolUse.Name, Arguments: ""},
 			}}}, "")}, nil
 		}
+		if ev.Block != nil && ev.Block.Type != ir.BlockText && ev.Block.Type != ir.BlockThinking {
+			e.skipIdx[ev.Index] = true // server_tool_use / web_search_tool_result
+		}
 		return nil, nil // text/thinking 块开始无需输出
 	case ir.EvTextDelta:
 		return [][]byte{e.chunk(&message{Content: json.RawMessage(marshalString(ev.Text))}, "")}, nil
@@ -54,6 +60,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvSigDelta:
 		return nil, nil // OpenAI 无签名概念，丢弃
 	case ir.EvToolInput:
+		if e.skipIdx[ev.Index] {
+			return nil, nil // 服务端工具块参数无 OpenAI 形态
+		}
 		idx, ok := e.toolIdx[ev.Index]
 		if !ok {
 			return nil, fmt.Errorf("openai-chat: tool input for unopened block %d", ev.Index)

@@ -25,6 +25,45 @@ estimate_usage: false
 # 访问日志（method/path/status/耗时），默认开；设为 false 关闭。
 access_log: true
 
+# 截断恢复（上游截断工具参数/正文后，下次请求注入合成提示），默认开。
+truncation_recovery: true
+
+# 账号池动态调度（SQLite 持久化：冷却/禁用/熔断/逐笔 usage）。
+# 不配置则纯静态转发（upstreams 顺序即优先级）。
+scheduler:
+  db_path: ./data/relayd.db      # SQLite 文件路径
+  same_account_retries: 1        # 瞬时错误（5xx/网络/超时）原地重试次数
+  cooldowns:                     # 限流（429）冷却时长
+    default: 5h                  # 窗口识别失败兜底
+    window_7h: 7h                # 7 小时窗口
+    monthly: 24h                 # 月度窗口（真实重置时间未知）
+
+# 管理面（scheduler 开启时必填）：同一 listen 端口的 /admin 前缀，
+# X-Admin-Key 鉴权，账号热增删（api-key / kiro 型）。
+admin:
+  api_key: "sk-admin-change-me"
+
+# kiro 协议账号的全局段（可选；不配置则全默认）。
+# region 为账号级可覆盖的默认；fake_reasoning / web_search_inject
+# 为账号级可另开的下限；其余为进程级运行参数。
+kiro:
+  region: us-east-1               # SSO 刷新区默认；空 = us-east-1
+  first_token_timeout: 15s        # kiro 候选首事件超时；空 = 沿用全局
+  streaming_read_timeout: 300s     # 流式 chunk 间读超时看门狗；空/0 = 禁用
+  recovery_timeout: 60s           # 熔断指数退避基数
+  max_backoff_multiplier: 1440    # 熔断冷却封顶（60s × 1440 = 24h）
+  probabilistic_retry: 0.1        # 熔断半开试探概率（0-1）
+  cache_ttl: 12h                  # kiro 模型缓存 TTL
+  fake_reasoning: false           # 合成 thinking 标签注入（伪装思考模式）
+  fake_reasoning_max_tokens: 4000 # 合成思考默认预算
+  web_search_inject: false        # web_search 工具注入（MCP 代执行）
+  # cloud:                        # 云中转（KiroaaS Cloud forward Lambda）
+  #   enabled: true
+  #   forward_url: https://cloud.kiroaas.hnew.city/forward
+  #   api_key: ""
+  debug: false                    # Kiro 出站载荷调试日志（脱敏落盘）
+  debug_dir: kiro-debug           # 调试日志目录
+
 upstreams:
   # Anthropic 订阅 / API
   - name: claude-main
@@ -57,6 +96,20 @@ upstreams:
     api_key: AIza-xxx
     models:
       gemini-2.5-pro: gemini-2.5-pro
+
+  # kiro 账号种子（protocol: kiro；凭据三选一；与 api-key 上游同池调度，
+  # 顺序即粘性优先级）。凭据轮转后以库内值为准，重启不回退。
+  - name: kiro-main
+    protocol: kiro
+    kiro:
+      refresh_token: "rt-placeholder-change-me" # 直配 refresh token
+      # creds_file: /path/to/kiro-credentials.json # Kiro IDE JSON 凭据文件
+      # cli_db: /path/to/kiro-cli/data.sqlite3    # kiro cli SQLite 路径
+      # region: us-east-1        # SSO 刷新区（默认继承 kiro.region）
+      # api_region: us-east-1    # API 区覆盖；空则按检测链推导
+      # profile_arn: ""          # 可空，首次使用时自动获取回填
+      # web_search: false        # web_search 工具注入（覆盖全局默认）
+      # fake_reasoning: false   # fake_reasoning 注入（覆盖全局默认）
 
   # models 省略 = 透传型上游：接受任意模型名原样转发（作为兜底）
   # - name: catch-all

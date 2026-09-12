@@ -137,4 +137,3 @@ func marshal(v any) []byte {
 func sseFrame(data []byte) []byte {
 	return []byte("data: " + string(data) + "\n\n")
 }
-

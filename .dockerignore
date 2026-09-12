@@ -1,0 +1,13 @@
+# 构建上下文裁剪：避免真实 key / 本地数据 / 仓库杂项进镜像。
+.git
+data
+*.exe
+*.log
+relayd-ark.yaml
+relayd-local.yaml
+node_modules
+frontend
+docs
+README.md
+kiro-debug
+*.db

@@ -77,14 +77,14 @@ type toolChoiceNamed struct {
 
 // streamEvent 统一解析流式事件载荷，按 Type 分派。
 type streamEvent struct {
-	Type         string          `json:"type"`
-	OutputIndex  int             `json:"output_index,omitempty"`
-	ContentIndex int             `json:"content_index,omitempty"`
-	SummaryIndex int             `json:"summary_index,omitempty"`
-	Item         *inputItem      `json:"item,omitempty"`    // output_item.added / done
-	Part         *contentPart    `json:"part,omitempty"`    // content_part.added
-	Delta        string          `json:"delta,omitempty"`   // *.delta
-	Response     *responseObj    `json:"response,omitempty"`// response.created / completed / incomplete / failed
+	Type         string       `json:"type"`
+	OutputIndex  int          `json:"output_index,omitempty"`
+	ContentIndex int          `json:"content_index,omitempty"`
+	SummaryIndex int          `json:"summary_index,omitempty"`
+	Item         *inputItem   `json:"item,omitempty"`     // output_item.added / done
+	Part         *contentPart `json:"part,omitempty"`     // content_part.added
+	Delta        string       `json:"delta,omitempty"`    // *.delta
+	Response     *responseObj `json:"response,omitempty"` // response.created / completed / incomplete / failed
 }
 
 type responseObj struct {
@@ -102,10 +102,10 @@ type responseObj struct {
 }
 
 type usage struct {
-	InputTokens         int `json:"input_tokens"`
-	OutputTokens        int `json:"output_tokens"`
-	TotalTokens         int `json:"total_tokens"`
-	InputTokensDetails  *struct {
+	InputTokens        int `json:"input_tokens"`
+	OutputTokens       int `json:"output_tokens"`
+	TotalTokens        int `json:"total_tokens"`
+	InputTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens,omitempty"`
 	} `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *struct {

@@ -91,16 +91,16 @@ type response struct {
 
 type choice struct {
 	Index        int      `json:"index"`
-	Message      *message `json:"message,omitempty"`  // 非流式
-	Delta        *message `json:"delta,omitempty"`    // 流式
+	Message      *message `json:"message,omitempty"` // 非流式
+	Delta        *message `json:"delta,omitempty"`   // 流式
 	FinishReason string   `json:"finish_reason,omitempty"`
 }
 
 type usage struct {
-	PromptTokens        int             `json:"prompt_tokens"`
-	CompletionTokens    int             `json:"completion_tokens"`
-	TotalTokens         int             `json:"total_tokens"`
-	PromptTokensDetails *promptDetails  `json:"prompt_tokens_details,omitempty"`
+	PromptTokens        int            `json:"prompt_tokens"`
+	CompletionTokens    int            `json:"completion_tokens"`
+	TotalTokens         int            `json:"total_tokens"`
+	PromptTokensDetails *promptDetails `json:"prompt_tokens_details,omitempty"`
 }
 
 type promptDetails struct {

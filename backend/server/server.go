@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"relayd/backend/account"
 	"relayd/backend/config"
 	"relayd/backend/ir"
 	"relayd/backend/proto"
@@ -29,12 +30,17 @@ type Server struct {
 	mux       *http.ServeMux
 	models    []string // 已配置的 canonical model 列表（/v1/models 用）
 	accessLog bool
+
+	sched    *account.Manager // 账号池调度（nil = 纯静态转发）
+	store    *account.Store   // 管理面 CRUD 落库
+	adminKey string           // X-Admin-Key；空则不挂载管理面
+	adminMux *http.ServeMux   // /admin 管理路由
 }
 
-// New 按配置构造服务。
-func New(cfg *config.Config) *Server {
+// New 按配置构造服务。sched 非空时启用账号池动态调度（限流冷却 + 粘性取号）。
+func New(cfg *config.Config, sched *account.Manager) *Server {
 	s := &Server{
-		fwd:       relay.NewForwarder(cfg),
+		fwd:       relay.NewForwarder(cfg, sched),
 		apiKey:    cfg.APIKey,
 		mux:       http.NewServeMux(),
 		accessLog: cfg.AccessLogEnabled,
@@ -65,12 +71,28 @@ func New(cfg *config.Config) *Server {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))
 	})
+	if sched != nil {
+		s.sched = sched
+		if cfg.Admin != nil && cfg.Admin.APIKey != "" {
+			s.store = sched.Store()
+			s.adminKey = cfg.Admin.APIKey
+			s.mountAdmin()
+		}
+	}
 	return s
 }
 
-// Handler 返回根 handler（访问日志 -> 鉴权 -> 路由）。
+// Handler 返回根 handler（访问日志 -> 客户端鉴权与管理面分流 -> 路由）。
+// /admin 前缀走 X-Admin-Key 鉴权（独立于客户端 api_key，避免客户端鉴权拦截管理请求）。
 func (s *Server) Handler() http.Handler {
-	return s.accessLogMiddleware(s.auth(s.mux))
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.adminMux != nil && strings.HasPrefix(r.URL.Path, "/admin") {
+			s.adminAuth(s.adminMux).ServeHTTP(w, r)
+			return
+		}
+		s.auth(s.mux).ServeHTTP(w, r)
+	})
+	return s.accessLogMiddleware(inner)
 }
 
 // statusRecorder 记录中间件层拿不到的响应状态码。

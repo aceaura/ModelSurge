@@ -19,22 +19,48 @@ const (
 type BlockType string
 
 const (
-	BlockText       BlockType = "text"
-	BlockImage      BlockType = "image"
-	BlockToolUse    BlockType = "tool_use"
-	BlockToolResult BlockType = "tool_result"
-	BlockThinking   BlockType = "thinking"
+	BlockText                BlockType = "text"
+	BlockImage               BlockType = "image"
+	BlockToolUse             BlockType = "tool_use"
+	BlockToolResult          BlockType = "tool_result"
+	BlockThinking            BlockType = "thinking"
+	BlockServerToolUse       BlockType = "server_tool_use"
+	BlockWebSearchToolResult BlockType = "web_search_tool_result"
 )
 
 // Block 消息内容块。按 Type 取用对应字段，其余字段为零值。
 type Block struct {
-	Type        BlockType
-	Text        string      // BlockText
-	Image       *Image      // BlockImage
-	ToolUse     *ToolUse    // BlockToolUse
-	ToolResult  *ToolResult // BlockToolResult
-	Thinking    *Thinking   // BlockThinking
-	CacheCtl    string      // 如 "ephemeral"，仅 Anthropic 方向保留
+	Type                BlockType
+	Text                string               // BlockText
+	Image               *Image               // BlockImage
+	ToolUse             *ToolUse             // BlockToolUse
+	ToolResult          *ToolResult          // BlockToolResult
+	Thinking            *Thinking            // BlockThinking
+	ServerToolUse       *ServerToolUse       // BlockServerToolUse
+	WebSearchToolResult *WebSearchToolResult // BlockWebSearchToolResult
+	CacheCtl            string               // 如 "ephemeral"，仅 Anthropic 方向保留
+}
+
+// ServerToolUse 服务端托管工具调用（如网关代执行 web_search）。
+// 外形同 ToolUse；结果以 ToolUseID 关联到 BlockWebSearchToolResult。
+type ServerToolUse struct {
+	ID    string
+	Name  string
+	Input json.RawMessage
+}
+
+// WebSearchToolResult web_search 服务端工具的结果块（Anthropic 形态）。
+type WebSearchToolResult struct {
+	ToolUseID string
+	Results   []WebSearchResult
+}
+
+// WebSearchResult 单条搜索结果。Snippet 对应 Anthropic 的
+// encrypted_content 字段（原文摘要，非加密）。
+type WebSearchResult struct {
+	Title   string
+	URL     string
+	Snippet string
 }
 
 // Image 图片内容。Data 为 base64 编码；URL 与 Data 二选一。
@@ -106,16 +132,16 @@ type Tool struct {
 type ChoiceMode string
 
 const (
-	ChoiceAuto     ChoiceMode = "auto"
-	ChoiceAny      ChoiceMode = "any"  // 必须调用某个工具（OpenAI required）
-	ChoiceNone     ChoiceMode = "none" // 禁止工具
-	ChoiceTool     ChoiceMode = "tool" // 指定工具
+	ChoiceAuto ChoiceMode = "auto"
+	ChoiceAny  ChoiceMode = "any"  // 必须调用某个工具（OpenAI required）
+	ChoiceNone ChoiceMode = "none" // 禁止工具
+	ChoiceTool ChoiceMode = "tool" // 指定工具
 )
 
 // ToolChoice 工具选择。
 type ToolChoice struct {
-	Mode           ChoiceMode
-	ToolName       string // Mode == ChoiceTool 时有效
+	Mode            ChoiceMode
+	ToolName        string // Mode == ChoiceTool 时有效
 	DisableParallel bool
 }
 

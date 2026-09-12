@@ -163,7 +163,7 @@ func TestCrossProtocolMatrix(t *testing.T) {
 						BaseURL:  upSrv.URL,
 						APIKey:   "sk-mock",
 						Models:   map[string]string{"test-model": "native-model"},
-					}}})
+					}}}, nil)
 					gw := httptest.NewServer(s.Handler())
 					defer gw.Close()
 

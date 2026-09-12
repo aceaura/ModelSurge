@@ -441,10 +441,13 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		if onUsage != nil {
 			onUsage(&irResp.Usage)
 		}
-		sum := newRespSummarizer(f.paramLog, cand.up.Name)
+		sum := newRespSummarizer(f.paramLog, cand.up.Name, "json")
 		sum.fill(irResp)
 		sum.log()
-		writeResponse(w, clientCodec, irResp, req.Stream)
+		csum := newClientSummarizer(f.paramLog, clientCodec.Name(), req.Stream)
+		csum.fill(irResp)
+		csum.wrote(writeResponse(w, clientCodec, irResp, req.Stream))
+		csum.log()
 		return true, nil
 	}
 
@@ -553,7 +556,8 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	enc := clientCodec.NewStreamEncoder()
 	var outText strings.Builder
 	var startUsage ir.Usage // message_start 携带的 input/cache 用量，记账时与 delta 合并
-	sum := newRespSummarizer(f.paramLog, cand.up.Name)
+	sum := newRespSummarizer(f.paramLog, cand.up.Name, "sse")
+	csum := newClientSummarizer(f.paramLog, clientCodec.Name(), true)
 	emit := func(events []ir.Event) bool {
 		for _, ev := range events {
 			if ev.Type == ir.EvMessageStart && ev.Usage != nil {
@@ -566,12 +570,17 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 				onUsage(&merged)
 			}
 			sum.observe(ev)
+			csum.observe(ev)
 			frames, err := enc.Encode(ev)
 			if err != nil {
+				csum.encErr()
 				frames = [][]byte{clientCodec.RenderStreamError(&ir.Error{Type: ir.ErrTypeUpstream, Message: err.Error()})}
 			}
+			csum.framesAdd(len(frames))
 			for _, fr := range frames {
-				if _, err := w.Write(fr); err != nil {
+				n, err := w.Write(fr)
+				csum.wrote(n)
+				if err != nil {
 					return false // 客户端断开
 				}
 			}
@@ -591,7 +600,8 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	}
 
 	if !feed(first) {
-		sum.log() // 客户端断开，流已中断——按已发部分出摘要
+		sum.log()  // 客户端断开，流已中断——按已发部分出摘要
+		csum.log()
 		return true, nil
 	}
 	for {
@@ -604,19 +614,24 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 			break
 		}
 		if !feed(ev) {
-			sum.log() // 客户端断开，流已中断——按已发部分出摘要
+			sum.log()  // 客户端断开，流已中断——按已发部分出摘要
+			csum.log()
 			return true, nil
 		}
 	}
 	emit(f.interceptWebSearch(ctx, cand, req, dec.Finish()))
 	f.recordTruncation(dec, cand.up.Name)
-	for _, fr := range enc.Finish() {
-		_, _ = w.Write(fr)
+	fin := enc.Finish()
+	csum.framesAdd(len(fin))
+	for _, fr := range fin {
+		n, _ := w.Write(fr)
+		csum.wrote(n)
 	}
 	if flush != nil {
 		flush.Flush()
 	}
 	sum.log()
+	csum.log()
 	return true, nil
 }
 
@@ -669,10 +684,13 @@ func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.
 	if onUsage != nil {
 		onUsage(&resp.Usage)
 	}
-	sum := newRespSummarizer(f.paramLog, cand.up.Name)
+	sum := newRespSummarizer(f.paramLog, cand.up.Name, "sse")
 	sum.fill(resp)
 	sum.log()
-	writeResponse(w, clientCodec, resp, false)
+	csum := newClientSummarizer(f.paramLog, clientCodec.Name(), false)
+	csum.fill(resp)
+	csum.wrote(writeResponse(w, clientCodec, resp, false))
+	csum.log()
 	return true, nil
 }
 
@@ -784,34 +802,38 @@ func (f *Forwarder) estimateUsageOnEvent(req *ir.Request, outText *strings.Build
 }
 
 // writeResponse 非流式输出；clientStream 为 true 时（上游返回了非 SSE 的兜底响应
-// 而客户端要流式）把完整响应合成为一次性事件流。
-func writeResponse(w http.ResponseWriter, clientCodec proto.Codec, resp *ir.Response, clientStream bool) {
+// 而客户端要流式）把完整响应合成为一次性事件流。返回写出字节数。
+func writeResponse(w http.ResponseWriter, clientCodec proto.Codec, resp *ir.Response, clientStream bool) int {
 	if !clientStream {
 		body, err := clientCodec.EncodeResponse(resp)
 		if err != nil {
 			writeError(w, clientCodec, ir.NewHTTPError(500, "encode response: "+err.Error()))
-			return
+			return 0
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		_, _ = w.Write(body)
-		return
+		n, _ := w.Write(body)
+		return n
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(200)
 	enc := clientCodec.NewStreamEncoder()
+	total := 0
 	for _, ev := range EventsFromResponse(resp) {
 		frames, _ := enc.Encode(ev)
 		for _, fr := range frames {
-			_, _ = w.Write(fr)
+			n, _ := w.Write(fr)
+			total += n
 		}
 	}
 	for _, fr := range enc.Finish() {
-		_, _ = w.Write(fr)
+		n, _ := w.Write(fr)
+		total += n
 	}
 	if flush, ok := w.(http.Flusher); ok {
 		flush.Flush()
 	}
+	return total
 }
 
 // EventsFromResponse 把完整响应合成为一次性 IR 事件序列

@@ -280,6 +280,9 @@ func TestSchedRequestOverrides(t *testing.T) {
 	for _, want := range []string{
 		"relay: request proto=anthropic model=m stream=false max_tokens=8192 msgs=1 temp=0.3 thinking=absent",
 		"relay: upstream request a: proto=anthropic model=m stream=true max_tokens=8192 msgs=1 temp=1 top_p=0.95 thinking=on budget=4096 effort=max",
+		"relay: upstream response up=a model=native-model wire=sse",
+		"relay: response proto=anthropic stream=false",
+		"errs=0",
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("param log missing %q in:\n%s", want, logs)

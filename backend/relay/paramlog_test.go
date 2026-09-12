@@ -40,7 +40,7 @@ func TestRequestParams(t *testing.T) {
 }
 
 func TestRespSummarizerEvents(t *testing.T) {
-	s := newRespSummarizer(true, "ark-6")
+	s := newRespSummarizer(true, "ark-6", "sse")
 	s.observe(ir.Event{Type: ir.EvMessageStart, Model: "glm-5.3-flash", Usage: &ir.Usage{InputTokens: 100, CacheReadTokens: 50}})
 	s.observe(ir.Event{Type: ir.EvBlockStart, Block: &ir.Block{Type: ir.BlockThinking}})
 	s.observe(ir.Event{Type: ir.EvThinkingDelta, Text: "hmm"})
@@ -52,7 +52,7 @@ func TestRespSummarizerEvents(t *testing.T) {
 	s.log() // 不 panic 即可；断言走 String
 	got := s.String()
 	for _, want := range []string{
-		"up=ark-6", "model=glm-5.3-flash", "blocks=text:1,thinking:1",
+		"up=ark-6", "model=glm-5.3-flash", "wire=sse", "blocks=text:1,thinking:1",
 		"think_len=3", "text_len=6", "stop=end_turn",
 		"in=100 out=43 cache_read=50",
 	} {
@@ -63,7 +63,7 @@ func TestRespSummarizerEvents(t *testing.T) {
 }
 
 func TestRespSummarizerFill(t *testing.T) {
-	s := newRespSummarizer(true, "up-1")
+	s := newRespSummarizer(true, "up-1", "json")
 	s.fill(&ir.Response{
 		Model: "m", StopReason: ir.StopMaxTokens,
 		Content: []ir.Block{
@@ -73,7 +73,7 @@ func TestRespSummarizerFill(t *testing.T) {
 		Usage: ir.Usage{InputTokens: 1, OutputTokens: 2, Estimated: true},
 	})
 	got := s.String()
-	for _, want := range []string{"up=up-1", "model=m", "blocks=text:1,thinking:1", "stop=max_tokens", "in=1 out=2", "(est)"} {
+	for _, want := range []string{"up=up-1", "model=m", "wire=json", "blocks=text:1,thinking:1", "stop=max_tokens", "in=1 out=2", "(est)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary missing %q in %q", want, got)
 		}
@@ -81,11 +81,39 @@ func TestRespSummarizerFill(t *testing.T) {
 }
 
 func TestRespSummarizerDisabled(t *testing.T) {
-	s := newRespSummarizer(false, "up")
+	s := newRespSummarizer(false, "up", "sse")
 	s.observe(ir.Event{Type: ir.EvTextDelta, Text: "x"})
 	s.fill(&ir.Response{Model: "m", Usage: ir.Usage{InputTokens: 1}})
 	if len(s.blocks) != 0 || s.hasUsg || s.textLen != 0 {
 		t.Errorf("disabled summarizer must not accumulate state: %+v", s)
 	}
 	s.log() // 未启用时静默
+}
+
+// 响应出口累计器：协议/流式/字节/帧/编码错误，块形状与入口同口径。
+func TestClientSummarizer(t *testing.T) {
+	s := newClientSummarizer(true, "anthropic", true)
+	s.observe(ir.Event{Type: ir.EvMessageStart, Usage: &ir.Usage{InputTokens: 17}})
+	s.observe(ir.Event{Type: ir.EvBlockStart, Block: &ir.Block{Type: ir.BlockText}})
+	s.observe(ir.Event{Type: ir.EvTextDelta, Text: "你好"})
+	s.observe(ir.Event{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn, Usage: &ir.Usage{OutputTokens: 5}})
+	s.framesAdd(4)
+	s.wrote(120)
+	s.wrote(30)
+	s.encErr()
+	got := s.String()
+	for _, want := range []string{
+		"proto=anthropic", "stream=true", "blocks=text:1", "text_len=6",
+		"stop=end_turn", "in=17 out=5", "bytes=150", "frames=4", "errs=1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("client summary missing %q in %q", want, got)
+		}
+	}
+	dis := newClientSummarizer(false, "anthropic", false)
+	dis.observe(ir.Event{Type: ir.EvTextDelta, Text: "x"})
+	dis.wrote(9)
+	if dis.bytes != 0 || dis.textLen != 0 {
+		t.Errorf("disabled client summarizer must not accumulate: %+v", dis)
+	}
 }

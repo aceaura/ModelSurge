@@ -106,3 +106,39 @@ func TestDecodeUsage(t *testing.T) {
 		t.Errorf("usage = %+v", u)
 	}
 }
+
+// 请求方向：同族 thoughtSignature 透传；外族形态签名置空防 400，
+// thinking 文本仍作为 thought part 保留。
+func TestEncodeRequest_ForeignSignatureStripped(t *testing.T) {
+	mk := func(from string) *ir.Request {
+		return &ir.Request{
+			Model: "gemini-x",
+			Messages: []ir.Message{
+				{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}},
+				{Role: ir.RoleAssistant, Content: []ir.Block{
+					{Type: ir.BlockThinking, Thinking: &ir.Thinking{Text: "hmm", Signature: "sig", SignatureFrom: from}},
+				}},
+			},
+		}
+	}
+
+	out, err := New().EncodeRequest(mk("gemini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"thoughtSignature":"sig"`) {
+		t.Errorf("same-protocol signature should pass through: %s", out)
+	}
+
+	out, err = New().EncodeRequest(mk("anthropic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if strings.Contains(s, `"thoughtSignature":"sig"`) {
+		t.Errorf("foreign signature should be stripped: %s", s)
+	}
+	if !strings.Contains(s, "hmm") {
+		t.Errorf("thinking text should survive as thought part: %s", s)
+	}
+}

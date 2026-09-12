@@ -164,7 +164,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 				}})
 			case p.Thought || p.ThoughtSignature != "":
 				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{
-					Text: p.Text, Signature: p.ThoughtSignature,
+					Text: p.Text, Signature: p.ThoughtSignature, SignatureFrom: ir.SigFrom(Name, p.ThoughtSignature),
 				}})
 			case p.Text != "":
 				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockText, Text: p.Text})
@@ -318,8 +318,14 @@ func encodeContent(m ir.Message, nameByID map[string]string) content {
 			out.Parts = append(out.Parts, part{Text: b.Text})
 		case ir.BlockThinking:
 			if b.Thinking != nil {
+				// 外族形态签名对 Gemini 是非法值，置空防 400；
+				// 置空后若同 content 含 functionCall，ensureThoughtSignature 会补占位。
+				sig := b.Thinking.Signature
+				if sig != "" && b.Thinking.SignatureFrom != Name {
+					sig = ""
+				}
 				out.Parts = append(out.Parts, part{
-					Text: b.Thinking.Text, Thought: true, ThoughtSignature: b.Thinking.Signature,
+					Text: b.Thinking.Text, Thought: true, ThoughtSignature: sig,
 				})
 			}
 		case ir.BlockImage:

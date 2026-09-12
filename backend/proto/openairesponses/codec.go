@@ -85,7 +85,7 @@ func decodeItem(req *ir.Request, it inputItem) {
 			ToolResult: &ir.ToolResult{ToolUseID: it.CallID, Content: []ir.Block{{Type: ir.BlockText, Text: it.Output}}},
 		}}})
 	case "reasoning":
-		th := &ir.Thinking{Signature: it.EncryptedContent}
+		th := &ir.Thinking{Signature: it.EncryptedContent, SignatureFrom: ir.SigFrom(Name, it.EncryptedContent)}
 		th.Text = decodeSummary(it.Summary)
 		if th.Text == "" && th.Signature == "" {
 			return
@@ -249,8 +249,9 @@ func encodeMessageItems(m ir.Message) []inputItem {
 			case ir.BlockText:
 				parts = append(parts, contentPart{Type: "output_text", Text: b.Text})
 			case ir.BlockThinking:
-				// 仅在有签名时还原 reasoning item（无签名的明文推理无法构造合法 item）
-				if b.Thinking != nil && b.Thinking.Signature != "" {
+				// 仅本族形态签名可还原 reasoning item；无签名或外族签名
+				// 无法构造合法 item（OpenAI 会拒绝），跳过。
+				if b.Thinking != nil && b.Thinking.Signature != "" && b.Thinking.SignatureFrom == Name {
 					flush()
 					out = append(out, inputItem{
 						Type:             "reasoning",

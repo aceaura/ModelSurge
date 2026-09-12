@@ -60,15 +60,27 @@ type ToolResult struct {
 
 // Thinking 推理内容。Signature 为账号绑定的加密签名（Anthropic），
 // 跨协议转换时按目标协议形态映射或丢弃。
+// SignatureFrom 标记签名到达时的协议形态（如 "anthropic"、"gemini"）。
+// 签名内容不透明、无法判别真实签发方，因此只以"形态族别"作保守判断：
+// 与目标上游同族时透传（会话粘性下链完好），跨族时丢弃（宁可断链也不冒 400）。
 type Thinking struct {
-	Text      string
-	Signature string
+	Text          string
+	Signature     string
+	SignatureFrom string // 空表示无签名
 }
 
 // Message 一条对话消息。
 type Message struct {
 	Role    Role
 	Content []Block
+}
+
+// SigFrom 签名非空时返回协议名作为 SignatureFrom，空签名为空串。
+func SigFrom(protoName, sig string) string {
+	if sig == "" {
+		return ""
+	}
+	return protoName
 }
 
 // Text 返回消息中所有 text 块拼接的纯文本，便于日志与测试断言。

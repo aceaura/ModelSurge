@@ -141,7 +141,7 @@ func decodeBlock(b block) ir.Block {
 		out.ToolResult = &ir.ToolResult{ToolUseID: b.ToolUseID, IsError: b.IsError, Content: decodeToolResultContent(b.Content)}
 	case "thinking":
 		out.Type = ir.BlockThinking
-		out.Thinking = &ir.Thinking{Text: b.Thinking, Signature: b.Signature}
+		out.Thinking = &ir.Thinking{Text: b.Thinking, Signature: b.Signature, SignatureFrom: ir.SigFrom(Name, b.Signature)}
 	default:
 		// 未知块降级为文本，保证不丢信息
 		out.Type = ir.BlockText
@@ -190,10 +190,30 @@ func nativeHosted(canonical string) (typ, name string) {
 	}
 }
 
+// degradeThinking 把历史消息中无法通过 Anthropic 签名校验的 thinking 块
+// （无签名或外族形态签名）降级为 text 块——Anthropic 对历史 thinking 块
+// 强制签名校验，透传必 400，宁可断签名链保住请求。
+// 仅用于请求方向（EncodeRequest），响应方向不降级。
+func degradeThinking(blocks []ir.Block) {
+	for i := range blocks {
+		b := &blocks[i]
+		if b.Type != ir.BlockThinking || b.Thinking == nil {
+			continue
+		}
+		if b.Thinking.Signature != "" && b.Thinking.SignatureFrom == Name {
+			continue
+		}
+		blocks[i] = ir.Block{Type: ir.BlockText, Text: b.Thinking.Text}
+	}
+}
+
 func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	r := req.Clone()
 	if err := normalize.Request(r, normalize.Strict()); err != nil {
 		return nil, err
+	}
+	for i := range r.Messages {
+		degradeThinking(r.Messages[i].Content)
 	}
 	out := request{
 		Model:         r.Model,

@@ -158,7 +158,7 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	}
 
 	// 已锁定该上游：落有损转换诊断（日志 + 响应头，须在 WriteHeader 前设置）
-	if notes := Diagnose(req, cand.codec.Caps()); len(notes) > 0 {
+	if notes := Diagnose(req, cand.codec.Name(), cand.codec.Caps()); len(notes) > 0 {
 		log.Printf("relay: upstream %s lossy conversion: %s", cand.up.Name, strings.Join(notes, "; "))
 		w.Header().Set("X-Relayd-Notes", strings.Join(notes, "; "))
 	}

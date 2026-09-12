@@ -254,6 +254,56 @@ func TestDiagnosticsHeader(t *testing.T) {
 	}
 }
 
+// TestCrossProtocolSignatureDropped anthropic 客户端带签名 thinking 块发往
+// gemini 上游：外族签名被置空（防 400）且 X-Relayd-Notes 报告该有损点；
+// 同协议往返（anthropic 上游）签名原样透传且无 note。
+func TestCrossProtocolSignatureDropped(t *testing.T) {
+	reqBody := `{"model":"m","max_tokens":100,"messages":[` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"sig123"},{"type":"text","text":"ok"}]},` +
+		`{"role":"user","content":"go on"}]}`
+
+	gup, grec := mockUpstream(t, "gemini", "OK")
+	gwGem := newGateway(t, &config.Config{Upstreams: []config.Upstream{
+		{Name: "gm", Protocol: "gemini", BaseURL: gup.URL, APIKey: "k", Models: map[string]string{"m": "native-m"}},
+	}})
+	resp, err := http.Post(gwGem.URL+"/v1/messages", "application/json", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if strings.Contains(grec.body, "sig123") {
+		t.Errorf("gemini upstream received cross-protocol signature:\n%s", grec.body)
+	}
+	if notes := resp.Header.Get("X-Relayd-Notes"); !strings.Contains(notes, "gemini") {
+		t.Errorf("notes should report cross-protocol signature drop: %q", notes)
+	}
+
+	aup, arec := mockUpstream(t, "anthropic", "OK")
+	gwAnth := newGateway(t, &config.Config{Upstreams: []config.Upstream{
+		{Name: "cl", Protocol: "anthropic", BaseURL: aup.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
+	}})
+	resp, err = http.Post(gwAnth.URL+"/v1/messages", "application/json", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(arec.body, `"signature":"sig123"`) {
+		t.Errorf("anthropic upstream should receive same-protocol signature:\n%s", arec.body)
+	}
+	if notes := resp.Header.Get("X-Relayd-Notes"); notes != "" {
+		t.Errorf("same-protocol round trip should produce no notes, got %q", notes)
+	}
+}
+
 // TestUsageEstimation 开启 estimate_usage 后上游不报 usage 时本地估算。
 func TestUsageEstimation(t *testing.T) {
 	// mock 上游不发 usage chunk

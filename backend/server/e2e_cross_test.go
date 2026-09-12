@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"relayd/backend/config"
-	"relayd/backend/server"
 )
 
 // 4 客户端协议 x 4 上游协议 x 流式/非流式 的端到端矩阵测试。
@@ -157,14 +156,8 @@ func TestCrossProtocolMatrix(t *testing.T) {
 					t.Parallel()
 					marker := "HELLO_FROM_" + strings.ToUpper(strings.ReplaceAll(up, "-", "_"))
 					upSrv, rec := mockUpstream(t, up, marker)
-					s := server.New(&config.Config{Upstreams: []config.Upstream{{
-						Name:     "mock",
-						Protocol: up,
-						BaseURL:  upSrv.URL,
-						APIKey:   "sk-mock",
-						Models:   map[string]string{"test-model": "native-model"},
-					}}}, nil)
-					gw := httptest.NewServer(s.Handler())
+					gw := newGateway(t, &config.Config{},
+						apiKeyAcc("mock", up, upSrv.URL, "test-model", "native-model"))
 					defer gw.Close()
 
 					path, body := clientRequest(client, stream)

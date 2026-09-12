@@ -15,11 +15,11 @@ func newBreakerManager(t *testing.T) *Manager {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	seeds := []SeedUpstream{
-		{Name: "a1", Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
-		{Name: "a2", Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
-	}
-	m, err := NewManager(store, seeds, nil, Cooldowns{}, ManagerDeps{})
+	mustInsert(t, store,
+		&Account{Name: "a1", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
+		&Account{Name: "a2", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
+	)
+	m, err := NewManager(store, Cooldowns{}, ManagerDeps{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,11 +84,11 @@ func TestBreakerPersistAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seeds := []SeedUpstream{
-		{Name: "a1", Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
-		{Name: "a2", Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
-	}
-	m, err := NewManager(store, seeds, nil, Cooldowns{}, ManagerDeps{})
+	mustInsert(t, store,
+		&Account{Name: "a1", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
+		&Account{Name: "a2", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
+	)
+	m, err := NewManager(store, Cooldowns{}, ManagerDeps{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestBreakerPersistAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store2.Close()
-	m2, err := NewManager(store2, seeds, nil, Cooldowns{}, ManagerDeps{})
+	m2, err := NewManager(store2, Cooldowns{}, ManagerDeps{})
 	if err != nil {
 		t.Fatal(err)
 	}

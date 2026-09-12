@@ -11,11 +11,20 @@
 #   POST /gemini/v1beta/models/{model}:generateContent          -> gemini（非流式）
 #   POST /gemini/v1beta/models/{model}:streamGenerateContent    -> gemini（流式）
 # 无前缀的原生路径（/v1/messages 等）同样可用。
+#
+# 账号全部保存在 SQLite（scheduler.db_path），yaml 不再配置上游。
+# 启动后经管理面热建号（X-Admin-Key 鉴权），例如：
+#   curl -X POST http://127.0.0.1:8080/admin/accounts \
+#     -H "X-Admin-Key: sk-admin-change-me" -H "Content-Type: application/json" \
+#     -d '{"name":"claude-main","type":"api-key","protocol":"anthropic",
+#          "base_url":"https://api.anthropic.com","api_key":"sk-ant-xxx",
+#          "models":{"claude-sonnet-4":"claude-sonnet-4-20250514"}}'
+# kiro 型账号传 "type":"kiro" 与凭据（refresh_token / creds_file / cli_db 三选一）。
 
 listen: "127.0.0.1:8080"
 api_key: "sk-replace-me" # 客户端鉴权 key（Bearer 或 x-api-key 均可）
 
-# 等上游首个 SSE 事件的超时：超时且未向客户端写字节时换下一个候选上游重发。
+# 等上游首个 SSE 事件的超时：超时且未向客户端写字节时换下一个候选账号重发。
 # 空 = 30s，"0" 禁用。
 first_token_timeout: "30s"
 
@@ -28,8 +37,7 @@ access_log: true
 # 截断恢复（上游截断工具参数/正文后，下次请求注入合成提示），默认开。
 truncation_recovery: true
 
-# 账号池动态调度（SQLite 持久化：冷却/禁用/熔断/逐笔 usage）。
-# 不配置则纯静态转发（upstreams 顺序即优先级）。
+# 账号池动态调度（SQLite 持久化：冷却/禁用/熔断/逐笔 usage），必填。
 scheduler:
   db_path: ./data/relayd.db      # SQLite 文件路径
   same_account_retries: 1        # 瞬时错误（5xx/网络/超时）原地重试次数
@@ -38,8 +46,8 @@ scheduler:
     window_7h: 7h                # 7 小时窗口
     monthly: 24h                 # 月度窗口（真实重置时间未知）
 
-# 管理面（scheduler 开启时必填）：同一 listen 端口的 /admin 前缀，
-# X-Admin-Key 鉴权，账号热增删（api-key / kiro 型）。
+# 管理面（必填）：同一 listen 端口的 /admin 前缀，
+# X-Admin-Key 鉴权，账号热增删改查（api-key / kiro 型）。
 admin:
   api_key: "sk-admin-change-me"
 
@@ -63,56 +71,3 @@ kiro:
   #   api_key: ""
   debug: false                    # Kiro 出站载荷调试日志（脱敏落盘）
   debug_dir: kiro-debug           # 调试日志目录
-
-upstreams:
-  # Anthropic 订阅 / API
-  - name: claude-main
-    protocol: anthropic
-    base_url: https://api.anthropic.com
-    api_key: sk-ant-xxx
-    models: # canonical model -> 上游 native model
-      claude-sonnet-4: claude-sonnet-4-20250514
-
-  # OpenAI 兼容站（new-api / one-api 等）
-  - name: openai-station
-    protocol: openai-chat
-    base_url: https://your-station.example.com
-    api_key: sk-xxx
-    models:
-      gpt-4o: gpt-4o
-
-  # OpenAI Responses 上游（如 Codex 兼容端点）
-  - name: codex
-    protocol: openai-responses
-    base_url: https://api.openai.com
-    api_key: sk-xxx
-    models:
-      gpt-5: gpt-5
-
-  # Gemini AI Studio
-  - name: gemini
-    protocol: gemini
-    base_url: https://generativelanguage.googleapis.com
-    api_key: AIza-xxx
-    models:
-      gemini-2.5-pro: gemini-2.5-pro
-
-  # kiro 账号种子（protocol: kiro；凭据三选一；与 api-key 上游同池调度，
-  # 顺序即粘性优先级）。凭据轮转后以库内值为准，重启不回退。
-  - name: kiro-main
-    protocol: kiro
-    kiro:
-      refresh_token: "rt-placeholder-change-me" # 直配 refresh token
-      # creds_file: /path/to/kiro-credentials.json # Kiro IDE JSON 凭据文件
-      # cli_db: /path/to/kiro-cli/data.sqlite3    # kiro cli SQLite 路径
-      # region: us-east-1        # SSO 刷新区（默认继承 kiro.region）
-      # api_region: us-east-1    # API 区覆盖；空则按检测链推导
-      # profile_arn: ""          # 可空，首次使用时自动获取回填
-      # web_search: false        # web_search 工具注入（覆盖全局默认）
-      # fake_reasoning: false   # fake_reasoning 注入（覆盖全局默认）
-
-  # models 省略 = 透传型上游：接受任意模型名原样转发（作为兜底）
-  # - name: catch-all
-  #   protocol: openai-chat
-  #   base_url: https://openrouter.ai
-  #   api_key: sk-or-xxx

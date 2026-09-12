@@ -1,4 +1,4 @@
-// manager_deps_test.go kiro 种子同步与 ManagerDeps（config kiro 段装配）测试。
+// manager_deps_test.go Manager 从库装载与 ManagerDeps（config kiro 段装配）测试。
 package account
 
 import (
@@ -7,9 +7,19 @@ import (
 	"time"
 )
 
-// TestSyncKiroAccountsUpsert kiro 种子：新账号入库、再同步更新身份、
-// 状态与 token_state 保留、非 kiro 账号不受影响、yaml 没有的不删除。
-func TestSyncKiroAccountsUpsert(t *testing.T) {
+// mustInsert 依次落库账号（测试辅助）。
+func mustInsert(t *testing.T, store *Store, accs ...*Account) {
+	t.Helper()
+	for _, a := range accs {
+		if err := store.InsertAccount(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestNewManagerLoadsKiroAccounts NewManager 装载库内 kiro 账号并构造运行时；
+// api-key 账号不受影响。
+func TestNewManagerLoadsKiroAccounts(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "kiroseed.db")
 	store, err := Open(dbPath)
 	if err != nil {
@@ -17,55 +27,20 @@ func TestSyncKiroAccountsUpsert(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	apiSeeds := []SeedUpstream{
-		{Name: "ark-1", Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
-	}
-	kiroSeeds := []SeedKiro{{
-		Name: "k1",
-		Kiro: KiroAccount{Source: SourceRefreshToken, RefreshToken: "rt-v1", Region: "us-east-1", WebSearch: true},
-	}}
-	if _, err := NewManager(store, apiSeeds, kiroSeeds, Cooldowns{}, ManagerDeps{}); err != nil {
+	mustInsert(t, store,
+		&Account{Name: "ark-1", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
+		&Account{Name: "k1", Type: TypeKiro, Enabled: true, Kiro: &KiroAccount{Source: SourceRefreshToken, RefreshToken: "rt-v1", Region: "us-east-1", WebSearch: true}},
+	)
+	if _, err := NewManager(store, Cooldowns{}, ManagerDeps{}); err != nil {
 		t.Fatal(err)
 	}
 
 	acc, err := store.GetAccount("k1")
 	if err != nil || acc == nil {
-		t.Fatalf("k1 not seeded: %v %v", acc, err)
+		t.Fatalf("k1 not loaded: %v %v", acc, err)
 	}
 	if acc.Type != TypeKiro || acc.Kiro == nil || acc.Kiro.RefreshToken != "rt-v1" || !acc.Kiro.WebSearch {
 		t.Fatalf("k1 identity: %+v", acc)
-	}
-
-	// 模拟运行时状态与 token 轮转
-	if err := store.SetDisabled("k1", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveTokenState("k1", &TokenState{AccessToken: "at", RefreshToken: "rt-rotated", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
-
-	// 再同步：凭据换 v2，状态与轮转 token 保留
-	kiroSeeds[0].Kiro.RefreshToken = "rt-v2"
-	if _, err := NewManager(store, apiSeeds, kiroSeeds, Cooldowns{}, ManagerDeps{}); err != nil {
-		t.Fatal(err)
-	}
-	acc, _ = store.GetAccount("k1")
-	if acc.Kiro.RefreshToken != "rt-v2" {
-		t.Fatalf("seed should win identity, got %q", acc.Kiro.RefreshToken)
-	}
-	if !acc.Disabled {
-		t.Fatal("disabled state should survive re-sync")
-	}
-	if acc.Kiro.Token == nil || acc.Kiro.Token.RefreshToken != "rt-rotated" {
-		t.Fatalf("token_state should survive re-sync: %+v", acc.Kiro.Token)
-	}
-
-	// 空种子再同步：k1 不被删除（upsert-only）
-	if _, err := NewManager(store, apiSeeds, nil, Cooldowns{}, ManagerDeps{}); err != nil {
-		t.Fatal(err)
-	}
-	if acc, _ := store.GetAccount("k1"); acc == nil {
-		t.Fatal("k1 should not be deleted by empty kiro seeds")
 	}
 	if acc, _ := store.GetAccount("ark-1"); acc == nil {
 		t.Fatal("api-key account should be untouched")
@@ -79,10 +54,10 @@ func TestManagerDepsBreaker(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	seeds := []SeedUpstream{
-		{Name: "a1", Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
-	}
-	m, err := NewManager(store, seeds, nil, Cooldowns{}, ManagerDeps{
+	mustInsert(t, store,
+		&Account{Name: "a1", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k", Models: map[string]string{"m": "m"}},
+	)
+	m, err := NewManager(store, Cooldowns{}, ManagerDeps{
 		BreakerBase: 10 * time.Second,
 		BreakerMax:  30 * time.Second,
 	})
@@ -109,14 +84,11 @@ func TestManagerDepsKiroDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	kiroSeeds := []SeedKiro{{
-		Name: "k1",
-		Kiro: KiroAccount{Source: SourceRefreshToken, RefreshToken: "rt"}, // Region 留空
-	}, {
-		Name: "k2",
-		Kiro: KiroAccount{Source: SourceRefreshToken, RefreshToken: "rt", Region: "ap-southeast-1"},
-	}}
-	m, err := NewManager(store, nil, kiroSeeds, Cooldowns{}, ManagerDeps{
+	mustInsert(t, store,
+		&Account{Name: "k1", Type: TypeKiro, Enabled: true, Kiro: &KiroAccount{Source: SourceRefreshToken, RefreshToken: "rt"}}, // Region 留空
+		&Account{Name: "k2", Type: TypeKiro, Enabled: true, Kiro: &KiroAccount{Source: SourceRefreshToken, RefreshToken: "rt", Region: "ap-southeast-1"}},
+	)
+	m, err := NewManager(store, Cooldowns{}, ManagerDeps{
 		KiroRegion:   "eu-central-1",
 		KiroCacheTTL: 30 * time.Minute,
 	})

@@ -30,10 +30,11 @@ backend/normalize/  消息规整流水线：合并同角色、首条 user、强�
 backend/proto/      Codec 接口与注册表；每协议一个子包，init() 自注册：
                     anthropic / openaichat / openairesponses / gemini / kiro
                     每个 codec 只做 协议<->IR 双向转换（请求、流式、非流式、错误）
+backend/account/    账号池：SQLite 持久化（凭据/冷却/禁用/熔断/逐笔 usage）与调度
 backend/relay/      转发层：上游永远流式、SSE 读取、非流式客户端缓冲聚合
 backend/server/     HTTP 入口：按路径识别客户端协议，鉴权后交给 relay
-cmd/relayd/         主程序
-cmd/relaymock/      本地上游模拟器（OpenAI/Anthropic 应答 + /mock/control 故障注入）
+backend/cmd/relayd/     主程序
+backend/cmd/relaymock/  本地上游模拟器（OpenAI/Anthropic 应答 + /mock/control 故障注入）
 ```
 
 核心设计（调研 new-api / sub2api / kiro-gateway 后的提炼，详见 `docs/protocol-conversion-study.md`）：
@@ -51,26 +52,34 @@ cmd/relaymock/      本地上游模拟器（OpenAI/Anthropic 应答 + /mock/cont
 
 ## 配置
 
-见 `relayd.example.yaml`。每个上游声明 `protocol`（anthropic / openai-chat / openai-responses / gemini）、`base_url`、`api_key` 与可选的 `models` 映射（canonical model → 上游 native model；省略则为透传型兜底上游）。
+见 `backend/relayd.example.yaml`。yaml 只含运行参数；上游账号全部保存在 SQLite（`scheduler.db_path`），启动后经管理面 `/admin` 热建号（api-key / kiro 型）：
 
 ```yaml
 listen: "127.0.0.1:8080"
 api_key: "sk-replace-me"
-upstreams:
-  - name: claude
-    protocol: anthropic
-    base_url: https://api.anthropic.com
-    api_key: sk-ant-xxx
-    models: {claude-sonnet-4: claude-sonnet-4-20250514}
+
+scheduler:
+  db_path: ./data/relayd.db # SQLite 文件（必填）
+admin:
+  api_key: "sk-admin-change-me"
 ```
+
+```bash
+curl -X POST http://127.0.0.1:8080/admin/accounts \
+  -H "X-Admin-Key: sk-admin-change-me" -H "Content-Type: application/json" \
+  -d '{"name":"claude","type":"api-key","protocol":"anthropic","base_url":"https://api.anthropic.com","api_key":"sk-ant-xxx","models":{"claude-sonnet-4":"claude-sonnet-4-20250514"}}'
+```
+
+账号按声明顺序粘性调度，支持限流冷却（429 重置时间入库）、401 禁用、瞬时错误原地重试与熔断切号；逐笔 usage 记账。`GET /v1/models` 返回全部启用账号的模型并集。
 
 ## 运行与测试
 
 ```bash
+cd backend
 go build -o relayd.exe ./cmd/relayd
-./relayd.exe -config relayd.yaml   # 本地演示配置（配合 relaymock）
+./relayd.exe -config relayd.yaml   # 本地演示配置（配合 relaymock，脚本 demo/start.sh）
 
-go test ./backend/...              # 单元 + 4x4 跨协议矩阵
+go test ./...                      # 单元 + 4x4 跨协议矩阵
 go vet ./...
 ```
 

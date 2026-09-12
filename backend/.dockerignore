@@ -1,0 +1,10 @@
+# 构建上下文裁剪（context = backend/）：本地数据与真实凭据不入镜像。
+data
+*.exe
+*.log
+relayd-ark.yaml
+relayd-local.yaml
+relayd.yaml
+kiro-debug
+*.db
+demo

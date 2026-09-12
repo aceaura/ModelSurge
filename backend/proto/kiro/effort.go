@@ -4,6 +4,8 @@ package kiro
 
 import (
 	"log"
+	"strings"
+	"time"
 )
 
 // NativeEffortField Kiro 原生字段名。
@@ -104,4 +106,43 @@ func resolveEffortFragment(modelID, effort string) map[string]any {
 		log.Printf("kiro codec: clamped effort for %s: %q -> %q", modelID, effort, adopted)
 	}
 	return map[string]any{tier.path: map[string]any{"effort": adopted}}
+}
+
+// EffortFirstTokenTimeoutMultipliers effort 档位 -> 首 token 等待乘数
+// （config.py EFFORT_FIRST_TOKEN_TIMEOUT_MULTIPLIERS：高档位推理会显著
+// 推迟首字节，按档位缩放以免昂贵推理请求被提前判卡重试）。
+var EffortFirstTokenTimeoutMultipliers = map[string]float64{
+	"low": 1.5, "medium": 2.0, "high": 4.0, "xhigh": 6.0, "max": 8.0,
+}
+
+// EffortFirstTokenTimeoutCap 档位放大后的上限（0 = 不封顶）。
+const EffortFirstTokenTimeoutCap = 120 * time.Second
+
+// EffortFirstTokenTimeout 按请求 effort 档位放大首 token 超时
+// （effort_schema.py resolve_first_token_timeout 的 Go 翻译）。
+// 空档位/"none" 用基数；显式档位先经模型枚举夹紧（无通道模型按请求
+// 档位本身，未知值按 medium）；乘数封顶 EffortFirstTokenTimeoutCap。
+func EffortFirstTokenTimeout(base time.Duration, modelID, effort string) time.Duration {
+	if effort == "" {
+		return base
+	}
+	requested := strings.ToLower(strings.TrimSpace(effort))
+	if requested == "" || requested == "none" {
+		return base
+	}
+	effective := requested
+	if tier, ok := modelEffortSchema[NormalizeModelName(modelID)]; ok {
+		effective = clampEffort(requested, tier.allowed)
+	} else if effortRank(requested) < 0 {
+		effective = effortFallback
+	}
+	m := EffortFirstTokenTimeoutMultipliers[effective]
+	if m == 0 {
+		m = EffortFirstTokenTimeoutMultipliers[effortFallback]
+	}
+	t := time.Duration(float64(base) * m)
+	if EffortFirstTokenTimeoutCap > 0 && t > EffortFirstTokenTimeoutCap {
+		t = EffortFirstTokenTimeoutCap
+	}
+	return t
 }

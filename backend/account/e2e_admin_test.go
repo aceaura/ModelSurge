@@ -29,7 +29,7 @@ func newAdminEnv(t *testing.T, chat func(w http.ResponseWriter, r *http.Request)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	m, err := account.NewManager(store, nil, nil, account.Cooldowns{}, account.ManagerDeps{})
+	m, err := account.NewManager(store, account.Cooldowns{}, account.ManagerDeps{})
 	if err != nil {
 		t.Fatal(err)
 	}

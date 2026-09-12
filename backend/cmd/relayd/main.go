@@ -50,26 +50,6 @@ func kiroSetup(cfg *config.Config) account.ManagerDeps {
 	}
 }
 
-// kiroSeedFrom config.Upstream(kiro) -> account 种子（凭据按优先级取源）。
-func kiroSeedFrom(u config.Upstream) account.SeedKiro {
-	s := account.KiroAccount{
-		APIRegion:     u.Kiro.APIRegion,
-		ProfileArn:    u.Kiro.ProfileArn,
-		WebSearch:     u.Kiro.WebSearch,
-		FakeReasoning: u.Kiro.FakeReasoning,
-		Region:        u.Kiro.Region,
-	}
-	switch {
-	case u.Kiro.RefreshToken != "":
-		s.Source, s.RefreshToken = account.SourceRefreshToken, u.Kiro.RefreshToken
-	case u.Kiro.CredsFile != "":
-		s.Source, s.CredsFile = account.SourceCredsFile, u.Kiro.CredsFile
-	default:
-		s.Source, s.CliDB = account.SourceCliDB, u.Kiro.CliDB
-	}
-	return account.SeedKiro{Name: u.Name, Kiro: s}
-}
-
 func main() {
 	cfgPath := flag.String("config", "relayd.yaml", "配置文件路径")
 	flag.Parse()
@@ -80,45 +60,30 @@ func main() {
 	}
 	deps := kiroSetup(cfg) // kiro 全局装配（云中转/调试/思考注入），须先于 scheduler
 
-	var sched *account.Manager
-	if cfg.Scheduler != nil {
-		store, err := account.Open(cfg.Scheduler.DBPath)
-		if err != nil {
-			log.Fatalf("open scheduler db: %v", err)
+	store, err := account.Open(cfg.Scheduler.DBPath)
+	if err != nil {
+		log.Fatalf("open scheduler db: %v", err)
+	}
+	defer store.Close()
+	cd := cfg.Scheduler.CooldownsDur
+	sched, err := account.NewManager(store, account.Cooldowns{
+		Default: cd.Default, Window7h: cd.Window7h, Monthly: cd.Monthly,
+	}, deps)
+	if err != nil {
+		log.Fatalf("init scheduler: %v", err)
+	}
+	for _, a := range sched.Status() {
+		state := "ready"
+		if a.Disabled {
+			state = "disabled"
+		} else if a.CooldownUntil.After(time.Now()) {
+			state = "cooling until " + a.CooldownUntil.Format("15:04:05")
 		}
-		defer store.Close()
-		var seeds []account.SeedUpstream
-		var kiroSeeds []account.SeedKiro
-		for _, u := range cfg.Upstreams {
-			if u.Protocol == "kiro" {
-				kiroSeeds = append(kiroSeeds, kiroSeedFrom(u))
-				continue
-			}
-			seeds = append(seeds, account.SeedUpstream{
-				Name: u.Name, Protocol: u.Protocol, BaseURL: u.BaseURL,
-				APIKey: u.APIKey, Models: u.Models, Overrides: u.RequestOverrides,
-			})
+		kind := a.Protocol
+		if a.Type == account.TypeKiro {
+			kind = "kiro" + accountLabel(a)
 		}
-		cd := cfg.Scheduler.CooldownsDur
-		sched, err = account.NewManager(store, seeds, kiroSeeds, account.Cooldowns{
-			Default: cd.Default, Window7h: cd.Window7h, Monthly: cd.Monthly,
-		}, deps)
-		if err != nil {
-			log.Fatalf("init scheduler: %v", err)
-		}
-		for _, a := range sched.Status() {
-			state := "ready"
-			if a.Disabled {
-				state = "disabled"
-			} else if a.CooldownUntil.After(time.Now()) {
-				state = "cooling until " + a.CooldownUntil.Format("15:04:05")
-			}
-			kind := a.Protocol
-			if a.Type == account.TypeKiro {
-				kind = "kiro" + accountLabel(a)
-			}
-			log.Printf("relayd: account %s (%s) %s", a.Name, kind, state)
-		}
+		log.Printf("relayd: account %s (%s) %s", a.Name, kind, state)
 	}
 
 	srv := &http.Server{
@@ -126,7 +91,7 @@ func main() {
 		Handler:           server.New(cfg, sched).Handler(),
 		ReadHeaderTimeout: 30 * time.Second, // 防 slowloris 慢速连接占资源
 	}
-	log.Printf("relayd listening on %s, protocols: %v, upstreams: %d", cfg.Listen, proto.Names(), len(cfg.Upstreams))
+	log.Printf("relayd listening on %s, protocols: %v, accounts: %d", cfg.Listen, proto.Names(), len(sched.Status()))
 
 	// 优雅停机：SIGINT/SIGTERM 后停止收新请求，
 	// 等在途请求（含流式响应）完成或超时强制断开。

@@ -14,6 +14,7 @@ import (
 	"relayd/backend/config"
 	"relayd/backend/ir"
 	"relayd/backend/proto"
+	"relayd/backend/proto/kiro"
 	"relayd/backend/relay"
 
 	// 注册全部协议 codec
@@ -28,10 +29,9 @@ type Server struct {
 	fwd       *relay.Forwarder
 	apiKey    string
 	mux       *http.ServeMux
-	models    []string // 已配置的 canonical model 列表（/v1/models 用）
 	accessLog bool
 
-	sched    *account.Manager // 账号池调度（nil = 纯静态转发）
+	sched    *account.Manager // 账号池调度（必填：候选与 /v1/models 模型源）
 	store    *account.Store   // 管理面 CRUD 落库
 	adminKey string           // X-Admin-Key；空则不挂载管理面
 	adminMux *http.ServeMux   // /admin 管理路由
@@ -44,15 +44,6 @@ func New(cfg *config.Config, sched *account.Manager) *Server {
 		apiKey:    cfg.APIKey,
 		mux:       http.NewServeMux(),
 		accessLog: cfg.AccessLogEnabled,
-	}
-	seen := map[string]bool{}
-	for _, u := range cfg.Upstreams {
-		for m := range u.Models {
-			if !seen[m] {
-				seen[m] = true
-				s.models = append(s.models, m)
-			}
-		}
 	}
 	s.mux.HandleFunc("POST /v1/messages", s.handleChat("anthropic"))
 	s.mux.HandleFunc("POST /v1/messages/count_tokens", s.handleCountTokens)
@@ -213,16 +204,19 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(respBody)
 }
 
-// handleModels 列出已配置的 canonical model。
+// handleModels 列出账号池可用模型（Manager.Models 并集口径）。
+// Claude ID 以横线形态展示（model_meta.go DashifyClaudeID：Claude Code /
+// Desktop 只认横线形态；请求侧 normalize 等价解析回点号）。
 func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
+	models := s.sched.Models()
 	var sb strings.Builder
 	sb.WriteString(`{"object":"list","data":[`)
-	for i, m := range s.models {
+	for i, m := range models {
 		if i > 0 {
 			sb.WriteByte(',')
 		}
 		sb.WriteString(`{"id":`)
-		sb.WriteString(strconv.Quote(m))
+		sb.WriteString(strconv.Quote(kiro.DashifyClaudeID(m)))
 		sb.WriteString(`,"object":"model"}`)
 	}
 	sb.WriteString(`]}`)

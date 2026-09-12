@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"relayd/backend/proto/kiro"
 )
 
 // DefaultModelCacheTTL 模型缓存 TTL（spec：12h）。
@@ -106,7 +108,9 @@ func (c *ModelInfoCache) Stale() bool {
 	return c.lastUpdate.IsZero() || c.now().Sub(c.lastUpdate) > c.ttl
 }
 
-// EnsureFresh 懒刷新：过期才拉取；失败保留旧数据（下次再试）。
+// EnsureFresh 懒刷新：过期才拉取；失败保留旧数据（下次再试），
+// 缓存为空时回落静态兜底表（account_manager.py 语义：拉取耗尽用
+// FALLBACK_MODELS 填充，待下轮 TTL 网络恢复再刷真值）。
 func (c *ModelInfoCache) EnsureFresh(ctx context.Context) {
 	if !c.Stale() {
 		return
@@ -120,7 +124,23 @@ func (c *ModelInfoCache) EnsureFresh(ctx context.Context) {
 	models, err := fetch(ctx)
 	if err != nil {
 		log.Printf("kiro models: refresh failed, keeping stale cache: %v", err)
+		if c.isEmpty() {
+			fallback := kiro.FallbackModelIDs()
+			entries := make([]KiroModel, 0, len(fallback))
+			for _, id := range fallback {
+				entries = append(entries, KiroModel{ModelID: id, ModelName: id})
+			}
+			c.Update(entries)
+			log.Printf("kiro models: cache empty, seeded %d fallback models", len(entries))
+		}
 		return
 	}
 	c.Update(models)
+}
+
+// isEmpty 空缓存判断（调用方持锁与否皆可，内部自锁）。
+func (c *ModelInfoCache) isEmpty() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.models) == 0
 }

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -421,29 +420,7 @@ func (s *Server) adminAccountUsage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(raw)
 }
 
-// GET /admin/models 全账号模型并集（api-key 映射键 ∪ kiro 展示列表）。
+// GET /admin/models 全账号模型并集（Manager.Models：api-key 映射键 ∪ kiro 展示列表）。
 func (s *Server) adminModels(w http.ResponseWriter, r *http.Request) {
-	set := map[string]bool{}
-	for _, a := range s.sched.Status() {
-		if !a.Enabled || a.Disabled {
-			continue
-		}
-		if a.Type == account.TypeKiro {
-			if rt := s.sched.KiroRuntimeOf(a.Name); rt != nil {
-				for _, m := range rt.AvailableModels() {
-					set[m] = true
-				}
-			}
-			continue
-		}
-		for m := range a.Models {
-			set[m] = true
-		}
-	}
-	out := make([]string, 0, len(set))
-	for m := range set {
-		out = append(out, m)
-	}
-	sort.Strings(out)
-	writeAdminJSON(w, 200, map[string]any{"models": out})
+	writeAdminJSON(w, 200, map[string]any{"models": s.sched.Models()})
 }

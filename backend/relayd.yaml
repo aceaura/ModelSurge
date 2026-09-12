@@ -1,0 +1,10 @@
+# relayd 本地演示配置（配合 cmd/relaymock 使用）
+# mock 账号由 demo/start.sh（或 start.ps1）启动后经 /admin API 注册。
+listen: "127.0.0.1:8080"
+api_key: "sk-local-change-me"
+
+scheduler:
+  db_path: ./data/relayd.db
+
+admin:
+  api_key: "sk-admin-change-me"

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"relayd/backend/config"
-	"relayd/backend/server"
 )
 
 // 工具调用的跨协议转换：Anthropic 客户端（带 tools） -> OpenAI Chat 上游
@@ -39,11 +38,8 @@ data: [DONE]
 	}))
 	defer upSrv.Close()
 
-	s := server.New(&config.Config{Upstreams: []config.Upstream{{
-		Name: "mock", Protocol: "openai-chat", BaseURL: upSrv.URL, APIKey: "sk-mock",
-		Models: map[string]string{"test-model": "native-model"},
-	}}}, nil)
-	gw := httptest.NewServer(s.Handler())
+	gw := newGateway(t, &config.Config{},
+		apiKeyAcc("mock", "openai-chat", upSrv.URL, "test-model", "native-model"))
 	defer gw.Close()
 
 	reqBody := `{"model":"test-model","max_tokens":100,"stream":%v,"tools":[{"name":"get_weather","description":"查询天气","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],"messages":[{"role":"user","content":"巴黎天气如何"}]}`

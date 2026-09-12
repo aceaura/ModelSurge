@@ -543,6 +543,38 @@ func TestBuildPayload_EffortFragment(t *testing.T) {
 	}
 }
 
+// thinking 关闭时请求 effort="none"（NATIVE_EFFORT_NONE_ON_DISABLED）：
+// gpt 系有 none 档 -> 原生关闭推理；claude 系无 none 档 -> 省略。
+func TestBuildPayload_EffortNoneOnDisabled(t *testing.T) {
+	req := textReq(ir.Message{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}})
+	req.Thinking = &ir.ThinkingConfig{Enabled: false, Effort: "high"}
+	p := payloadOf(t, req, "gpt-5.6-sol")
+	frag, ok := p["additionalModelRequestFields"].(map[string]any)
+	if !ok {
+		t.Fatalf("gpt model with thinking disabled must send effort none")
+	}
+	r, ok := frag["reasoning"].(map[string]any)
+	if !ok || r["effort"] != "none" {
+		t.Errorf("reasoning.effort = %v, want none", frag)
+	}
+
+	// 请求无 thinking 字段：同 none 处理
+	req2 := textReq(ir.Message{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}})
+	p2 := payloadOf(t, req2, "gpt-5.5")
+	r2 := p2["additionalModelRequestFields"].(map[string]any)["reasoning"].(map[string]any)
+	if r2["effort"] != "none" {
+		t.Errorf("gpt-5.5 without thinking config: reasoning.effort = %v, want none", r2)
+	}
+
+	// claude 系无 none 档：省略
+	req3 := textReq(ir.Message{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}})
+	req3.Thinking = &ir.ThinkingConfig{Enabled: false}
+	p3 := payloadOf(t, req3, "claude-sonnet-4.6")
+	if _, has := p3["additionalModelRequestFields"]; has {
+		t.Errorf("claude model with thinking disabled should omit field")
+	}
+}
+
 // profileArn 经 Metadata 注入顶层字段。
 func TestBuildPayload_ProfileArn(t *testing.T) {
 	req := textReq(ir.Message{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}})

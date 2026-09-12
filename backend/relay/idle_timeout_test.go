@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"relayd/backend/account"
+	"relayd/backend/ir"
 )
 
 // TestIdleTimeoutBody_Fires 超时触发：底层 body 被关闭，阻塞中的读取返回错误。
@@ -73,25 +74,38 @@ func TestIdleTimeoutBody_Close(t *testing.T) {
 }
 
 // TestCandidateFirstTokenTimeout kiro 候选覆盖全局；未配置/非 kiro 沿用全局。
+// 无 effort 的请求不放大。
 func TestCandidateFirstTokenTimeout(t *testing.T) {
 	f := &Forwarder{
 		firstTokenTimeout:     30 * time.Second,
 		kiroFirstTokenTimeout: 15 * time.Second,
 	}
-	kiroCand := candidate{acc: &account.Account{Type: account.TypeKiro}}
+	req := &ir.Request{}
+	kiroCand := candidate{acc: &account.Account{Type: account.TypeKiro}, native: "claude-sonnet-4.5"}
 	apiCand := candidate{acc: &account.Account{Type: account.TypeAPIKey}}
 	staticCand := candidate{}
-	if got := f.candidateFirstTokenTimeout(kiroCand); got != 15*time.Second {
+	if got := f.candidateFirstTokenTimeout(kiroCand, req); got != 15*time.Second {
 		t.Errorf("kiro cand = %v, want 15s", got)
 	}
-	if got := f.candidateFirstTokenTimeout(apiCand); got != 30*time.Second {
+	if got := f.candidateFirstTokenTimeout(apiCand, req); got != 30*time.Second {
 		t.Errorf("api cand = %v, want 30s", got)
 	}
-	if got := f.candidateFirstTokenTimeout(staticCand); got != 30*time.Second {
+	if got := f.candidateFirstTokenTimeout(staticCand, req); got != 30*time.Second {
 		t.Errorf("static cand = %v, want 30s", got)
 	}
 	f.kiroFirstTokenTimeout = 0 // 未配置：kiro 也沿用全局
-	if got := f.candidateFirstTokenTimeout(kiroCand); got != 30*time.Second {
+	if got := f.candidateFirstTokenTimeout(kiroCand, req); got != 30*time.Second {
 		t.Errorf("unconfigured kiro cand = %v, want 30s", got)
+	}
+
+	// effort=max（8x）按档位放大并封顶 120s
+	reqEffort := &ir.Request{Thinking: &ir.ThinkingConfig{Enabled: true, Effort: "max"}}
+	if got := f.candidateFirstTokenTimeout(kiroCand, reqEffort); got != 120*time.Second {
+		t.Errorf("kiro cand effort=max = %v, want 120s (cap)", got)
+	}
+	// effort=low（1.5x）：30s -> 45s
+	reqLow := &ir.Request{Thinking: &ir.ThinkingConfig{Enabled: true, Effort: "low"}}
+	if got := f.candidateFirstTokenTimeout(staticCand, reqLow); got != 45*time.Second {
+		t.Errorf("static cand effort=low = %v, want 45s", got)
 	}
 }

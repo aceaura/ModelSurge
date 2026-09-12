@@ -1,4 +1,4 @@
-module relayd
+module relayd/backend
 
 go 1.25.1
 

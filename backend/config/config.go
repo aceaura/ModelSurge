@@ -4,22 +4,18 @@ package config
 import (
 	"fmt"
 	"os"
-	"strings"
 	"time"
-
-	"relayd/backend/ir"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config 顶层配置。
 type Config struct {
-	Listen    string     `yaml:"listen"`  // 客户端入口监听地址，如 "127.0.0.1:8080"
-	APIKey    string     `yaml:"api_key"` // 客户端鉴权 key；为空则不鉴权（仅限本机调试）
-	Upstreams []Upstream `yaml:"upstreams"`
+	Listen string `yaml:"listen"`  // 客户端入口监听地址，如 "127.0.0.1:8080"
+	APIKey string `yaml:"api_key"` // 客户端鉴权 key；为空则不鉴权（仅限本机调试）
 
 	// FirstTokenTimeout 等上游首个 SSE 事件的超时（如 "30s"）。
-	// 超时且尚未向客户端写字节时换下一个上游重试；空 = 30s，"0" 禁用。
+	// 超时且尚未向客户端写字节时换下一个账号重试；空 = 30s，"0" 禁用。
 	FirstTokenTimeout string `yaml:"first_token_timeout"`
 	// EstimateUsage 上游未给 usage 时本地粗估兜底（估算值仅作参考，默认关）。
 	EstimateUsage bool `yaml:"estimate_usage"`
@@ -28,9 +24,9 @@ type Config struct {
 	// TruncationRecovery 截断恢复开关（上游截断工具参数/正文后，
 	// 下次请求注入合成提示告知模型）；nil = 默认开。
 	TruncationRecovery *bool `yaml:"truncation_recovery"`
-	// Scheduler 账号池动态调度（SQLite 持久化 + 限流冷却）；不配置则纯静态转发。
+	// Scheduler 账号池动态调度（SQLite 持久化 + 限流冷却）；必填。
 	Scheduler *Scheduler `yaml:"scheduler"`
-	// Admin 管理面（/admin 前缀，X-Admin-Key 鉴权）；scheduler 开启时必填。
+	// Admin 管理面（/admin 前缀，X-Admin-Key 鉴权）。
 	Admin *Admin `yaml:"admin"`
 	// Kiro kiro 协议账号的全局段（region/超时/退避/概率/TTL/fake_reasoning/
 	// web_search/cloud/debug）；不配置则全默认。
@@ -69,33 +65,6 @@ type CooldownsDur struct {
 	Default  time.Duration
 	Window7h time.Duration
 	Monthly  time.Duration
-}
-
-// Upstream 一个上游端点。
-type Upstream struct {
-	Name     string            `yaml:"name"`     // 标识
-	Protocol string            `yaml:"protocol"` // anthropic / openai-chat / openai-responses / gemini / kiro
-	BaseURL  string            `yaml:"base_url"` // 如 "https://api.anthropic.com"（kiro 不需要）
-	APIKey   string            `yaml:"api_key"`
-	Models   map[string]string `yaml:"models"` // canonical model -> 上游 native model；为空则接受任意模型并透传模型名
-	// RequestOverrides 转发前覆盖请求参数（thinking/temperature/top_p/max_tokens）；
-	// nil = 透传客户端值。账号池模式下经 SyncAccounts 落库随账号生效。
-	RequestOverrides *ir.Overrides `yaml:"request_overrides"`
-	// Kiro protocol=kiro 时的账号种子（凭据三选一；仅 scheduler 模式生效）。
-	Kiro *UpstreamKiro `yaml:"kiro"`
-}
-
-// UpstreamKiro kiro 账号种子凭据（refresh_token / creds_file / cli_db 三选一，
-// 多配按此优先级取第一个）。
-type UpstreamKiro struct {
-	RefreshToken  string `yaml:"refresh_token"`  // 直配 refresh token
-	CredsFile     string `yaml:"creds_file"`     // Kiro IDE JSON 凭据文件路径
-	CliDB         string `yaml:"cli_db"`         // kiro cli SQLite 路径
-	Region        string `yaml:"region"`         // SSO 刷新区；空 = kiro.region 或 us-east-1
-	APIRegion     string `yaml:"api_region"`     // API 区覆盖；空则按检测链推导
-	ProfileArn    string `yaml:"profile_arn"`    // 可空，首次使用时自动获取回填
-	WebSearch     bool   `yaml:"web_search"`     // web_search 工具注入（MCP 代执行）
-	FakeReasoning bool   `yaml:"fake_reasoning"` // fake_reasoning 思考标签注入
 }
 
 // Admin 管理面配置。
@@ -170,6 +139,9 @@ func Load(path string) (*Config, error) {
 		}
 		c.FirstTokenTimeoutDur = d
 	}
+	if c.Scheduler == nil {
+		return nil, fmt.Errorf("config: scheduler section is required (db_path, admin.api_key)")
+	}
 	if sc := c.Scheduler; sc != nil {
 		if sc.DBPath == "" {
 			return nil, fmt.Errorf("config: scheduler.db_path is required")
@@ -209,34 +181,6 @@ func Load(path string) (*Config, error) {
 		if err := c.Kiro.parse(); err != nil {
 			return nil, err
 		}
-	}
-	if len(c.Upstreams) == 0 {
-		return nil, fmt.Errorf("config: at least one upstream is required")
-	}
-	for i := range c.Upstreams {
-		u := &c.Upstreams[i]
-		if u.Name == "" {
-			u.Name = fmt.Sprintf("upstream-%d", i)
-		}
-		if u.Protocol == "" {
-			return nil, fmt.Errorf("config: upstream %q: protocol is required", u.Name)
-		}
-		if u.Protocol == "kiro" {
-			if u.Kiro == nil || (u.Kiro.RefreshToken == "" && u.Kiro.CredsFile == "" && u.Kiro.CliDB == "") {
-				return nil, fmt.Errorf("config: upstream %q: kiro seed requires one of kiro.refresh_token / kiro.creds_file / kiro.cli_db", u.Name)
-			}
-			if u.BaseURL != "" || u.APIKey != "" || len(u.Models) > 0 {
-				return nil, fmt.Errorf("config: upstream %q: kiro upstream accepts no base_url/api_key/models", u.Name)
-			}
-			continue
-		}
-		if u.Kiro != nil {
-			return nil, fmt.Errorf("config: upstream %q: kiro seed is only valid with protocol: kiro", u.Name)
-		}
-		if u.BaseURL == "" {
-			return nil, fmt.Errorf("config: upstream %q: base_url is required", u.Name)
-		}
-		u.BaseURL = strings.TrimRight(u.BaseURL, "/")
 	}
 	return &c, nil
 }

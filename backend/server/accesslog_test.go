@@ -43,13 +43,8 @@ func TestAccessLog(t *testing.T) {
 	})
 
 	up, _ := mockUpstream(t, "anthropic", "STREAM_OK")
-	gw := newGateway(t, &config.Config{
-		APIKey:           "k",
-		AccessLogEnabled: true,
-		Upstreams: []config.Upstream{
-			{Name: "cl", Protocol: "anthropic", BaseURL: up.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-		},
-	})
+	gw := newGateway(t, &config.Config{APIKey: "k", AccessLogEnabled: true},
+		apiKeyAcc("cl", "anthropic", up.URL, "m", "m"))
 
 	resp, err := http.Get(gw.URL + "/health")
 	if err != nil {
@@ -103,12 +98,8 @@ func TestAccessLogDisabled(t *testing.T) {
 		log.SetFlags(log.LstdFlags)
 	})
 
-	gw := newGateway(t, &config.Config{
-		AccessLogEnabled: false,
-		Upstreams: []config.Upstream{
-			{Name: "cl", Protocol: "anthropic", BaseURL: "http://127.0.0.1:1", APIKey: "k", Models: map[string]string{"m": "m"}},
-		},
-	})
+	gw := newGateway(t, &config.Config{AccessLogEnabled: false},
+		apiKeyAcc("cl", "anthropic", "http://127.0.0.1:1", "m", "m"))
 	resp, err := http.Get(gw.URL + "/health")
 	if err != nil {
 		t.Fatal(err)

@@ -42,6 +42,12 @@ var HIDDEN_MODELS = map[string]string{}
 // HIDDEN_FROM_LIST /v1/models 不展示（仍可直呼）的模型 ID。
 var HIDDEN_FROM_LIST = []string{"auto"}
 
+// FallbackModelIDs 兜底表 ID 列表（缓存空且拉取失败时的种子，
+// account_manager.py：拉取耗尽回落静态表，待网络恢复再刷真值）。
+func FallbackModelIDs() []string {
+	return append([]string(nil), FALLBACK_MODELS...)
+}
+
 // DefaultMaxInputTokens 模型条目缺 tokenLimits 时的默认输入上限。
 const DefaultMaxInputTokens = 200000
 

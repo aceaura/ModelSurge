@@ -128,16 +128,16 @@ func newKiroMock(t *testing.T, chat func(w http.ResponseWriter, r *http.Request)
 }
 
 // newKiroEnv 起 mock Kiro 服务 + 单 kiro 账号网关。
-// extraSeeds 追加账号（如 anthropic 兜底），插库顺序在 kiro 账号之后
+// extraAccounts 追加账号（如 anthropic 兜底），插库顺序在 kiro 账号之后
 // （rowid 调度序：kiro 优先）。
-func newKiroEnv(t *testing.T, chat func(w http.ResponseWriter, r *http.Request), extraSeeds ...account.SeedUpstream) (*httptest.Server, *account.Manager, *kiroMockState) {
+func newKiroEnv(t *testing.T, chat func(w http.ResponseWriter, r *http.Request), extraAccounts ...*account.Account) (*httptest.Server, *account.Manager, *kiroMockState) {
 	t.Helper()
-	return newKiroEnvWithConfig(t, &config.Config{Scheduler: &config.Scheduler{SameAccountRetries: 2}}, chat, extraSeeds...)
+	return newKiroEnvWithConfig(t, &config.Config{Scheduler: &config.Scheduler{SameAccountRetries: 2}}, chat, extraAccounts...)
 }
 
 // newKiroEnvWithConfig 同 newKiroEnv 但允许自定义顶层配置
 // （截断恢复开关等；测试直接构造 Config，不走 Load 默认值）。
-func newKiroEnvWithConfig(t *testing.T, cfg *config.Config, chat func(w http.ResponseWriter, r *http.Request), extraSeeds ...account.SeedUpstream) (*httptest.Server, *account.Manager, *kiroMockState) {
+func newKiroEnvWithConfig(t *testing.T, cfg *config.Config, chat func(w http.ResponseWriter, r *http.Request), extraAccounts ...*account.Account) (*httptest.Server, *account.Manager, *kiroMockState) {
 	t.Helper()
 	st := newKiroMock(t, chat)
 	store, err := account.Open(filepath.Join(t.TempDir(), "kiro.db"))
@@ -151,7 +151,12 @@ func newKiroEnvWithConfig(t *testing.T, cfg *config.Config, chat func(w http.Res
 	}); err != nil {
 		t.Fatal(err)
 	}
-	m, err := account.NewManager(store, extraSeeds, nil, account.Cooldowns{}, account.ManagerDeps{})
+	for _, a := range extraAccounts {
+		if err := store.InsertAccount(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := account.NewManager(store, account.Cooldowns{}, account.ManagerDeps{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +271,7 @@ func TestE2EKiroQuotaCooldown(t *testing.T) {
 	gw, m, st := newKiroEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(402)
 		_, _ = w.Write([]byte(`{"message":"monthly request limit exceeded","reason":"MONTHLY_REQUEST_COUNT"}`))
-	}, account.SeedUpstream{Name: "z-fallback", Protocol: "anthropic", BaseURL: fb.URL, APIKey: "k",
+	}, &account.Account{Name: "z-fallback", Type: account.TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: fb.URL, APIKey: "k",
 		Models: map[string]string{"claude-sonnet-4-5": "native-model"}})
 
 	status, body := postChat(t, gw.URL, "/v1/messages", anthropicChat)
@@ -300,7 +305,7 @@ func TestE2EKiroInvalidModelSwitchesWithoutPenalty(t *testing.T) {
 	gw, m, st := newKiroEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(400)
 		_, _ = w.Write([]byte(`{"message":"invalid model","reason":"INVALID_MODEL_ID"}`))
-	}, account.SeedUpstream{Name: "z-fallback", Protocol: "anthropic", BaseURL: fb.URL, APIKey: "k",
+	}, &account.Account{Name: "z-fallback", Type: account.TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: fb.URL, APIKey: "k",
 		Models: map[string]string{"claude-sonnet-4-5": "native-model"}})
 
 	for i := 0; i < 2; i++ {
@@ -357,7 +362,7 @@ func TestE2EKiroTransientBreakerMixedPool(t *testing.T) {
 	gw, m, st := newKiroEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(500)
 		_, _ = w.Write([]byte(`{"message":"boom"}`))
-	}, account.SeedUpstream{Name: "z-fallback", Protocol: "anthropic", BaseURL: fb.URL, APIKey: "k",
+	}, &account.Account{Name: "z-fallback", Type: account.TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: fb.URL, APIKey: "k",
 		Models: map[string]string{"claude-sonnet-4-5": "native-model"}})
 
 	status, respBody := postChat(t, gw.URL, "/v1/messages", anthropicChat)

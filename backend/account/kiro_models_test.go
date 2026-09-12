@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"relayd/backend/proto/kiro"
 )
 
 // 模型缓存：TTL 过期懒刷新、失败保留旧值、隐藏模型注入。
@@ -55,5 +57,31 @@ func TestModelInfoCache(t *testing.T) {
 	c.EnsureFresh(context.Background())
 	if !c.IsValid("glm-5") {
 		t.Error("stale cache must survive failed refresh")
+	}
+}
+
+// 刷新失败且缓存为空：回落静态兜底表（account_manager.py FALLBACK_MODELS 语义）。
+func TestModelInfoCacheFallbackSeed(t *testing.T) {
+	c := NewModelInfoCache(func(ctx context.Context) ([]KiroModel, error) {
+		return nil, errors.New("network down")
+	})
+	now := time.Now()
+	c.now = func() time.Time { return now }
+
+	c.EnsureFresh(context.Background())
+	if len(c.AllModelIDs()) == 0 {
+		t.Fatal("empty cache on failed refresh must be seeded with fallback models")
+	}
+	for _, id := range kiro.FallbackModelIDs() {
+		if !c.IsValid(id) {
+			t.Errorf("fallback model %q missing after seed", id)
+		}
+	}
+
+	// 兜底种子后缓存非空：再次失败保留种子（直到网络恢复刷真值）
+	now = now.Add(13 * time.Hour)
+	c.EnsureFresh(context.Background())
+	if !c.IsValid(kiro.FallbackModelIDs()[0]) {
+		t.Error("fallback seed must survive subsequent failed refresh")
 	}
 }

@@ -18,24 +18,24 @@ import (
 	"relayd/backend/server"
 )
 
-// newSchedGateway 起一个带账号调度器的网关。
-func newSchedGateway(t *testing.T, ups []config.Upstream) (*httptest.Server, *account.Manager) {
+// newSchedGateway 起一个带账号调度器的网关（账号逐个落库后由 Manager 装载）。
+func newSchedGateway(t *testing.T, accs ...*account.Account) (*httptest.Server, *account.Manager) {
 	t.Helper()
 	store, err := account.Open(filepath.Join(t.TempDir(), "sched.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	seeds := make([]account.SeedUpstream, len(ups))
-	for i, u := range ups {
-		seeds[i] = account.SeedUpstream{Name: u.Name, Protocol: u.Protocol, BaseURL: u.BaseURL, APIKey: u.APIKey, Models: u.Models, Overrides: u.RequestOverrides}
+	for _, a := range accs {
+		if err := store.InsertAccount(a); err != nil {
+			t.Fatal(err)
+		}
 	}
-	m, err := account.NewManager(store, seeds, nil, account.Cooldowns{}, account.ManagerDeps{})
+	m, err := account.NewManager(store, account.Cooldowns{}, account.ManagerDeps{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
-		Upstreams: ups,
 		Scheduler: &config.Scheduler{SameAccountRetries: 2},
 	}
 	gw := httptest.NewServer(server.New(cfg, m).Handler())
@@ -78,10 +78,9 @@ func TestSchedRateLimitSwitch(t *testing.T) {
 	up2 := countingUpstream(t, &calls2, "AFTER_SWITCH")
 	defer up2.Close()
 
-	gw, m := newSchedGateway(t, []config.Upstream{
-		{Name: "bad", Protocol: "anthropic", BaseURL: up1.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-		{Name: "good", Protocol: "anthropic", BaseURL: up2.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-	})
+	gw, m := newSchedGateway(t,
+		apiKeyAcc("bad", "anthropic", up1.URL, "m", "m"),
+		apiKeyAcc("good", "anthropic", up2.URL, "m", "m"))
 
 	status, body := chatReq(t, gw.URL)
 	if status != 200 || !strings.Contains(body, "AFTER_SWITCH") {
@@ -135,10 +134,9 @@ func TestSchedTransientRetryInPlace(t *testing.T) {
 	}))
 	defer up2.Close()
 
-	gw, _ := newSchedGateway(t, []config.Upstream{
-		{Name: "flaky", Protocol: "anthropic", BaseURL: up1.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-		{Name: "other", Protocol: "anthropic", BaseURL: up2.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-	})
+	gw, _ := newSchedGateway(t,
+		apiKeyAcc("flaky", "anthropic", up1.URL, "m", "m"),
+		apiKeyAcc("other", "anthropic", up2.URL, "m", "m"))
 
 	status, body := chatReq(t, gw.URL)
 	if status != 200 || !strings.Contains(body, "RECOVERED") {
@@ -164,10 +162,9 @@ func TestSchedAuthFailureDisables(t *testing.T) {
 	up2 := countingUpstream(t, &calls2, "OK")
 	defer up2.Close()
 
-	gw, m := newSchedGateway(t, []config.Upstream{
-		{Name: "dead-key", Protocol: "anthropic", BaseURL: up1.URL, APIKey: "bad", Models: map[string]string{"m": "m"}},
-		{Name: "good", Protocol: "anthropic", BaseURL: up2.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-	})
+	gw, m := newSchedGateway(t,
+		apiKeyAcc("dead-key", "anthropic", up1.URL, "m", "m"),
+		apiKeyAcc("good", "anthropic", up2.URL, "m", "m"))
 
 	status, body := chatReq(t, gw.URL)
 	if status != 200 || !strings.Contains(body, "OK") {
@@ -193,9 +190,7 @@ func TestSchedAuthFailureDisables(t *testing.T) {
 // 请求成功 → 真实 usage 记账入库（message_start 的 input 与 delta 的 output 合并）。
 func TestSchedUsageRecorded(t *testing.T) {
 	up, _ := mockUpstream(t, "anthropic", "OK")
-	gw, m := newSchedGateway(t, []config.Upstream{
-		{Name: "acc1", Protocol: "anthropic", BaseURL: up.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-	})
+	gw, m := newSchedGateway(t, apiKeyAcc("acc1", "anthropic", up.URL, "m", "m"))
 
 	status, body := chatReq(t, gw.URL)
 	if status != 200 {
@@ -225,28 +220,30 @@ func TestSchedRequestOverrides(t *testing.T) {
 	defer up.Close()
 
 	temp, topP := 1.0, 0.95
-	ups := []config.Upstream{
-		{Name: "a", Protocol: "anthropic", BaseURL: up.URL, APIKey: "k",
-			Models: map[string]string{"m": "m"},
-			RequestOverrides: &ir.Overrides{
-				Thinking:    &ir.ThinkingOverride{Enabled: true, BudgetTokens: 4096, Effort: "max"},
-				Temperature: &temp,
-				TopP:        &topP,
-			}},
-	}
 	store, err := account.Open(filepath.Join(t.TempDir(), "sched.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	m, err := account.NewManager(store, []account.SeedUpstream{
-		{Name: "a", Protocol: "anthropic", BaseURL: up.URL, APIKey: "k", Models: ups[0].Models, Overrides: ups[0].RequestOverrides},
-	}, nil, account.Cooldowns{}, account.ManagerDeps{})
+	if err := store.InsertAccount(&account.Account{
+		Name: "a", Type: account.TypeAPIKey, Enabled: true,
+		Protocol: "anthropic", BaseURL: up.URL, APIKey: "k",
+		Models: map[string]string{"m": "m"},
+		Overrides: &ir.Overrides{
+			Thinking:    &ir.ThinkingOverride{Enabled: true, BudgetTokens: 4096, Effort: "max"},
+			Temperature: &temp,
+			TopP:        &topP,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := account.NewManager(store, account.Cooldowns{}, account.ManagerDeps{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	gw := httptest.NewServer(server.New(&config.Config{
-		Upstreams: ups, Scheduler: &config.Scheduler{SameAccountRetries: 2}, AccessLogEnabled: true,
+		Scheduler:        &config.Scheduler{SameAccountRetries: 2},
+		AccessLogEnabled: true,
 	}, m).Handler())
 	t.Cleanup(gw.Close)
 

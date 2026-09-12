@@ -4,20 +4,49 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"relayd/backend/account"
 	"relayd/backend/config"
 	"relayd/backend/server"
 )
 
-func newGateway(t *testing.T, cfg *config.Config) *httptest.Server {
+func newGateway(t *testing.T, cfg *config.Config, accs ...*account.Account) *httptest.Server {
 	t.Helper()
-	gw := httptest.NewServer(server.New(cfg, nil).Handler())
+	store, err := account.Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	for _, a := range accs {
+		if err := store.InsertAccount(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := account.NewManager(store, account.Cooldowns{}, account.ManagerDeps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(server.New(cfg, m).Handler())
 	t.Cleanup(gw.Close)
 	return gw
+}
+
+// apiKeyAcc 启用中的 api-key 型账号（测试统一 APIKey "k"）。
+func apiKeyAcc(name, protocol, baseURL, clientModel, nativeModel string) *account.Account {
+	return &account.Account{
+		Name:     name,
+		Type:     account.TypeAPIKey,
+		Enabled:  true,
+		Protocol: protocol,
+		BaseURL:  baseURL,
+		APIKey:   "k",
+		Models:   map[string]string{clientModel: nativeModel},
+	}
 }
 
 func anthropicChatBody() string {
@@ -35,10 +64,9 @@ func TestRetryOnUpstreamFailure(t *testing.T) {
 	defer up1.Close()
 	up2, rec2 := mockUpstream(t, "anthropic", "FROM_SECOND")
 
-	gw := newGateway(t, &config.Config{Upstreams: []config.Upstream{
-		{Name: "bad", Protocol: "anthropic", BaseURL: up1.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-		{Name: "good", Protocol: "anthropic", BaseURL: up2.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-	}})
+	gw := newGateway(t, &config.Config{},
+		apiKeyAcc("bad", "anthropic", up1.URL, "m", "m"),
+		apiKeyAcc("good", "anthropic", up2.URL, "m", "m"))
 
 	resp, err := http.Post(gw.URL+"/v1/messages", "application/json", strings.NewReader(anthropicChatBody()))
 	if err != nil {
@@ -73,13 +101,9 @@ func TestRetryOnFirstTokenTimeout(t *testing.T) {
 	defer hang.Close()
 	up2, _ := mockUpstream(t, "anthropic", "AFTER_TIMEOUT")
 
-	gw := newGateway(t, &config.Config{
-		FirstTokenTimeoutDur: 50 * time.Millisecond,
-		Upstreams: []config.Upstream{
-			{Name: "hang", Protocol: "anthropic", BaseURL: hang.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-			{Name: "good", Protocol: "anthropic", BaseURL: up2.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-		},
-	})
+	gw := newGateway(t, &config.Config{FirstTokenTimeoutDur: 50 * time.Millisecond},
+		apiKeyAcc("hang", "anthropic", hang.URL, "m", "m"),
+		apiKeyAcc("good", "anthropic", up2.URL, "m", "m"))
 
 	start := time.Now()
 	resp, err := http.Post(gw.URL+"/v1/messages", "application/json", strings.NewReader(anthropicChatBody()))
@@ -115,10 +139,9 @@ func TestNoRetryAfterBytesWritten(t *testing.T) {
 	}))
 	defer up2.Close()
 
-	gw := newGateway(t, &config.Config{Upstreams: []config.Upstream{
-		{Name: "broken", Protocol: "anthropic", BaseURL: broken.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-		{Name: "other", Protocol: "anthropic", BaseURL: up2.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-	}})
+	gw := newGateway(t, &config.Config{},
+		apiKeyAcc("broken", "anthropic", broken.URL, "m", "m"),
+		apiKeyAcc("other", "anthropic", up2.URL, "m", "m"))
 
 	resp, err := http.Post(gw.URL+"/v1/messages", "application/json", strings.NewReader(anthropicChatBody()))
 	if err != nil {
@@ -147,9 +170,7 @@ func TestCountTokensNativeForward(t *testing.T) {
 	}))
 	defer up.Close()
 
-	gw := newGateway(t, &config.Config{Upstreams: []config.Upstream{
-		{Name: "cl", Protocol: "anthropic", BaseURL: up.URL, APIKey: "k", Models: map[string]string{"m": "native-m"}},
-	}})
+	gw := newGateway(t, &config.Config{}, apiKeyAcc("cl", "anthropic", up.URL, "m", "native-m"))
 
 	resp, err := http.Post(gw.URL+"/v1/messages/count_tokens", "application/json", strings.NewReader(anthropicChatBody()))
 	if err != nil {
@@ -165,9 +186,7 @@ func TestCountTokensNativeForward(t *testing.T) {
 // TestCountTokensLocalEstimate 无 anthropic 上游时本地估算兜底。
 func TestCountTokensLocalEstimate(t *testing.T) {
 	up, _ := mockUpstream(t, "openai-chat", "X")
-	gw := newGateway(t, &config.Config{Upstreams: []config.Upstream{
-		{Name: "st", Protocol: "openai-chat", BaseURL: up.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-	}})
+	gw := newGateway(t, &config.Config{}, apiKeyAcc("st", "openai-chat", up.URL, "m", "m"))
 
 	resp, err := http.Post(gw.URL+"/v1/messages/count_tokens", "application/json", strings.NewReader(anthropicChatBody()))
 	if err != nil {
@@ -186,9 +205,7 @@ func TestCountTokensLocalEstimate(t *testing.T) {
 // TestHostedToolMapping Anthropic web_search 声明映射到 Gemini googleSearch。
 func TestHostedToolMapping(t *testing.T) {
 	up, rec := mockUpstream(t, "gemini", "OK")
-	gw := newGateway(t, &config.Config{Upstreams: []config.Upstream{
-		{Name: "gm", Protocol: "gemini", BaseURL: up.URL, APIKey: "k", Models: map[string]string{"m": "native-m"}},
-	}})
+	gw := newGateway(t, &config.Config{}, apiKeyAcc("gm", "gemini", up.URL, "m", "native-m"))
 
 	reqBody := `{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],` +
 		`"tools":[{"type":"web_search_20250305","name":"web_search"},{"name":"get_weather","input_schema":{"type":"object"}}]}`
@@ -209,9 +226,7 @@ func TestHostedToolMapping(t *testing.T) {
 // TestHostedToolRoundTrip Anthropic web_search 同协议往返保持带版本 type。
 func TestHostedToolRoundTrip(t *testing.T) {
 	up, rec := mockUpstream(t, "anthropic", "OK")
-	gw := newGateway(t, &config.Config{Upstreams: []config.Upstream{
-		{Name: "cl", Protocol: "anthropic", BaseURL: up.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-	}})
+	gw := newGateway(t, &config.Config{}, apiKeyAcc("cl", "anthropic", up.URL, "m", "m"))
 
 	reqBody := `{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],` +
 		`"tools":[{"type":"web_search_20250305","name":"web_search"}]}`
@@ -229,9 +244,7 @@ func TestHostedToolRoundTrip(t *testing.T) {
 // TestDiagnosticsHeader 有损转换经 X-Relayd-Notes 响应头暴露。
 func TestDiagnosticsHeader(t *testing.T) {
 	up, _ := mockUpstream(t, "openai-chat", "OK")
-	gw := newGateway(t, &config.Config{Upstreams: []config.Upstream{
-		{Name: "st", Protocol: "openai-chat", BaseURL: up.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-	}})
+	gw := newGateway(t, &config.Config{}, apiKeyAcc("st", "openai-chat", up.URL, "m", "m"))
 
 	// 带签名 thinking 块 + hosted 工具：openai-chat 两者都不支持
 	reqBody := `{"model":"m","max_tokens":100,"messages":[` +
@@ -264,9 +277,7 @@ func TestCrossProtocolSignatureDropped(t *testing.T) {
 		`{"role":"user","content":"go on"}]}`
 
 	gup, grec := mockUpstream(t, "gemini", "OK")
-	gwGem := newGateway(t, &config.Config{Upstreams: []config.Upstream{
-		{Name: "gm", Protocol: "gemini", BaseURL: gup.URL, APIKey: "k", Models: map[string]string{"m": "native-m"}},
-	}})
+	gwGem := newGateway(t, &config.Config{}, apiKeyAcc("gm", "gemini", gup.URL, "m", "native-m"))
 	resp, err := http.Post(gwGem.URL+"/v1/messages", "application/json", strings.NewReader(reqBody))
 	if err != nil {
 		t.Fatal(err)
@@ -284,9 +295,7 @@ func TestCrossProtocolSignatureDropped(t *testing.T) {
 	}
 
 	aup, arec := mockUpstream(t, "anthropic", "OK")
-	gwAnth := newGateway(t, &config.Config{Upstreams: []config.Upstream{
-		{Name: "cl", Protocol: "anthropic", BaseURL: aup.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-	}})
+	gwAnth := newGateway(t, &config.Config{}, apiKeyAcc("cl", "anthropic", aup.URL, "m", "m"))
 	resp, err = http.Post(gwAnth.URL+"/v1/messages", "application/json", strings.NewReader(reqBody))
 	if err != nil {
 		t.Fatal(err)
@@ -320,12 +329,8 @@ data: [DONE]
 	}))
 	defer up.Close()
 
-	gw := newGateway(t, &config.Config{
-		EstimateUsage: true,
-		Upstreams: []config.Upstream{
-			{Name: "st", Protocol: "openai-chat", BaseURL: up.URL, APIKey: "k", Models: map[string]string{"m": "m"}},
-		},
-	})
+	gw := newGateway(t, &config.Config{EstimateUsage: true},
+		apiKeyAcc("st", "openai-chat", up.URL, "m", "m"))
 
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json",
 		strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))

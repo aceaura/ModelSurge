@@ -12,12 +12,17 @@ func newTestManager(t *testing.T, dbPath string) (*Manager, *Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seeds := []SeedUpstream{
-		{Name: "a1", Protocol: "anthropic", BaseURL: "http://x", APIKey: "k1", Models: map[string]string{"m": "m"}},
-		{Name: "a2", Protocol: "anthropic", BaseURL: "http://x", APIKey: "k2", Models: map[string]string{"m": "m"}},
-		{Name: "a3", Protocol: "openai-chat", BaseURL: "http://y", APIKey: "k3"},
+	seeds := []*Account{
+		{Name: "a1", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k1", Models: map[string]string{"m": "m"}},
+		{Name: "a2", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k2", Models: map[string]string{"m": "m"}},
+		{Name: "a3", Type: TypeAPIKey, Enabled: true, Protocol: "openai-chat", BaseURL: "http://y", APIKey: "k3"},
 	}
-	m, err := NewManager(store, seeds, nil, Cooldowns{}, ManagerDeps{})
+	for _, a := range seeds {
+		if err := store.InsertAccount(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := NewManager(store, Cooldowns{}, ManagerDeps{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +64,49 @@ func TestClassifyLimit_Fallback(t *testing.T) {
 		if d := until.Sub(now); d != tc.dur {
 			t.Errorf("%q: cooldown = %v, want %v", tc.body, d, tc.dur)
 		}
+	}
+}
+
+// 单账号特例：无视限流/熔断冷却恒返回（account_manager.py 语义）；
+// tried 排除与显式禁用仍生效。
+func TestSingleAccountBypassCooldown(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "single.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.InsertAccount(&Account{
+		Name: "solo", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k1",
+		Models: map[string]string{"m": "m"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager(store, Cooldowns{}, ManagerDeps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 限流冷却中：仍返回
+	m.ReportLimit("solo", "monthly usage limit reached")
+	if a, ok := m.Next("m", nil); !ok || a.Name != "solo" {
+		t.Fatalf("limit-cooled single account must still be returned, got %v %v", a, ok)
+	}
+
+	// 熔断冷却中：仍返回
+	m.ReportTransientFailure("solo")
+	if a, ok := m.Next("m", nil); !ok || a.Name != "solo" {
+		t.Fatalf("breaker-cooled single account must still be returned, got %v %v", a, ok)
+	}
+
+	// tried 排除：不返回
+	if _, ok := m.Next("m", map[string]bool{"solo": true}); ok {
+		t.Error("tried exclusion must still apply in single-account bypass")
+	}
+
+	// 显式禁用：不返回
+	m.ReportAuthFailure("solo")
+	if _, ok := m.Next("m", nil); ok {
+		t.Error("disabled single account must not be returned")
 	}
 }
 
@@ -131,8 +179,15 @@ func TestUsageAccountingAndRestart(t *testing.T) {
 	}
 
 	// 模拟重启：重开同一 DB，冷却状态必须延续
-	m2, store2 := newTestManager(t, dbPath)
+	store2, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer store2.Close()
+	m2, err := NewManager(store2, Cooldowns{}, ManagerDeps{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	a, _ := m2.Next("m", nil)
 	if a.Name != "a2" {
 		t.Fatalf("after restart, pick = %s, want a2 (a1 still cooling)", a.Name)
@@ -143,40 +198,34 @@ func TestUsageAccountingAndRestart(t *testing.T) {
 	}
 }
 
-// yaml 种子同步：加账号、改 key 以 yaml 为准；upsert-only，
-// yaml 中已移除的账号不删除（管理 API 创建的账号与 yaml 并存）。
-func TestSyncAccounts(t *testing.T) {
+// 库内账号读取 + 管理面建号并存：NewManager 从库装载，
+// 建号后经 Reconfigure 进入调度。
+func TestNewManagerFromStore(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sync.db")
 	m, store := newTestManager(t, dbPath)
 	defer store.Close()
 
-	// 模拟管理 API 创建的账号
+	// 管理面创建 kiro 账号
 	if err := store.InsertAccount(&Account{
 		Name: "api-created", Type: TypeKiro, Enabled: true,
 		Kiro: &KiroAccount{Source: "refresh_token", RefreshToken: "rt"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-
-	seeds := []SeedUpstream{
-		{Name: "a1", Protocol: "anthropic", BaseURL: "http://x", APIKey: "k1-new", Models: map[string]string{"m": "m"}},
-		{Name: "a4", Protocol: "gemini", BaseURL: "http://z", APIKey: "k4", Models: map[string]string{"m": "m"}},
-	}
-	if err := store.SyncAccounts(seeds); err != nil {
-		t.Fatal(err)
-	}
 	accs, err := store.ListAccounts()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(accs) != 5 {
-		t.Fatalf("accounts = %d, want 5 (a1..a3 + a4 + api-created)", len(accs))
-	}
-	if accs[0].APIKey != "k1-new" {
-		t.Errorf("a1 key = %q, want updated k1-new", accs[0].APIKey)
+	if len(accs) != 4 {
+		t.Fatalf("accounts = %d, want 4 (a1..a3 + api-created)", len(accs))
 	}
 	if accs[3].Name != "api-created" || accs[3].Type != TypeKiro {
-		t.Errorf("api-created = %s %q, want kiro (must survive seed sync)", accs[3].Name, accs[3].Type)
+		t.Errorf("api-created = %s %q, want kiro", accs[3].Name, accs[3].Type)
 	}
-	_ = m
+
+	// 热加载进调度（管理 API 路径），可被选中服务
+	m.Reconfigure(&accs[3])
+	if a, ok := m.Next("m", map[string]bool{"a1": true, "a2": true, "a3": true}); !ok || a.Name != "api-created" {
+		t.Fatalf("pick = %v %v, want api-created", a, ok)
+	}
 }

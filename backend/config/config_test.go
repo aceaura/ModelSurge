@@ -17,33 +17,51 @@ func writeCfg(t *testing.T, content string) string {
 	return p
 }
 
+// minimalCfg scheduler 必选段的最小样例。
+const minimalCfg = `
+scheduler:
+  db_path: /data/x.db
+admin:
+  api_key: sk-admin
+`
+
 func TestLoad_Defaults(t *testing.T) {
-	p := writeCfg(t, `
-upstreams:
-  - name: u
-    protocol: anthropic
-    base_url: https://api.anthropic.com
-    api_key: k
-`)
-	c, err := Load(p)
+	c, err := Load(writeCfg(t, minimalCfg))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.Kiro != nil {
 		t.Fatal("no kiro section expected")
 	}
+	if c.Listen != "127.0.0.1:8080" {
+		t.Errorf("Listen = %q", c.Listen)
+	}
 	if c.FirstTokenTimeoutDur != 30*time.Second {
 		t.Errorf("FirstTokenTimeoutDur = %v, want 30s", c.FirstTokenTimeoutDur)
+	}
+	if !c.AccessLogEnabled || !c.TruncationRecoveryEnabled {
+		t.Errorf("default switches should be on")
+	}
+	if c.Scheduler.SameAccountRetries != 1 {
+		t.Errorf("SameAccountRetries = %d, want default 1", c.Scheduler.SameAccountRetries)
+	}
+}
+
+// scheduler 段与 admin.api_key 必填。
+func TestLoad_SchedulerRequired(t *testing.T) {
+	if _, err := Load(writeCfg(t, "listen: 127.0.0.1:8080\n")); err == nil {
+		t.Error("missing scheduler must fail")
+	}
+	if _, err := Load(writeCfg(t, "scheduler:\n  db_path: /data/x.db\n")); err == nil {
+		t.Error("missing admin.api_key must fail")
+	}
+	if _, err := Load(writeCfg(t, "scheduler: {}\nadmin:\n  api_key: k\n")); err == nil {
+		t.Error("missing db_path must fail")
 	}
 }
 
 func TestLoad_KiroSection(t *testing.T) {
-	p := writeCfg(t, `
-listen: 127.0.0.1:8080
-scheduler:
-  db_path: /data/x.db
-admin:
-  api_key: sk-admin
+	p := writeCfg(t, minimalCfg+`
 kiro:
   region: eu-central-1
   first_token_timeout: 15s
@@ -61,12 +79,6 @@ kiro:
     api_key: ck-1
   debug: true
   debug_dir: /tmp/kirodbg
-upstreams:
-  - name: kiro-main
-    protocol: kiro
-    kiro:
-      refresh_token: rt-placeholder
-      web_search: true
 `)
 	c, err := Load(p)
 	if err != nil {
@@ -106,27 +118,10 @@ upstreams:
 	if !k.Debug || k.DebugDir != "/tmp/kirodbg" {
 		t.Errorf("debug: %v %q", k.Debug, k.DebugDir)
 	}
-	// kiro 种子解析
-	u := c.Upstreams[0]
-	if u.Kiro == nil || u.Kiro.RefreshToken != "rt-placeholder" || !u.Kiro.WebSearch {
-		t.Errorf("upstream kiro seed: %+v", u.Kiro)
-	}
 }
 
 func TestLoad_KiroDefaults(t *testing.T) {
-	p := writeCfg(t, `
-scheduler:
-  db_path: /data/x.db
-admin:
-  api_key: sk-admin
-kiro: {}
-upstreams:
-  - name: k
-    protocol: kiro
-    kiro:
-      cli_db: /path/to/data.sqlite3
-`)
-	c, err := Load(p)
+	c, err := Load(writeCfg(t, minimalCfg+"kiro: {}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,63 +146,10 @@ func TestLoad_KiroInvalid(t *testing.T) {
 		name string
 		cfg  string
 	}{
-		{"bad recovery_timeout", `
-kiro:
-  recovery_timeout: -5s
-upstreams:
-  - name: u
-    protocol: anthropic
-    base_url: http://x
-`},
-		{"zero cache_ttl", `
-kiro:
-  cache_ttl: 0s
-upstreams:
-  - name: u
-    protocol: anthropic
-    base_url: http://x
-`},
-		{"probe rate out of range", `
-kiro:
-  probabilistic_retry: 1.5
-upstreams:
-  - name: u
-    protocol: anthropic
-    base_url: http://x
-`},
-		{"backoff multiplier negative", `
-kiro:
-  max_backoff_multiplier: -1
-upstreams:
-  - name: u
-    protocol: anthropic
-    base_url: http://x
-`},
-		{"kiro seed without credentials", `
-kiro: {}
-upstreams:
-  - name: k
-    protocol: kiro
-    kiro: {}
-`},
-		{"kiro seed with base_url", `
-kiro: {}
-upstreams:
-  - name: k
-    protocol: kiro
-    base_url: http://x
-    kiro:
-      refresh_token: rt
-`},
-		{"kiro seed on non-kiro upstream", `
-kiro: {}
-upstreams:
-  - name: u
-    protocol: anthropic
-    base_url: http://x
-    kiro:
-      refresh_token: rt
-`},
+		{"bad recovery_timeout", minimalCfg + "kiro:\n  recovery_timeout: -5s\n"},
+		{"zero cache_ttl", minimalCfg + "kiro:\n  cache_ttl: 0s\n"},
+		{"probe rate out of range", minimalCfg + "kiro:\n  probabilistic_retry: 1.5\n"},
+		{"backoff multiplier negative", minimalCfg + "kiro:\n  max_backoff_multiplier: -1\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,9 +160,9 @@ upstreams:
 	}
 }
 
-// TestLoad_ExampleYAML 仓库示例配置可解析且 kiro 段/种子齐全（防示例腐化）。
+// TestLoad_ExampleYAML 仓库示例配置可解析（防示例腐化）。
 func TestLoad_ExampleYAML(t *testing.T) {
-	c, err := Load("../../relayd.example.yaml")
+	c, err := Load("../relayd.example.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,72 +172,7 @@ func TestLoad_ExampleYAML(t *testing.T) {
 	if c.Admin == nil || c.Admin.APIKey == "" {
 		t.Fatal("example admin section expected")
 	}
-	if c.Kiro == nil || c.Kiro.Region != "us-east-1" || c.Kiro.Cloud != nil {
-		t.Fatalf("example kiro section: %+v", c.Kiro)
-	}
-	if c.Kiro.RecoveryTimeoutDur != 60*time.Second || c.Kiro.MaxBackoffMultiplier != 1440 {
+	if c.Kiro == nil || c.Kiro.RecoveryTimeoutDur != 60*time.Second || c.Kiro.MaxBackoffMultiplier != 1440 {
 		t.Fatalf("example kiro defaults: %+v", c.Kiro)
-	}
-	var kiroSeed *UpstreamKiro
-	for _, u := range c.Upstreams {
-		if u.Protocol == "kiro" {
-			kiroSeed = u.Kiro
-		}
-	}
-	if kiroSeed == nil || kiroSeed.RefreshToken == "" {
-		t.Fatal("example kiro account seed expected")
-	}
-}
-
-// request_overrides 解析（upstream 级 yaml）。
-func TestLoad_RequestOverrides(t *testing.T) {
-	p := writeCfg(t, `
-upstreams:
-  - name: u
-    protocol: anthropic
-    base_url: https://api.anthropic.com
-    api_key: k
-    request_overrides:
-      temperature: 1
-      top_p: 0.95
-      thinking:
-        enabled: true
-        budget_tokens: 4096
-        effort: max
-`)
-	c, err := Load(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ov := c.Upstreams[0].RequestOverrides
-	if ov == nil {
-		t.Fatal("request_overrides expected")
-	}
-	if ov.Temperature == nil || *ov.Temperature != 1 {
-		t.Errorf("temperature = %v, want 1", ov.Temperature)
-	}
-	if ov.TopP == nil || *ov.TopP != 0.95 {
-		t.Errorf("top_p = %v, want 0.95", ov.TopP)
-	}
-	if ov.Thinking == nil || !ov.Thinking.Enabled || ov.Thinking.BudgetTokens != 4096 || ov.Thinking.Effort != "max" {
-		t.Errorf("thinking = %+v, want enabled/4096/max", ov.Thinking)
-	}
-}
-
-// 不配 request_overrides 时为 nil（透传）。
-func TestLoad_RequestOverridesAbsent(t *testing.T) {
-	p := writeCfg(t, `
-upstreams:
-  - name: u
-    protocol: anthropic
-    base_url: https://api.anthropic.com
-    api_key: k
-`)
-	c, err := Load(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Upstreams[0].RequestOverrides != nil {
-		t.Errorf("request_overrides = %+v, want nil", c.Upstreams[0].RequestOverrides)
 	}
 }

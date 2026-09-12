@@ -140,7 +140,7 @@ func BuildPayload(req *ir.Request, modelID string) (map[string]any, error) {
 		fullSystem = joinPrompt(fullSystem, toolDoc)
 	}
 	effortFragment := effortFragment(req, modelID)
-	if fakeReasoningOn(req) {
+	if fakeReasoningOn(req) && effortFragment == nil {
 		fullSystem = joinPrompt(fullSystem, thinkingSystemAddition)
 	}
 	if opt.TruncationRecovery {
@@ -222,11 +222,13 @@ func BuildPayload(req *ir.Request, modelID string) (map[string]any, error) {
 }
 
 // effortFragment 从 IR thinking 配置解析原生 effort 片段。
-// 显式 effort 优先；budget_tokens 映射为低/中/高档位。
+// 显式 effort 优先；budget_tokens 映射为低/中/高档位；thinking 关闭时
+// 请求 "none"（NATIVE_EFFORT_NONE_ON_DISABLED 默认开：gpt 系原生关闭
+// 推理；claude 系无 none 档省略）。
 func effortFragment(req *ir.Request, modelID string) map[string]any {
 	tc := req.Thinking
 	if tc == nil || !tc.Enabled {
-		return nil
+		return resolveEffortFragment(modelID, "none")
 	}
 	if tc.Effort != "" {
 		return resolveEffortFragment(modelID, tc.Effort)

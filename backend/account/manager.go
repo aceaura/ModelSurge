@@ -4,6 +4,7 @@ import (
 	"log"
 	"math/rand"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -81,16 +82,9 @@ type Manager struct {
 	now          func() time.Time        // 测试可注入时钟
 }
 
-// NewManager 构造调度器：账号身份从 seeds 同步（api-key 与 kiro 种子均
-// upsert-only，以 yaml 为准），状态（冷却/禁用）沿用库内值；
+// NewManager 构造调度器：账号从库中读取（经管理 API 或 InsertAccount 落库），
 // kiro 账号构造运行时（无网络操作）。deps 零值走默认参数。
-func NewManager(store *Store, seeds []SeedUpstream, kiroSeeds []SeedKiro, cds Cooldowns, deps ManagerDeps) (*Manager, error) {
-	if err := store.SyncAccounts(seeds); err != nil {
-		return nil, err
-	}
-	if err := store.SyncKiroAccounts(kiroSeeds); err != nil {
-		return nil, err
-	}
+func NewManager(store *Store, cds Cooldowns, deps ManagerDeps) (*Manager, error) {
 	accs, err := store.ListAccounts()
 	if err != nil {
 		return nil, err
@@ -125,9 +119,27 @@ func NewManager(store *Store, seeds []SeedUpstream, kiroSeeds []SeedKiro, cds Co
 // Next 返回能服务 model 的第一个可用账号（跳过 tried 中已试过的）。
 // 粘性来源：只要状态不变，Next 的结果不变。
 // 熔断冷却中的账号以 10% 概率试探放行（Half-Open）。
+// 单账号特例（account_manager.py get_next_account）：熔断/限流冷却对
+// 单号无意义——无视冷却恒返回，让客户端看到上游真实报错而非笼统的
+// "无可用账号"（tried 排除与显式禁用仍生效）。
 func (m *Manager) Next(model string, tried map[string]bool) (*Account, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.order) == 1 {
+		a := m.order[0]
+		if tried[a.Name] || !a.Enabled || a.Disabled {
+			return nil, false
+		}
+		if _, ok := a.Serving(model); !ok {
+			return nil, false
+		}
+		if a.Type == TypeKiro {
+			if rt := m.kiro[a.Name]; rt != nil {
+				rt.warmModelsAsync()
+			}
+		}
+		return a, true
+	}
 	for _, a := range m.order {
 		if tried[a.Name] || !a.Enabled || a.Disabled {
 			continue
@@ -367,6 +379,37 @@ func (m *Manager) Status() []Account {
 	for i, a := range m.order {
 		out[i] = *a
 	}
+	return out
+}
+
+// Models 全账号可用模型并集（/v1/models 与 /admin/models 同源）：
+// api-key 账号取映射键，kiro 账号取运行时展示列表
+// （缓存 ∪ 隐藏模型 ∪ 别名 - 隐藏项）。禁用账号不计入；排序稳定。
+func (m *Manager) Models() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	set := map[string]bool{}
+	for _, a := range m.order {
+		if !a.Enabled || a.Disabled {
+			continue
+		}
+		if a.Type == TypeKiro {
+			if rt := m.kiro[a.Name]; rt != nil {
+				for _, id := range rt.AvailableModels() {
+					set[id] = true
+				}
+			}
+			continue
+		}
+		for id := range a.Models {
+			set[id] = true
+		}
+	}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
 	return out
 }
 

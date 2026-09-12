@@ -14,6 +14,7 @@ import (
 	"relayd/backend/config"
 	"relayd/backend/ir"
 	"relayd/backend/proto"
+	"relayd/backend/proto/kiro"
 )
 
 // Forwarder 把 IR 请求转发到上游，并把上游响应回传给客户端。
@@ -21,15 +22,14 @@ import (
 // 客户端要非流式时由网关聚合后一次性返回。
 //
 // 重试原则：只要还没向客户端写出任何字节（连接失败、429/5xx、
-// 首事件超时、非流式聚合失败），就换下一个候选上游重发；
+// 首事件超时、非流式聚合失败），就换下一个候选账号重发；
 // 一旦写出第一个字节即锁死，错误只能在流内就地渲染。
 //
-// 调度模式（sched != nil，账号池）：候选来自 account.Manager。
+// 候选一律来自 account.Manager（SQLite 账号池）：
 // 限流（429）→ 账号冷却并切号；鉴权失败（401/403）→ 账号禁用并切号；
 // 瞬时错误（5xx/网络/超时）→ 原地重试同账号，不轻易切（保缓存命中）。
 type Forwarder struct {
 	client             *http.Client
-	upstreams          []config.Upstream
 	firstTokenTimeout  time.Duration
 	estimateUsage      bool
 	sched              *account.Manager
@@ -43,12 +43,11 @@ type Forwarder struct {
 	kiroWebSearchInject      bool          // web_search 注入全局默认（账号级可另开）
 }
 
-// NewForwarder 构造转发器。sched 为 nil 时纯静态（config.Upstreams 顺序）。
+// NewForwarder 构造转发器。sched 为账号池调度器（必填）。
 func NewForwarder(cfg *config.Config, sched *account.Manager) *Forwarder {
 	f := &Forwarder{
 		// Kiro 出站流量经云中转/调试 transport（按配置，两项都关时为默认）
 		client:            &http.Client{Timeout: 0, Transport: account.KiroTransport()},
-		upstreams:         cfg.Upstreams,
 		firstTokenTimeout: cfg.FirstTokenTimeoutDur,
 		estimateUsage:     cfg.EstimateUsage,
 		sched:             sched,
@@ -66,23 +65,24 @@ func NewForwarder(cfg *config.Config, sched *account.Manager) *Forwarder {
 	return f
 }
 
-// candidate 一个可服务某 canonical model 的上游及其 native 模型名与 codec。
+// candidate 一个可服务某 canonical model 的账号候选及其 native 模型名与 codec。
 type candidate struct {
-	up      config.Upstream  // 静态上游配置；账号模式下仅承载 Name/Protocol 等基础信息
-	acc     *account.Account // 调度模式下的账号（nil = 静态上游）
-	native  string
-	codec   proto.Codec
-	ov      *ir.Overrides    // 账号/上游级请求参数覆盖（nil = 透传）
-	resolve endpointResolver // 每请求解析 URL 与鉴权头（kiro 动态取 token/host）
+	name     string           // 账号名（日志/参数摘要用）
+	protocol string           // 上游协议（kiro 账号恒为 "kiro"）
+	acc      *account.Account // 账号本体
+	native   string
+	codec    proto.Codec
+	ov       *ir.Overrides    // 账号级请求参数覆盖（nil = 透传）
+	resolve  endpointResolver // 每请求解析 URL 与鉴权头（kiro 动态取 token/host）
 }
 
-// endpointResolver 解析一次上游请求的 URL 与请求头。静态上游构造时固化；
+// endpointResolver 解析一次上游请求的 URL 与请求头。api-key 账号构造时固化；
 // kiro 账号每次请求现取 token（含预刷新）与 host 分流。
 type endpointResolver func(ctx context.Context) (url string, headers map[string]string, err *ir.Error)
 
-// staticEndpoint 静态上游 / api-key 账号：URL 与鉴权头固定。
-func staticEndpoint(u config.Upstream, nativeModel string) endpointResolver {
-	url, headers := endpoint(u, nativeModel)
+// staticEndpoint api-key 账号：URL 与鉴权头固定。
+func staticEndpoint(protocol, baseURL, apiKey, nativeModel string) endpointResolver {
+	url, headers := endpoint(protocol, baseURL, apiKey, nativeModel)
 	return func(context.Context) (string, map[string]string, *ir.Error) {
 		return url, headers, nil
 	}
@@ -102,64 +102,21 @@ func kiroEndpoint(rt *account.KiroRuntime) endpointResolver {
 	}
 }
 
-// candidates 按 canonical model 列出候选上游（每个上游至多一次）：
-// 显式 models 映射优先，透传型上游（models 为空）兜底。
-// kiro 协议只经账号池调度（凭据在 KiroAccount，静态 upstream 无从解析）。
-func (f *Forwarder) candidates(model string) []candidate {
-	var mapped, passthrough []candidate
-	for _, u := range f.upstreams {
-		if u.Protocol == "kiro" {
-			continue
-		}
-		c, err := proto.Get(u.Protocol)
-		if err != nil {
-			continue
-		}
-		if native, ok := u.Models[model]; ok {
-			mapped = append(mapped, candidate{up: u, native: native, codec: c, ov: u.RequestOverrides, resolve: staticEndpoint(u, native)})
-		} else if len(u.Models) == 0 {
-			passthrough = append(passthrough, candidate{up: u, native: model, codec: c, ov: u.RequestOverrides, resolve: staticEndpoint(u, model)})
-		}
-	}
-	return append(mapped, passthrough...)
-}
-
-// candidatesFor 统一候选列表：调度模式来自账号管理器（跳过冷却/禁用），
-// 静态模式来自配置。
-func (f *Forwarder) candidatesFor(model string) []candidate {
-	if f.sched == nil {
-		return f.candidates(model)
-	}
-	var out []candidate
-	tried := map[string]bool{}
-	for {
-		acc, ok := f.sched.Next(model, tried)
-		if !ok {
-			break
-		}
-		tried[acc.Name] = true
-		if cand, err := f.accountCandidate(acc, model); err == nil {
-			out = append(out, cand)
-		}
-	}
-	return out
-}
-
-// endpoint 上游请求的 URL 与鉴权头。
-func endpoint(u config.Upstream, nativeModel string) (url string, headers map[string]string) {
-	switch u.Protocol {
+// endpoint api-key 账号的上游请求 URL 与鉴权头。
+func endpoint(protocol, baseURL, apiKey, nativeModel string) (url string, headers map[string]string) {
+	switch protocol {
 	case "anthropic":
-		return u.BaseURL + "/v1/messages", map[string]string{
-			"x-api-key":         u.APIKey,
+		return baseURL + "/v1/messages", map[string]string{
+			"x-api-key":         apiKey,
 			"anthropic-version": "2023-06-01",
 		}
 	case "openai-responses":
-		return u.BaseURL + "/v1/responses", map[string]string{"Authorization": "Bearer " + u.APIKey}
+		return baseURL + "/v1/responses", map[string]string{"Authorization": "Bearer " + apiKey}
 	case "gemini":
-		return fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", u.BaseURL, nativeModel),
-			map[string]string{"x-goog-api-key": u.APIKey}
+		return fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", baseURL, nativeModel),
+			map[string]string{"x-goog-api-key": apiKey}
 	default: // openai-chat
-		return u.BaseURL + "/v1/chat/completions", map[string]string{"Authorization": "Bearer " + u.APIKey}
+		return baseURL + "/v1/chat/completions", map[string]string{"Authorization": "Bearer " + apiKey}
 	}
 }
 
@@ -173,39 +130,7 @@ func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCo
 		log.Printf("relay: request %s", requestParams(clientCodec.Name(), req))
 	}
 	f.trunc.InjectNotices(req) // 上次截断的恢复提示（命中才修改）
-	if f.sched != nil {
-		f.forwardScheduled(ctx, w, clientCodec, req)
-		return
-	}
-	cands := f.candidates(req.Model)
-	if len(cands) == 0 {
-		writeError(w, clientCodec, ir.NewHTTPError(404, fmt.Sprintf("no upstream serves model %q", req.Model)))
-		return
-	}
-	var lastErr *ir.Error
-	for i, cand := range cands {
-		if ctx.Err() != nil {
-			return // 客户端已断开，静默结束
-		}
-		if i > 0 {
-			log.Printf("relay: model %q retry with upstream %s (%s): %s", req.Model, cand.up.Name, cand.up.Protocol, lastErr)
-		}
-		wrote, err := f.attempt(ctx, w, clientCodec, cand, req, nil)
-		if err == nil {
-			return
-		}
-		lastErr = err
-		if wrote || !err.Retryable {
-			// 已写字节则错误已就地渲染；不可重试错误直接透出
-			if !wrote {
-				writeError(w, clientCodec, err)
-			}
-			return
-		}
-	}
-	if ctx.Err() == nil {
-		writeError(w, clientCodec, lastErr)
-	}
+	f.forwardScheduled(ctx, w, clientCodec, req)
 }
 
 // accountCandidate 把账号转为转发候选。api-key 走静态端点；
@@ -221,13 +146,12 @@ func (f *Forwarder) accountCandidate(a *account.Account, model string) (candidat
 	}
 	native, _ := a.Serving(model)
 	cand := candidate{
-		up: config.Upstream{
-			Name: a.Name, Protocol: protocol, BaseURL: a.BaseURL, APIKey: a.APIKey,
-		},
-		acc:    a,
-		native: native,
-		codec:  c,
-		ov:     a.Overrides,
+		name:     a.Name,
+		protocol: protocol,
+		acc:      a,
+		native:   native,
+		codec:    c,
+		ov:       a.Overrides,
 	}
 	if a.Type == account.TypeKiro {
 		rt := f.sched.KiroRuntimeOf(a.Name)
@@ -236,7 +160,7 @@ func (f *Forwarder) accountCandidate(a *account.Account, model string) (candidat
 		}
 		cand.resolve = kiroEndpoint(rt)
 	} else {
-		cand.resolve = staticEndpoint(cand.up, native)
+		cand.resolve = staticEndpoint(protocol, a.BaseURL, a.APIKey, native)
 	}
 	return cand, nil
 }
@@ -364,7 +288,7 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	}
 	f.prepareKiroMetadata(cand, upReq) // profileArn 载荷必带 + web_search 注入标志
 	if f.paramLog {
-		log.Printf("relay: upstream request %s: %s", cand.up.Name, requestParams(cand.codec.Name(), upReq))
+		log.Printf("relay: upstream request %s: %s", cand.name, requestParams(cand.codec.Name(), upReq))
 	}
 	body, encErr := cand.codec.EncodeRequest(upReq)
 	if encErr != nil {
@@ -412,7 +336,7 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 
 	// 已锁定该上游：落有损转换诊断（日志 + 响应头，须在 WriteHeader 前设置）
 	if notes := Diagnose(req, cand.codec.Name(), cand.codec.Caps()); len(notes) > 0 {
-		log.Printf("relay: upstream %s lossy conversion: %s", cand.up.Name, strings.Join(notes, "; "))
+		log.Printf("relay: upstream %s lossy conversion: %s", cand.name, strings.Join(notes, "; "))
 		w.Header().Set("X-Relayd-Notes", strings.Join(notes, "; "))
 	}
 
@@ -437,11 +361,11 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		if decErr != nil {
 			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "decode upstream response: " + decErr.Error(), Retryable: true}
 		}
-		f.estimateUsageOnResponse(req, irResp, cand.up.Name)
+		f.estimateUsageOnResponse(req, irResp, cand.name)
 		if onUsage != nil {
 			onUsage(&irResp.Usage)
 		}
-		sum := newRespSummarizer(f.paramLog, cand.up.Name, "json")
+		sum := newRespSummarizer(f.paramLog, cand.name, "json")
 		sum.fill(irResp)
 		sum.log()
 		csum := newClientSummarizer(f.paramLog, clientCodec.Name(), req.Stream)
@@ -487,12 +411,18 @@ func (f *Forwarder) recordTruncation(dec proto.StreamDecoder, upName string) {
 }
 
 // candidateFirstTokenTimeout 某候选等上游首事件的有效超时：
-// kiro 候选配置了专用值则覆盖，否则沿用全局。
-func (f *Forwarder) candidateFirstTokenTimeout(cand candidate) time.Duration {
+// kiro 候选配置了专用值则覆盖基数；再按请求 effort 档位放大
+// （高档位推理推迟首字节，避免昂贵推理请求被提前判卡重试）。
+func (f *Forwarder) candidateFirstTokenTimeout(cand candidate, req *ir.Request) time.Duration {
+	base := f.firstTokenTimeout
 	if f.kiroFirstTokenTimeout > 0 && cand.acc != nil && cand.acc.Type == account.TypeKiro {
-		return f.kiroFirstTokenTimeout
+		base = f.kiroFirstTokenTimeout
 	}
-	return f.firstTokenTimeout
+	effort := ""
+	if req != nil && req.Thinking != nil {
+		effort = req.Thinking.Effort
+	}
+	return kiro.EffortFirstTokenTimeout(base, cand.native, effort)
 }
 
 // awaitFirstEvent 等上游的第一个 SSE 事件；超时则取消本次请求并返回可重试错误。
@@ -539,7 +469,7 @@ func (f *Forwarder) awaitFirstEvent(er *EventReader, cancel context.CancelFunc, 
 // streamUpstreamToClient 上游 SSE -> IR 事件 -> 客户端 SSE，逐 chunk 透传转换。
 func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	er := NewEventReader(body)
-	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand))
+	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand, req))
 	if firstErr != nil {
 		return false, firstErr
 	}
@@ -556,14 +486,14 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	enc := clientCodec.NewStreamEncoder()
 	var outText strings.Builder
 	var startUsage ir.Usage // message_start 携带的 input/cache 用量，记账时与 delta 合并
-	sum := newRespSummarizer(f.paramLog, cand.up.Name, "sse")
+	sum := newRespSummarizer(f.paramLog, cand.name, "sse")
 	csum := newClientSummarizer(f.paramLog, clientCodec.Name(), true)
 	emit := func(events []ir.Event) bool {
 		for _, ev := range events {
 			if ev.Type == ir.EvMessageStart && ev.Usage != nil {
 				startUsage = *ev.Usage
 			}
-			ev = f.estimateUsageOnEvent(req, &outText, ev, cand.up.Name)
+			ev = f.estimateUsageOnEvent(req, &outText, ev, cand.name)
 			if onUsage != nil && ev.Type == ir.EvMessageDelta && ev.Usage != nil {
 				merged := startUsage
 				merged.MergeNonZero(*ev.Usage)
@@ -620,7 +550,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 		}
 	}
 	emit(f.interceptWebSearch(ctx, cand, req, dec.Finish()))
-	f.recordTruncation(dec, cand.up.Name)
+	f.recordTruncation(dec, cand.name)
 	fin := enc.Finish()
 	csum.framesAdd(len(fin))
 	for _, fr := range fin {
@@ -640,7 +570,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 // （代价是失败上游可能已计费——pre-write 重试的固有取舍）。
 func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	er := NewEventReader(body)
-	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand))
+	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand, req))
 	if firstErr != nil {
 		return false, firstErr
 	}
@@ -673,18 +603,18 @@ func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.
 	for _, e := range f.interceptWebSearch(ctx, cand, req, dec.Finish()) {
 		agg.Feed(e)
 	}
-	f.recordTruncation(dec, cand.up.Name)
+	f.recordTruncation(dec, cand.name)
 	resp, aggErr := agg.Finish()
 	if aggErr != nil {
 		// 未写任何字节：强制可重试，换上游重发
 		aggErr.Retryable = true
 		return false, aggErr
 	}
-	f.estimateUsageOnResponse(req, resp, cand.up.Name)
+	f.estimateUsageOnResponse(req, resp, cand.name)
 	if onUsage != nil {
 		onUsage(&resp.Usage)
 	}
-	sum := newRespSummarizer(f.paramLog, cand.up.Name, "sse")
+	sum := newRespSummarizer(f.paramLog, cand.name, "sse")
 	sum.fill(resp)
 	sum.log()
 	csum := newClientSummarizer(f.paramLog, clientCodec.Name(), false)
@@ -694,13 +624,24 @@ func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.
 	return true, nil
 }
 
-// CountTokens 处理 Anthropic count_tokens 请求：优先转发给 anthropic 上游
-// 原生计数；无可用上游时本地粗估并记日志。粗估按首个候选的协议语义
+// CountTokens 处理 Anthropic count_tokens 请求：优先转发给 anthropic 账号
+// 原生计数；无可用账号时本地粗估并记日志。粗估按首个候选的协议语义
 // （kiro 账号 → kiro tokenizer；其余 → IR 通用估算）。
 func (f *Forwarder) CountTokens(ctx context.Context, req *ir.Request) (int, []byte) {
-	cands := f.candidatesFor(req.Model)
+	var cands []candidate
+	tried := map[string]bool{}
+	for {
+		acc, ok := f.sched.Next(req.Model, tried)
+		if !ok {
+			break
+		}
+		tried[acc.Name] = true
+		if cand, err := f.accountCandidate(acc, req.Model); err == nil {
+			cands = append(cands, cand)
+		}
+	}
 	for _, cand := range cands {
-		if cand.up.Protocol != "anthropic" {
+		if cand.protocol != "anthropic" {
 			continue
 		}
 		upReq := req.Clone()
@@ -711,19 +652,19 @@ func (f *Forwarder) CountTokens(ctx context.Context, req *ir.Request) (int, []by
 			break
 		}
 		if f.paramLog {
-			log.Printf("relay: upstream request %s (count_tokens): %s", cand.up.Name, requestParams(cand.codec.Name(), upReq))
+			log.Printf("relay: upstream request %s (count_tokens): %s", cand.name, requestParams(cand.codec.Name(), upReq))
 		}
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			cand.up.BaseURL+"/v1/messages/count_tokens", bytes.NewReader(body))
+			cand.acc.BaseURL+"/v1/messages/count_tokens", bytes.NewReader(body))
 		if err != nil {
 			break
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("x-api-key", cand.up.APIKey)
+		httpReq.Header.Set("x-api-key", cand.acc.APIKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
 		resp, err := f.client.Do(httpReq)
 		if err != nil {
-			log.Printf("relay: count_tokens upstream %s unreachable: %v", cand.up.Name, err)
+			log.Printf("relay: count_tokens upstream %s unreachable: %v", cand.name, err)
 			continue
 		}
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -731,7 +672,7 @@ func (f *Forwarder) CountTokens(ctx context.Context, req *ir.Request) (int, []by
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return resp.StatusCode, respBody
 		}
-		log.Printf("relay: count_tokens upstream %s returned %d: %s", cand.up.Name, resp.StatusCode, excerpt(string(respBody)))
+		log.Printf("relay: count_tokens upstream %s returned %d: %s", cand.name, resp.StatusCode, excerpt(string(respBody)))
 	}
 	est := ir.EstimateRequestTokens(req)
 	// 协议语义估算缝：kiro codec 实现按 kiro tokenizer 语义估算

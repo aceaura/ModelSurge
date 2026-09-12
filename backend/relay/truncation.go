@@ -11,8 +11,8 @@ import (
 	"log"
 	"sync"
 
-	"relayd/backend/codec"
 	"relayd/backend/ir"
+	"relayd/backend/proto"
 )
 
 // truncationNoticeTool 工具参数被截断时前置到 tool_result 的提示
@@ -58,8 +58,8 @@ func NewTruncationTracker(enabled bool) *TruncationTracker {
 	}
 }
 
-// Record 流结束后上报上游截断（探测自 codec.TruncationReporter 缝）。
-func (t *TruncationTracker) Record(upName string, tools []codec.TruncatedTool, contentTruncated bool, content string) {
+// Record 流结束后上报上游截断（探测自 proto.TruncationReporter 缝）。
+func (t *TruncationTracker) Record(upName string, tools []proto.TruncatedTool, contentTruncated bool, content string) {
 	if t == nil || !t.enabled {
 		return
 	}

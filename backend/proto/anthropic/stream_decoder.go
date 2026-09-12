@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	proto "relayd/backend/codec"
 	"relayd/backend/ir"
+	"relayd/backend/proto"
 )
 
 // MapStopReason Anthropic stop_reason -> 规范 StopReason。

@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"relayd/backend/account"
-	"relayd/backend/codec"
 	"relayd/backend/config"
 	"relayd/backend/ir"
+	"relayd/backend/proto"
 )
 
 // Forwarder 把 IR 请求转发到上游，并把上游响应回传给客户端。
@@ -69,7 +69,7 @@ type candidate struct {
 	up      config.Upstream  // 静态上游配置；账号模式下仅承载 Name/Protocol 等基础信息
 	acc     *account.Account // 调度模式下的账号（nil = 静态上游）
 	native  string
-	codec   codec.Codec
+	codec   proto.Codec
 	resolve endpointResolver // 每请求解析 URL 与鉴权头（kiro 动态取 token/host）
 }
 
@@ -108,7 +108,7 @@ func (f *Forwarder) candidates(model string) []candidate {
 		if u.Protocol == "kiro" {
 			continue
 		}
-		c, err := codec.Get(u.Protocol)
+		c, err := proto.Get(u.Protocol)
 		if err != nil {
 			continue
 		}
@@ -165,7 +165,7 @@ const maxErrBody = 4 * 1024
 
 // Forward 执行一次转发。clientCodec 为客户端协议 codec（用于错误渲染与响应编码），
 // req.Stream 表示客户端是否要求流式。所有响应直接写入 w。
-func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCodec codec.Codec, req *ir.Request) {
+func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, req *ir.Request) {
 	f.trunc.InjectNotices(req) // 上次截断的恢复提示（命中才修改）
 	if f.sched != nil {
 		f.forwardScheduled(ctx, w, clientCodec, req)
@@ -209,7 +209,7 @@ func (f *Forwarder) accountCandidate(a *account.Account, model string) (candidat
 	if a.Type == account.TypeKiro {
 		protocol = "kiro"
 	}
-	c, err := codec.Get(protocol)
+	c, err := proto.Get(protocol)
 	if err != nil {
 		return candidate{}, err
 	}
@@ -235,7 +235,7 @@ func (f *Forwarder) accountCandidate(a *account.Account, model string) (candidat
 }
 
 // forwardScheduled 账号池调度模式：粘性取号 + 错误分类处置。
-func (f *Forwarder) forwardScheduled(ctx context.Context, w http.ResponseWriter, clientCodec codec.Codec, req *ir.Request) {
+func (f *Forwarder) forwardScheduled(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, req *ir.Request) {
 	tried := map[string]bool{}
 	var lastErr *ir.Error
 	for {
@@ -346,7 +346,7 @@ func (f *Forwarder) quotaCooldownUntil(ctx context.Context, acc *account.Account
 
 // attempt 对单个上游做一次转发尝试。wrote 表示是否已向客户端写出字节。
 // onUsage 非空时上报响应中的真实 usage（调度模式记账用；估算值不调）。
-func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCodec codec.Codec, cand candidate, req *ir.Request, onUsage func(*ir.Usage)) (wrote bool, err *ir.Error) {
+func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, onUsage func(*ir.Usage)) (wrote bool, err *ir.Error) {
 	// 上游永远流式
 	upReq := req.Clone()
 	upReq.Model = cand.native
@@ -439,7 +439,7 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 
 // newDecoder 构造上游流解码器；kiro 解码器注入模型名（message_start 回显）
 // 与输入上限（context_usage -> input 换算）。注入走可选接口，relay 不依赖具体类型。
-func (f *Forwarder) newDecoder(cand candidate, req *ir.Request) codec.StreamDecoder {
+func (f *Forwarder) newDecoder(cand candidate, req *ir.Request) proto.StreamDecoder {
 	dec := cand.codec.NewStreamDecoder()
 	if cand.acc == nil || cand.acc.Type != account.TypeKiro {
 		return dec
@@ -458,8 +458,8 @@ func (f *Forwarder) newDecoder(cand candidate, req *ir.Request) codec.StreamDeco
 }
 
 // recordTruncation 流结束后探测解码器的截断上报缝并记录（kiro 实现）。
-func (f *Forwarder) recordTruncation(dec codec.StreamDecoder, upName string) {
-	tr, ok := dec.(codec.TruncationReporter)
+func (f *Forwarder) recordTruncation(dec proto.StreamDecoder, upName string) {
+	tr, ok := dec.(proto.TruncationReporter)
 	if !ok {
 		return
 	}
@@ -517,7 +517,7 @@ func (f *Forwarder) awaitFirstEvent(er *EventReader, cancel context.CancelFunc, 
 }
 
 // streamUpstreamToClient 上游 SSE -> IR 事件 -> 客户端 SSE，逐 chunk 透传转换。
-func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec codec.Codec, cand candidate, req *ir.Request, dec codec.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
+func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	er := NewEventReader(body)
 	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand))
 	if firstErr != nil {
@@ -601,7 +601,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 // collectUpstreamToClient 聚合上游流，向非流式客户端一次性返回完整 JSON。
 // 聚合期间不向客户端写任何字节，因此聚合失败仍可换上游重试
 // （代价是失败上游可能已计费——pre-write 重试的固有取舍）。
-func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec codec.Codec, cand candidate, req *ir.Request, dec codec.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
+func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	er := NewEventReader(body)
 	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand))
 	if firstErr != nil {
@@ -757,7 +757,7 @@ func (f *Forwarder) estimateUsageOnEvent(req *ir.Request, outText *strings.Build
 
 // writeResponse 非流式输出；clientStream 为 true 时（上游返回了非 SSE 的兜底响应
 // 而客户端要流式）把完整响应合成为一次性事件流。
-func writeResponse(w http.ResponseWriter, clientCodec codec.Codec, resp *ir.Response, clientStream bool) {
+func writeResponse(w http.ResponseWriter, clientCodec proto.Codec, resp *ir.Response, clientStream bool) {
 	if !clientStream {
 		body, err := clientCodec.EncodeResponse(resp)
 		if err != nil {
@@ -827,7 +827,7 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 	return events
 }
 
-func writeError(w http.ResponseWriter, clientCodec codec.Codec, e *ir.Error) {
+func writeError(w http.ResponseWriter, clientCodec proto.Codec, e *ir.Error) {
 	status, body := clientCodec.RenderError(e)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

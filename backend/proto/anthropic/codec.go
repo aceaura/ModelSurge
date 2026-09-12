@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	proto "relayd/backend/codec"
 	"relayd/backend/ir"
 	"relayd/backend/normalize"
+	"relayd/backend/proto"
 )
 
 // Name 协议标识。

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sort"
 
-	proto "relayd/backend/codec"
 	"relayd/backend/ir"
+	"relayd/backend/proto"
 )
 
 // streamEncoder IR 事件 -> Anthropic SSE。

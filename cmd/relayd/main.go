@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"relayd/backend/account"
-	"relayd/backend/codec"
-	"relayd/backend/codec/kiro"
 	"relayd/backend/config"
+	"relayd/backend/proto"
+	"relayd/backend/proto/kiro"
 	"relayd/backend/server"
 )
 
@@ -126,7 +126,7 @@ func main() {
 		Handler:           server.New(cfg, sched).Handler(),
 		ReadHeaderTimeout: 30 * time.Second, // 防 slowloris 慢速连接占资源
 	}
-	log.Printf("relayd listening on %s, protocols: %v, upstreams: %d", cfg.Listen, codec.Names(), len(cfg.Upstreams))
+	log.Printf("relayd listening on %s, protocols: %v, upstreams: %d", cfg.Listen, proto.Names(), len(cfg.Upstreams))
 
 	// 优雅停机：SIGINT/SIGTERM 后停止收新请求，
 	// 等在途请求（含流式响应）完成或超时强制断开。

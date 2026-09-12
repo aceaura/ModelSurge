@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"relayd/backend/codec/kiro"
+	"relayd/backend/proto/kiro"
 )
 
 // KiroRuntime 单个 kiro 账号的运行时组件集合。

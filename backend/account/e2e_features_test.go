@@ -16,9 +16,9 @@ import (
 	"testing"
 
 	"relayd/backend/account"
-	"relayd/backend/codec/kiro"
 	"relayd/backend/config"
 	"relayd/backend/ir"
+	"relayd/backend/proto/kiro"
 	"relayd/backend/server"
 )
 

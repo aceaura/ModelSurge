@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	proto "relayd/backend/codec"
 	"relayd/backend/ir"
+	"relayd/backend/proto"
 )
 
 // streamDecoder Gemini SSE（alt=sse，每个 data 是一个 generateResponse chunk）

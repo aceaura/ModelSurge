@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	proto "relayd/backend/codec"
 	"relayd/backend/ir"
+	"relayd/backend/proto"
 )
 
 // streamEncoder IR 事件 -> OpenAI chunk 流。

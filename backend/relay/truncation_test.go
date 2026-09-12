@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"relayd/backend/codec"
 	"relayd/backend/ir"
+	"relayd/backend/proto"
 )
 
 func TestTruncationTracker_ToolNoticeOneShot(t *testing.T) {
@@ -23,7 +23,7 @@ func TestTruncationTracker_ToolNoticeOneShot(t *testing.T) {
 		t.Fatal("inject without record should be no-op")
 	}
 
-	tr.Record("up", []codec.TruncatedTool{{ID: "toolu_1", Name: "Write", Reason: "missing 2 closing brace(s)"}}, false, "")
+	tr.Record("up", []proto.TruncatedTool{{ID: "toolu_1", Name: "Write", Reason: "missing 2 closing brace(s)"}}, false, "")
 	if !tr.InjectNotices(req) {
 		t.Fatal("inject after record should modify")
 	}
@@ -82,7 +82,7 @@ func TestTruncationTracker_ContentNoticeOneShot(t *testing.T) {
 
 func TestTruncationTracker_Disabled(t *testing.T) {
 	tr := NewTruncationTracker(false)
-	tr.Record("up", []codec.TruncatedTool{{ID: "t1"}}, true, "content")
+	tr.Record("up", []proto.TruncatedTool{{ID: "t1"}}, true, "content")
 	req := &ir.Request{Messages: []ir.Message{
 		{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockText, Text: "content"}}},
 	}}
@@ -97,7 +97,7 @@ func TestTruncationTracker_Disabled(t *testing.T) {
 func TestTruncationTracker_LRUEviction(t *testing.T) {
 	tr := NewTruncationTracker(true)
 	for i := 0; i < truncationMaxEntries+10; i++ {
-		tr.Record("up", []codec.TruncatedTool{{ID: strings.Repeat("a", 200)[:200] + string(rune('0'+i%10)) + string(rune('0'+(i/10)%10)) + string(rune('0'+(i/100)%10))}}, false, "")
+		tr.Record("up", []proto.TruncatedTool{{ID: strings.Repeat("a", 200)[:200] + string(rune('0'+i%10)) + string(rune('0'+(i/10)%10)) + string(rune('0'+(i/100)%10))}}, false, "")
 	}
 	tr.mu.Lock()
 	n := len(tr.entries)

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	proto "relayd/backend/codec"
 	"relayd/backend/ir"
 	"relayd/backend/normalize"
+	"relayd/backend/proto"
 )
 
 func init() { proto.Register(codec{}) }

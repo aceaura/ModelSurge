@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"relayd/backend/codec"
 	"relayd/backend/ir"
+	"relayd/backend/proto"
 )
 
 func TestDiagnose(t *testing.T) {
@@ -21,12 +21,12 @@ func TestDiagnose(t *testing.T) {
 		Tools: []ir.Tool{{Hosted: ir.HostedWebSearch}},
 	}
 
-	full := codec.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true}
+	full := proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true}
 	if notes := Diagnose(req, "anthropic", full); len(notes) != 0 {
 		t.Errorf("same-protocol signature with full caps should produce no notes, got %v", notes)
 	}
 
-	chat := codec.Capabilities{ThinkingSignature: false, Images: true, HostedTools: false}
+	chat := proto.Capabilities{ThinkingSignature: false, Images: true, HostedTools: false}
 	notes := Diagnose(req, "openai-chat", chat)
 	joined := strings.Join(notes, "; ")
 	if !strings.Contains(joined, "1 thinking signature") {

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
-	proto "relayd/backend/codec"
 	"relayd/backend/ir"
+	"relayd/backend/proto"
 )
 
 // streamEncoder IR 事件 -> Responses SSE。

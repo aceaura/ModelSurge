@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"strings"
 
+	"relayd/backend/codec"
 	"relayd/backend/ir"
-	"relayd/backend/proto"
 )
 
 // kiroEventJSON 一条 Kiro 事件的载荷（按字段存在性判别类型，
@@ -196,8 +196,8 @@ type streamDecoder struct {
 	usageSeen     bool
 }
 
-// NewStreamDecoder 实现 proto.Codec。
-func (Codec) NewStreamDecoder() proto.StreamDecoder { return &streamDecoder{} }
+// NewStreamDecoder 实现 codec.Codec。
+func (Codec) NewStreamDecoder() codec.StreamDecoder { return &streamDecoder{} }
 
 // SetModel 注入响应模型名（Kiro 上游不回显模型，message_start 需要它）。
 func (d *streamDecoder) SetModel(m string) { d.model = m }
@@ -213,12 +213,12 @@ func (d *streamDecoder) ContextUsage() (float64, bool) {
 	return *d.contextPct, true
 }
 
-// TruncatedTools 返回被截断的工具调用（proto.TruncationReporter 缝）。
-func (d *streamDecoder) TruncatedTools() []proto.TruncatedTool {
-	var out []proto.TruncatedTool
+// TruncatedTools 返回被截断的工具调用（codec.TruncationReporter 缝）。
+func (d *streamDecoder) TruncatedTools() []codec.TruncatedTool {
+	var out []codec.TruncatedTool
 	for _, tc := range d.tools {
 		if tc.truncated {
-			out = append(out, proto.TruncatedTool{
+			out = append(out, codec.TruncatedTool{
 				ID: tc.ID, Name: OriginalForToolName(tc.Name), Reason: tc.truncReason,
 			})
 		}
@@ -226,7 +226,7 @@ func (d *streamDecoder) TruncatedTools() []proto.TruncatedTool {
 	return out
 }
 
-// ContentTruncated 流无完成信号但已有正文（proto.TruncationReporter 缝；
+// ContentTruncated 流无完成信号但已有正文（codec.TruncationReporter 缝；
 // Finish 后有效——此时括号工具已解析、去重完成）。
 func (d *streamDecoder) ContentTruncated() bool {
 	return !d.usageSeen && d.contextPct == nil &&

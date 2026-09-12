@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	proto "relayd/backend/codec"
 	"relayd/backend/ir"
-	"relayd/backend/proto"
 )
 
 // streamDecoder Responses SSE -> IR 事件。

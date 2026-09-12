@@ -27,8 +27,8 @@ backend/ir/         统一中间表示：Request/Response/Block/流式事件/Usa
                     事件词汇以 Anthropic streaming 为超集；Usage 以 Anthropic 口径为规范
 backend/normalize/  消息规整流水线：合并同角色、首条 user、强制交替、空内容占位、
                     孤儿 tool_result 降级、tool_use/tool_result 配对、schema 清洗
-backend/proto/      Codec 接口与注册表；每协议一个子包，init() 自注册：
-                    anthropic / openaichat / openairesponses / gemini
+backend/codec/      Codec 接口与注册表；每协议一个子包，init() 自注册：
+                    anthropic / openaichat / openairesponses / gemini / kiro
                     每个 codec 只做 协议<->IR 双向转换（请求、流式、非流式、错误）
 backend/relay/      转发层：上游永远流式、SSE 读取、非流式客户端缓冲聚合
 backend/server/     HTTP 入口：按路径识别客户端协议，鉴权后交给 relay

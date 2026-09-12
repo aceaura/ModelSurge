@@ -7,13 +7,13 @@ package kiro
 import (
 	"fmt"
 
+	"relayd/backend/codec"
 	"relayd/backend/ir"
-	"relayd/backend/proto"
 )
 
 var errStreamNotImplemented = fmt.Errorf("kiro codec: stream encoding not implemented (kiro is upstream-only)")
 
-func (Codec) NewStreamEncoder() proto.StreamEncoder { return notImplEncoder{} }
+func (Codec) NewStreamEncoder() codec.StreamEncoder { return notImplEncoder{} }
 
 type notImplEncoder struct{}
 

@@ -4,15 +4,15 @@ import (
 	"fmt"
 	"strings"
 
+	"relayd/backend/codec"
 	"relayd/backend/ir"
-	"relayd/backend/proto"
 )
 
 // Diagnose 对比请求特征与上游协议能力，返回本次转换必然发生的有损点描述。
 // protoName 为上游协议名（codec.Name），用于判断 thinking 签名能否在该上游回放。
 // 目的是让有损转换可观测（日志 + X-Relayd-Notes），而不是静默丢信息
 // （参考 new-api RequestResult.Diagnostics 的思想）。
-func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []string {
+func Diagnose(req *ir.Request, protoName string, caps codec.Capabilities) []string {
 	var notes []string
 
 	sigs, foreign, images := 0, 0, 0

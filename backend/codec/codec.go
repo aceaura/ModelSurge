@@ -1,7 +1,7 @@
-// Package proto 定义协议 codec 接口与注册表。
+// Package codec 定义协议编解码接口与注册表。
 // 每个协议（anthropic / openai-chat / openai-responses / gemini）实现一个 Codec，
 // 通过 Register 注册；跨协议转换经由 ir 中转，协议包之间互不依赖。
-package proto
+package codec
 
 import (
 	"fmt"
@@ -94,7 +94,7 @@ var registry = map[string]Codec{}
 // Register 注册 codec，重名 panic（启动期编程错误）。
 func Register(c Codec) {
 	if _, dup := registry[c.Name()]; dup {
-		panic("proto: duplicate codec " + c.Name())
+		panic("codec: duplicate codec " + c.Name())
 	}
 	registry[c.Name()] = c
 }
@@ -103,7 +103,7 @@ func Register(c Codec) {
 func Get(name string) (Codec, error) {
 	c, ok := registry[name]
 	if !ok {
-		return nil, fmt.Errorf("proto: unknown codec %q (have %v)", name, Names())
+		return nil, fmt.Errorf("codec: unknown codec %q (have %v)", name, Names())
 	}
 	return c, nil
 }

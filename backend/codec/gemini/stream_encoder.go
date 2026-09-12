@@ -3,8 +3,8 @@ package gemini
 import (
 	"encoding/json"
 
+	proto "relayd/backend/codec"
 	"relayd/backend/ir"
-	"relayd/backend/proto"
 )
 
 // streamEncoder IR 事件 -> Gemini SSE（data: generateResponse chunk）。

@@ -16,8 +16,8 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"relayd/backend/codec"
 	"relayd/backend/ir"
-	"relayd/backend/proto"
 )
 
 // Options kiro codec 的全局选项（config 装配；零值即默认）。
@@ -55,14 +55,14 @@ var billingHeaderRe = regexp.MustCompile(`(?i)^x-anthropic-billing-header:[^\n]*
 // Codec kiro 上游协议 codec。
 type Codec struct{}
 
-func init() { proto.Register(Codec{}) }
+func init() { codec.Register(Codec{}) }
 
 // Name 协议名。
 func (Codec) Name() string { return "kiro" }
 
 // Caps 能力声明：无 thinking 签名保真；支持图片与托管工具（web_search）。
-func (Codec) Caps() proto.Capabilities {
-	return proto.Capabilities{ThinkingSignature: false, Images: true, HostedTools: true}
+func (Codec) Caps() codec.Capabilities {
+	return codec.Capabilities{ThinkingSignature: false, Images: true, HostedTools: true}
 }
 
 // anySlice 载荷边界统一 []any 形态（管线内部保持 []map[string]any 强类型，

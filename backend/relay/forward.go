@@ -35,6 +35,7 @@ type Forwarder struct {
 	sched              *account.Manager
 	sameAccountRetries int
 	trunc              *TruncationTracker
+	paramLog           bool // 请求/响应参数日志（与访问日志同开关）
 
 	// kiro 段运行参数（零值 = 不生效）。
 	kiroFirstTokenTimeout    time.Duration // kiro 候选首事件超时；0 = 沿用全局
@@ -52,6 +53,7 @@ func NewForwarder(cfg *config.Config, sched *account.Manager) *Forwarder {
 		estimateUsage:     cfg.EstimateUsage,
 		sched:             sched,
 		trunc:             NewTruncationTracker(cfg.TruncationRecoveryEnabled),
+		paramLog:          cfg.AccessLogEnabled,
 	}
 	if sched != nil && cfg.Scheduler != nil {
 		f.sameAccountRetries = cfg.Scheduler.SameAccountRetries
@@ -166,6 +168,9 @@ const maxErrBody = 4 * 1024
 // Forward 执行一次转发。clientCodec 为客户端协议 codec（用于错误渲染与响应编码），
 // req.Stream 表示客户端是否要求流式。所有响应直接写入 w。
 func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, req *ir.Request) {
+	if f.paramLog {
+		log.Printf("relay: request %s", requestParams(clientCodec.Name(), req))
+	}
 	f.trunc.InjectNotices(req) // 上次截断的恢复提示（命中才修改）
 	if f.sched != nil {
 		f.forwardScheduled(ctx, w, clientCodec, req)
@@ -427,6 +432,9 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		if onUsage != nil {
 			onUsage(&irResp.Usage)
 		}
+		sum := newRespSummarizer(f.paramLog, cand.up.Name)
+		sum.fill(irResp)
+		sum.log()
 		writeResponse(w, clientCodec, irResp, req.Stream)
 		return true, nil
 	}
@@ -536,6 +544,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	enc := clientCodec.NewStreamEncoder()
 	var outText strings.Builder
 	var startUsage ir.Usage // message_start 携带的 input/cache 用量，记账时与 delta 合并
+	sum := newRespSummarizer(f.paramLog, cand.up.Name)
 	emit := func(events []ir.Event) bool {
 		for _, ev := range events {
 			if ev.Type == ir.EvMessageStart && ev.Usage != nil {
@@ -547,6 +556,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 				merged.MergeNonZero(*ev.Usage)
 				onUsage(&merged)
 			}
+			sum.observe(ev)
 			frames, err := enc.Encode(ev)
 			if err != nil {
 				frames = [][]byte{clientCodec.RenderStreamError(&ir.Error{Type: ir.ErrTypeUpstream, Message: err.Error()})}
@@ -572,6 +582,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	}
 
 	if !feed(first) {
+		sum.log() // 客户端断开，流已中断——按已发部分出摘要
 		return true, nil
 	}
 	for {
@@ -584,6 +595,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 			break
 		}
 		if !feed(ev) {
+			sum.log() // 客户端断开，流已中断——按已发部分出摘要
 			return true, nil
 		}
 	}
@@ -595,6 +607,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	if flush != nil {
 		flush.Flush()
 	}
+	sum.log()
 	return true, nil
 }
 
@@ -647,6 +660,9 @@ func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.
 	if onUsage != nil {
 		onUsage(&resp.Usage)
 	}
+	sum := newRespSummarizer(f.paramLog, cand.up.Name)
+	sum.fill(resp)
+	sum.log()
 	writeResponse(w, clientCodec, resp, false)
 	return true, nil
 }

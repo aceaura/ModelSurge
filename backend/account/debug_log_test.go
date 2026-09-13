@@ -109,3 +109,45 @@ func readDebugFile(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// TestDebugTransport_TeeLimit：响应 tee 超过 2MB 上限后停止落盘，
+// 客户端仍完整读到全部字节（limitWriter 静默丢弃不打断流）。
+func TestDebugTransport_TeeLimit(t *testing.T) {
+	dir := t.TempDir()
+	withDebug(t, dir)
+
+	payload := strings.Repeat("x", 5<<20) // 5MB > 2MB 上限
+	next := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200, Body: io.NopCloser(strings.NewReader(payload)),
+			Header: http.Header{}, Request: r,
+		}, nil
+	})
+	client := &http.Client{Transport: &debugTransport{next: next}}
+	req, _ := http.NewRequest(http.MethodPost, "https://q.us-east-1.amazonaws.com/mcp", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("client read broken by tee limit: %v", err)
+	}
+	if len(got) != len(payload) {
+		t.Fatalf("client got %d bytes, want %d", len(got), len(payload))
+	}
+
+	respFile := findDebugFile(t, dir, ".resp.bin")
+	info, err := os.Stat(respFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 文件 = 状态行 + 头 + 正文（截到 2MB），必须远小于 5MB、接近上限
+	if info.Size() >= int64(5<<20) {
+		t.Fatalf("resp log not truncated: %d bytes", info.Size())
+	}
+	if info.Size() < int64(1<<20) {
+		t.Fatalf("resp log too small, tee broken: %d bytes", info.Size())
+	}
+}

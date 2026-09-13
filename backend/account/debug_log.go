@@ -96,8 +96,34 @@ func (t *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 	fprintf(f, "\n")
-	resp.Body = &teeBody{r: io.TeeReader(resp.Body, f), body: resp.Body, f: f}
+	resp.Body = &teeBody{r: io.TeeReader(resp.Body, &limitWriter{w: f, remaining: debugTeeLimit}), body: resp.Body, f: f}
 	return resp, nil
+}
+
+// debugTeeLimit 响应 tee 落盘上限（对齐头注释：防大响应失控）。
+const debugTeeLimit = 2 << 20
+
+// limitWriter 超限后静默丢弃后续字节。绝不返回错误：io.TeeReader
+// 会把 writer 错误传播成读错误，打断正常响应流。
+type limitWriter struct {
+	w         *os.File
+	remaining int64
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if l.remaining <= 0 {
+		return len(p), nil
+	}
+	n := int64(len(p))
+	if n > l.remaining {
+		p = p[:l.remaining]
+	}
+	written, err := l.w.Write(p)
+	if err != nil {
+		return len(p), nil // 落盘失败不影响响应流
+	}
+	l.remaining -= int64(written)
+	return len(p), nil
 }
 
 // writeRequest 请求载荷落盘（头脱敏、JSON 体递归脱敏）。

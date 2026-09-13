@@ -165,7 +165,7 @@ func TestLoad_KiroInvalid(t *testing.T) {
 
 // TestLoad_ExampleYAML 仓库示例配置可解析（防示例腐化）。
 func TestLoad_ExampleYAML(t *testing.T) {
-	c, err := Load("../relayd.example.yaml")
+	c, err := Load("testdata/legacy-relayd.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}

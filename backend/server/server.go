@@ -16,6 +16,7 @@ import (
 	"relayd/backend/proto"
 	"relayd/backend/proto/kiro"
 	"relayd/backend/relay"
+	"relayd/backend/schedule"
 
 	// 注册全部协议 codec
 	_ "relayd/backend/proto/anthropic"
@@ -31,22 +32,42 @@ type Server struct {
 	mux       *http.ServeMux
 	accessLog bool
 
-	sched    *account.Manager // 账号池调度（必填：候选与 /v1/models 模型源）
-	store    *account.Store   // 管理面 CRUD 落库
-	adminKey string           // X-Admin-Key；空则不挂载管理面
-	adminMux *http.ServeMux   // /admin 管理路由
-	probeCl  *http.Client     // 管理面端点探测用（默认 http.DefaultClient；测试可注入）
+	sched          *account.Manager // legacy test composition only
+	remoteSched    *schedule.Scheduler
+	store          *account.Store // legacy account admin only
+	adminKey       string
+	adminMux       *http.ServeMux
+	probeCl        *http.Client
+	accountChanged func() error
 }
 
-// New 按配置构造服务。sched 非空时启用账号池动态调度（限流冷却 + 粘性取号）。
+// New retains the legacy composition for compatibility tests.
 func New(cfg *config.Config, sched *account.Manager) *Server {
-	s := &Server{
-		fwd:       relay.NewForwarder(cfg, sched),
-		apiKey:    cfg.APIKey,
-		mux:       http.NewServeMux(),
-		accessLog: cfg.AccessLogEnabled,
-		probeCl:   http.DefaultClient,
+	s := &Server{fwd: relay.NewForwarder(cfg, sched), apiKey: cfg.APIKey, mux: http.NewServeMux(), accessLog: cfg.AccessLogEnabled, probeCl: http.DefaultClient}
+	s.mountPublic()
+	if sched != nil {
+		s.sched = sched
+		if cfg.Admin != nil && cfg.Admin.APIKey != "" {
+			s.store = sched.Store()
+			s.adminKey = cfg.Admin.APIKey
+			s.mountAdmin()
+		}
 	}
+	return s
+}
+
+// NewRelay composes the production relay without an in-process account Manager.
+func NewRelay(cfg *config.Config, sched *schedule.Scheduler) *Server {
+	s := &Server{fwd: relay.NewRemoteForwarder(cfg, sched), apiKey: cfg.APIKey, mux: http.NewServeMux(), accessLog: cfg.AccessLogEnabled, remoteSched: sched, probeCl: http.DefaultClient}
+	s.mountPublic()
+	if cfg.Admin != nil && cfg.Admin.APIKey != "" {
+		s.adminKey = cfg.Admin.APIKey
+		s.mountRelayAdmin()
+	}
+	return s
+}
+
+func (s *Server) mountPublic() {
 	s.mux.HandleFunc("POST /v1/messages", s.handleChat("anthropic"))
 	s.mux.HandleFunc("POST /v1/messages/count_tokens", s.handleCountTokens)
 	s.mux.HandleFunc("POST /v1/chat/completions", s.handleChat("openai-chat"))
@@ -70,15 +91,16 @@ func New(cfg *config.Config, sched *account.Manager) *Server {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))
 	})
-	if sched != nil {
-		s.sched = sched
-		if cfg.Admin != nil && cfg.Admin.APIKey != "" {
-			s.store = sched.Store()
-			s.adminKey = cfg.Admin.APIKey
-			s.mountAdmin()
-		}
+}
+
+// NewAccountAdmin exposes the compatible account administration surface for the upstream process.
+func NewAccountAdmin(sched *account.Manager, adminKey string, accountChanged ...func() error) http.Handler {
+	s := &Server{sched: sched, store: sched.Store(), adminKey: adminKey, probeCl: http.DefaultClient}
+	if len(accountChanged) > 0 {
+		s.accountChanged = accountChanged[0]
 	}
-	return s
+	s.mountAdmin()
+	return s.adminAuth(s.adminMux)
 }
 
 // SetProbeClient 替换管理面端点探测用 HTTP client（测试注入替身；
@@ -134,7 +156,7 @@ func (s *Server) accessLogMiddleware(next http.Handler) http.Handler {
 // auth 校验客户端 key：兼容 Authorization: Bearer 与 x-api-key。
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.apiKey == "" || r.URL.Path == "/health" {
+		if s.remoteSched != nil || s.apiKey == "" || r.URL.Path == "/health" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -152,6 +174,33 @@ func (s *Server) auth(next http.Handler) http.Handler {
 	})
 }
 
+func requestAPIKey(r *http.Request) string {
+	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if key == r.Header.Get("Authorization") {
+		key = r.Header.Get("x-api-key")
+	}
+	return key
+}
+
+func (s *Server) authenticateModel(w http.ResponseWriter, r *http.Request, codec proto.Codec, model, protocol string) bool {
+	if s.remoteSched == nil {
+		return true
+	}
+	configured, ok, err := s.remoteSched.Authenticate(r.Context(), model, protocol, requestAPIKey(r))
+	if err != nil {
+		s.renderError(w, codec, ir.NewHTTPError(503, "relay authentication store unavailable"))
+		return false
+	}
+	if !configured {
+		ok = s.apiKey == "" || requestAPIKey(r) == s.apiKey
+	}
+	if !ok {
+		s.renderError(w, codec, &ir.Error{StatusCode: 401, Type: ir.ErrTypeAuth, Message: "invalid api key"})
+		return false
+	}
+	return true
+}
+
 // handleChat 三个 JSON-body 协议的统一入口。
 func (s *Server) handleChat(codecName string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -164,6 +213,9 @@ func (s *Server) handleChat(codecName string) http.HandlerFunc {
 		req, err := codec.DecodeRequest(body)
 		if err != nil {
 			s.renderError(w, codec, ir.NewHTTPError(400, err.Error()))
+			return
+		}
+		if !s.authenticateModel(w, r, codec, req.Model, codecName) {
 			return
 		}
 		s.fwd.Forward(r.Context(), w, codec, req)
@@ -193,6 +245,9 @@ func (s *Server) handleGemini(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Model = model
 	req.Stream = action == "streamGenerateContent"
+	if !s.authenticateModel(w, r, codec, req.Model, "gemini") {
+		return
+	}
 	s.fwd.Forward(r.Context(), w, codec, req)
 }
 
@@ -210,6 +265,9 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, codec, ir.NewHTTPError(400, err.Error()))
 		return
 	}
+	if !s.authenticateModel(w, r, codec, req.Model, "anthropic") {
+		return
+	}
 	status, respBody := s.fwd.CountTokens(r.Context(), req)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -219,8 +277,20 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 // handleModels 列出账号池可用模型（Manager.Models 并集口径）。
 // Claude ID 以横线形态展示（model_meta.go DashifyClaudeID：Claude Code /
 // Desktop 只认横线形态；请求侧 normalize 等价解析回点号）。
-func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
-	models := s.sched.Models()
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	var models []string
+	if s.remoteSched != nil {
+		var err error
+		models, err = s.remoteSched.Models(r.Context())
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"type":"upstream_error","message":"model catalog unavailable"}}`))
+			return
+		}
+	} else if s.sched != nil {
+		models = s.sched.Models()
+	}
 	var sb strings.Builder
 	sb.WriteString(`{"object":"list","data":[`)
 	for i, m := range models {

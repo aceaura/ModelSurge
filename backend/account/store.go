@@ -165,7 +165,8 @@ func maskSecret(s string) string {
 
 // Store SQLite 存储。单文件、回滚日志模式（Docker 绑定挂载教训）；时间一律 unix 秒。
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	ownsDB bool
 }
 
 const schema = `
@@ -230,16 +231,25 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("account: open %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(1) // SQLite 写并发弱，串行化最稳
-	if _, err := db.Exec(schema); err != nil {
+	store, err := OpenDB(db)
+	if err != nil {
 		db.Close()
+		return nil, err
+	}
+	store.ownsDB = true
+	return store, nil
+}
+
+// OpenDB initializes the account schema on a caller-owned connection pool.
+// The returned Store shares that pool and Close leaves it open.
+func OpenDB(db *sql.DB) (*Store, error) {
+	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("account: migrate: %w", err)
 	}
 	if err := migrateColumns(db, "v2", v2Columns); err != nil {
-		db.Close()
 		return nil, fmt.Errorf("account: migrate v2: %w", err)
 	}
 	if err := migrateColumns(db, "v3", v3Columns); err != nil {
-		db.Close()
 		return nil, fmt.Errorf("account: migrate v3: %w", err)
 	}
 	return &Store{db: db}, nil
@@ -281,7 +291,15 @@ func migrateColumns(db *sql.DB, ver string, columns []string) error {
 	return nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if !s.ownsDB {
+		return nil
+	}
+	return s.db.Close()
+}
+
+// DB exposes the shared connection pool for store composition and transactions.
+func (s *Store) DB() *sql.DB { return s.db }
 
 // accountSelect 全字段读取（与 scanAccount 对应）。
 const accountSelect = `SELECT name, type, enabled, protocol, base_url, api_key, models,

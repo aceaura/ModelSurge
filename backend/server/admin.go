@@ -256,6 +256,12 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sched.Reconfigure(fresh)
+	if s.accountChanged != nil {
+		if err := s.accountChanged(); err != nil {
+			adminError(w, 500, "", "account saved but model catalog sync failed: "+err.Error())
+			return
+		}
+	}
 	writeAdminJSON(w, 201, adminAccountResponse{Account: fresh.Masked(), Probe: probe})
 }
 
@@ -349,6 +355,12 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sched.Reconfigure(fresh)
+	if s.accountChanged != nil {
+		if err := s.accountChanged(); err != nil {
+			adminError(w, 500, "", "account saved but model catalog sync failed: "+err.Error())
+			return
+		}
+	}
 	writeAdminJSON(w, 200, adminAccountResponse{Account: fresh.Masked(), Probe: probe})
 }
 
@@ -369,6 +381,12 @@ func (s *Server) adminDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sched.Remove(name)
+	if s.accountChanged != nil {
+		if err := s.accountChanged(); err != nil {
+			adminError(w, 500, "", "account deleted but model catalog sync failed: "+err.Error())
+			return
+		}
+	}
 	w.WriteHeader(204)
 }
 

@@ -1,0 +1,11 @@
+listen: 0.0.0.0:18099
+api_key: change-client-key
+admin_key: change-relay-admin-key
+db_path: /data/relay.db
+upstream_url: http://upstream:18100
+service_key: local-service-key
+control_timeout: 10s
+compatibility_bootstrap: true
+first_token_timeout: 30s
+estimate_usage: false
+access_log: true

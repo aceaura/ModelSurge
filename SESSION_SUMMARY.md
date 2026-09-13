@@ -8,7 +8,7 @@
 
 - `strategy/`：无 I/O 的状态机、信号分类、熔断与优先级/SWRR 路由。
 - `backend/`：配置与模型 catalog、HTTP ingress、relaykit 协议转换、egress 转发、余额/ping 探测、调度、admin API、事件环。
-- `frontend/`：Flutter Windows 管理客户端，采用深色壳、浅色内容区、柠檬绿强调色的 KiroaaS 风格。
+- `surge/`：Flutter Windows 管理客户端，采用深色壳、浅色内容区、柠檬绿强调色的 KiroaaS 风格。
 
 ## 本会话完成的代码
 
@@ -26,7 +26,7 @@
 
 ### localhost 闭环
 
-`relayd.yaml` 已改为完全本地配置：
+当时的单体 `relayd.yaml` 本地配置记录如下（该入口现已退役，当前使用 `demo/relay.yaml` + `demo/upstream.yaml`）：
 
 - relay：`127.0.0.1:8080`
 - admin：`127.0.0.1:8081`
@@ -93,9 +93,10 @@ flutter build windows
 构建并启动：
 
 ```powershell
-go build -o relayd.exe ./cmd/relayd
+go build -o upstream.exe ./cmd/upstream
+go build -o relay.exe ./cmd/relay
 go build -o relaymock.exe ./cmd/relaymock
-cd frontend
+cd surge
 flutter pub get
 flutter analyze
 flutter build windows
@@ -103,18 +104,19 @@ cd ..
 powershell -ExecutionPolicy Bypass -File demo/start.ps1
 ```
 
-查看状态：
+查看当前双进程状态：
 
 ```bash
-curl -H 'Authorization: Bearer sk-local-change-me' \
-  http://127.0.0.1:8081/admin/summary
+curl http://127.0.0.1:18099/health
+curl -H 'Authorization: Bearer local-service-key' \
+  http://127.0.0.1:18100/internal/v1/health
 ```
 
 调用本地出口：
 
 ```bash
-curl -N -X POST http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Authorization: Bearer sk-local-change-me' \
+curl -N -X POST http://127.0.0.1:18099/v1/chat/completions \
+  -H 'Authorization: Bearer change-client-key' \
   -H 'Content-Type: application/json' \
   -d '{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```
@@ -131,9 +133,9 @@ curl -X POST http://127.0.0.1:9002/mock/control -d '{"mode":"normal"}'
 
 提交应包含 Go 后端、mock、demo 配置/脚本、Flutter 源码、测试、`README.md` 和本总结文档；不应包含：
 
-- `relayd.exe`、`relaymock.exe` 等构建产物。
+- `relay.exe`、`upstream.exe`、`relaymock.exe` 等构建产物。
 - `*.log` 运行日志。
-- `frontend/build/`、`frontend/.dart_tool/`、`frontend/.idea/` 等生成目录。
+- `surge/build/`、`surge/.dart_tool/`、`surge/.idea/` 等生成目录。
 - 真实 API key 或真实上游配置。
 
-`relayd.example.yaml` 仍是脱敏的真实上游配置模板；`relayd.yaml` 是本地演示配置。
+当前容器配置为 `relay.yaml` 与 `upstream.yaml`，本地演示配置位于 `demo/relay.yaml` 与 `demo/upstream.yaml`。

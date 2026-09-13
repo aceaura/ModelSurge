@@ -4,7 +4,6 @@ data
 *.log
 relayd-ark.yaml
 relayd-local.yaml
-relayd.yaml
 kiro-debug
 *.db
 demo

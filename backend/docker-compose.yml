@@ -1,13 +1,33 @@
 services:
-  relayd:
-    build: .
-    image: relayd:latest
-    container_name: relayd
+  upstream:
+    build:
+      context: .
+      target: upstream
+    image: modelsurge-upstream:latest
+    volumes:
+      - ./upstream.yaml:/app/upstream.yaml:ro
+      - ../data/upstream:/data
+      - ../data/legacy:/legacy:ro
+    expose:
+      - "18100"
+    healthcheck:
+      test: ["CMD", "wget", "--header=Authorization: Bearer local-service-key", "-qO-", "http://127.0.0.1:18100/internal/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  relay:
+    build:
+      context: .
+      target: relay
+    image: modelsurge-relay:latest
+    depends_on:
+      upstream:
+        condition: service_healthy
     ports:
       - "127.0.0.1:18099:18099"
     volumes:
-      # 凭据配置与数据目录在仓库根（relayd-ark.yaml 与 data/ 均已 gitignore）；
-      # 运行容器一直以仓库根路径挂载，compose 与之对齐。
-      - ../relayd-ark.yaml:/app/relayd.yaml:ro
-      - ../data:/data
+      - ./relay.yaml:/app/relay.yaml:ro
+      - ../data/relay:/data
     restart: unless-stopped

@@ -1,0 +1,10 @@
+listen: 0.0.0.0:18100
+db_path: /data/upstream.db
+service_key: local-service-key
+admin_key: change-upstream-admin-key
+# Optional, read-only and idempotent compatibility import:
+# legacy_db_import: /legacy/accounts.db
+cooldowns:
+  default: 5h
+  window_7h: 7h
+  monthly: 24h

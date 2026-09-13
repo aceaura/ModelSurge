@@ -4,12 +4,12 @@
 *.log
 
 # Flutter generated files
-frontend/.dart_tool/
-frontend/build/
-frontend/.idea/
-frontend/.metadata
-frontend/.flutter-plugins
-frontend/.flutter-plugins-dependencies
+surge/.dart_tool/
+surge/build/
+surge/.idea/
+surge/.metadata
+surge/.flutter-plugins
+surge/.flutter-plugins-dependencies
 
 # Local editor and OS files
 .DS_Store

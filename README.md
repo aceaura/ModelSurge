@@ -1,6 +1,6 @@
-# relayd
+# ModelSurge
 
-四通八达的 LLM 协议转换网关：客户端可以用 **Anthropic / OpenAI Chat / OpenAI Responses / Gemini** 任一协议接入，上游可以是其中任一协议。所有转换经由统一中间表示（IR）中转，协议两两之间不存在直转代码。
+ModelSurge 是由 `surge`、`relay`、`upstream` 三个进程组成的 LLM 协议转换网关。客户端可以用 **Anthropic / OpenAI Chat / OpenAI Responses / Gemini** 任一协议接入，上游可以是任一已注册协议。所有转换都由 `relay` 经统一中间表示（IR）中转，同协议也禁止透传。
 
 ## 入口矩阵
 
@@ -23,19 +23,19 @@
 ## 架构
 
 ```
-backend/ir/         统一中间表示：Request/Response/Block/流式事件/Usage/Error
-                    事件词汇以 Anthropic streaming 为超集；Usage 以 Anthropic 口径为规范
-backend/normalize/  消息规整流水线：合并同角色、首条 user、强制交替、空内容占位、
-                    孤儿 tool_result 降级、tool_use/tool_result 配对、schema 清洗
-backend/proto/      Codec 接口与注册表；每协议一个子包，init() 自注册：
-                    anthropic / openaichat / openairesponses / gemini / kiro
-                    每个 codec 只做 协议<->IR 双向转换（请求、流式、非流式、错误）
-backend/account/    账号池：SQLite 持久化（凭据/冷却/禁用/熔断/逐笔 usage）与调度
-backend/relay/      转发层：上游永远流式、SSE 读取、非流式客户端缓冲聚合
-backend/server/     HTTP 入口：按路径识别客户端协议，鉴权后交给 relay
-backend/cmd/relayd/     主程序
-backend/cmd/relaymock/  本地上游模拟器（OpenAI/Anthropic 应答 + /mock/control 故障注入）
+surge/                      Flutter 管理前端，本阶段保留现有功能
+backend/cmd/relay/           客户端 HTTP、UserModelGroup 调度、IR、codec、转发与响应回写
+backend/cmd/upstream/        UpstreamModel、账号凭据、Kiro token、额度与评估控制面
+backend/relaystore/          relay.db：UserModel、调度组、Policy、组内目标缓存
+backend/upstreamstore/       upstream.db：账号、UpstreamModel、状态、额度与 usage
+backend/contract/upstreamv1/ relay 与 upstream 的版本化 HTTP JSON DTO
+backend/ir/                  协议无关 Request/Response/Block/流事件/Usage/Error
+backend/proto/               anthropic / openaichat / openairesponses / gemini / kiro codec
+backend/relay/               上游调用、流解码、pre-write 重试与响应聚合
+backend/cmd/relaymock/       本地上游模拟器
 ```
+
+`relay` 与 `upstream` 仅通过带 service key 的内部 HTTP JSON API 通信；协议原始字节只由 `relay` 处理。两进程分别独占 `relay.db` 和 `upstream.db`，不跨库直读。
 
 核心设计（调研 new-api / sub2api / kiro-gateway 后的提炼，详见 `docs/protocol-conversion-study.md`）：
 
@@ -52,21 +52,26 @@ backend/cmd/relaymock/  本地上游模拟器（OpenAI/Anthropic 应答 + /mock/
 
 ## 配置
 
-见 `backend/relayd.example.yaml`。yaml 只含运行参数；上游账号全部保存在 SQLite（`scheduler.db_path`），启动后经管理面 `/admin` 热建号（api-key / kiro 型）：
+运行配置拆为 `backend/relay.yaml` 与 `backend/upstream.yaml`：
 
 ```yaml
-listen: "127.0.0.1:8080"
-api_key: "sk-replace-me"
+# relay.yaml
+listen: 0.0.0.0:18099
+db_path: /data/relay.db
+upstream_url: http://upstream:18100
+service_key: local-service-key
 
-scheduler:
-  db_path: ./data/relayd.db # SQLite 文件（必填）
-admin:
-  api_key: "sk-admin-change-me"
+# upstream.yaml
+listen: 0.0.0.0:18100
+db_path: /data/upstream.db
+service_key: local-service-key
 ```
 
+账号与 UpstreamModel 归 `upstream` 管理；UserModel、调度组、Policy 和目标缓存归 `relay` 管理：
+
 ```bash
-curl -X POST http://127.0.0.1:8080/admin/accounts \
-  -H "X-Admin-Key: sk-admin-change-me" -H "Content-Type: application/json" \
+curl -X POST http://127.0.0.1:18100/admin/accounts \
+  -H "X-Admin-Key: change-upstream-admin-key" -H "Content-Type: application/json" \
   -d '{"name":"claude","type":"api-key","protocol":"anthropic","base_url":"https://api.anthropic.com","api_key":"sk-ant-xxx","models":{"claude-sonnet-4":"claude-sonnet-4-20250514"}}'
 ```
 
@@ -80,18 +85,27 @@ kiro 账号支持三种认证方法（`refresh_token` / `creds_file` / `cli_db`�
 
 ```bash
 cd backend
-go build -o relayd.exe ./cmd/relayd
-./relayd.exe -config relayd.yaml   # 本地演示配置（配合 relaymock，脚本 demo/start.sh）
+go build -o upstream.exe ./cmd/upstream
+go build -o relay.exe ./cmd/relay
+go build -o relaymock.exe ./cmd/relaymock
+bash demo/start.sh
 
-go test ./...                      # 单元 + 4x4 跨协议矩阵
+go test ./...
 go vet ./...
+
+cd ../surge
+flutter pub get
+flutter analyze
+flutter build windows --release
 ```
+
+也可以在 `backend/` 运行 `docker compose up --build`，默认只向宿主机暴露 `relay` 的 `127.0.0.1:18099`。
 
 调用示例：
 
 ```bash
 # Anthropic 客户端 -> 任意协议上游
-curl -N -X POST http://127.0.0.1:8080/v1/messages \
-  -H "Authorization: Bearer sk-local-change-me" -H "Content-Type: application/json" \
+curl -N -X POST http://127.0.0.1:18099/v1/messages \
+  -H "Authorization: Bearer change-client-key" -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```

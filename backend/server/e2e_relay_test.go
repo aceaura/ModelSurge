@@ -125,6 +125,33 @@ func TestRetryOnFirstTokenTimeout(t *testing.T) {
 	}
 }
 
+func TestRetryOnMalformedFirstFrame(t *testing.T) {
+	var badCalls atomic.Int32
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		badCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("event: message_start\ndata: {not-json}\n\n"))
+	}))
+	defer bad.Close()
+	good, _ := mockUpstream(t, "anthropic", "AFTER_MALFORMED")
+	gw := newGateway(t, &config.Config{},
+		apiKeyAcc("bad", "anthropic", bad.URL, "m", "m"),
+		apiKeyAcc("good", "anthropic", good.URL, "m", "m"))
+	resp, err := http.Post(gw.URL+"/v1/messages", "application/json", strings.NewReader(anthropicChatBody()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "AFTER_MALFORMED") {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	if badCalls.Load() != 1 {
+		t.Fatalf("bad candidate calls=%d", badCalls.Load())
+	}
+}
+
 // TestNoRetryAfterBytesWritten 流式响应中途断流不换上游：错误在流内渲染。
 func TestNoRetryAfterBytesWritten(t *testing.T) {
 	var calls2 atomic.Int32

@@ -1,0 +1,21 @@
+listen: 127.0.0.1:8080
+api_key: test-client-key
+first_token_timeout: 30s
+estimate_usage: false
+access_log: true
+truncation_recovery: true
+scheduler:
+  db_path: ./data/legacy-test.db
+  same_account_retries: 1
+  cooldowns:
+    default: 5h
+    window_7h: 7h
+    monthly: 24h
+admin:
+  api_key: test-admin-key
+kiro:
+  region: us-east-1
+  recovery_timeout: 60s
+  max_backoff_multiplier: 1440
+  probabilistic_retry: 0.1
+  cache_ttl: 12h

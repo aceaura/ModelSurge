@@ -206,6 +206,14 @@ func warnTimeoutCross(effFirstToken, readTimeout time.Duration) {
 	}
 }
 
+// ParseKiro parses Kiro duration/default fields for independent process configs.
+func ParseKiro(k *Kiro) error {
+	if k == nil {
+		return nil
+	}
+	return k.parse()
+}
+
 // parse 解析 kiro 段的 duration/数值字段并填默认值。
 func (k *Kiro) parse() error {
 	for _, d := range []struct {

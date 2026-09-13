@@ -12,9 +12,11 @@ import (
 
 	"relayd/backend/account"
 	"relayd/backend/config"
+	"relayd/backend/contract/upstreamv1"
 	"relayd/backend/ir"
 	"relayd/backend/proto"
 	"relayd/backend/proto/kiro"
+	"relayd/backend/schedule"
 
 	"github.com/google/uuid"
 )
@@ -35,6 +37,7 @@ type Forwarder struct {
 	firstTokenTimeout  time.Duration
 	estimateUsage      bool
 	sched              *account.Manager
+	remote             *schedule.Scheduler
 	sameAccountRetries int
 	trunc              *TruncationTracker
 	paramLog           bool // 请求/响应参数日志（与访问日志同开关）
@@ -45,19 +48,30 @@ type Forwarder struct {
 	kiroWebSearchInject      bool          // web_search 注入全局默认（账号级可另开）
 }
 
-// NewForwarder 构造转发器。sched 为账号池调度器（必填）。
+// NewForwarder is retained for legacy tests. New production composition uses NewRemoteForwarder.
 func NewForwarder(cfg *config.Config, sched *account.Manager) *Forwarder {
+	f := newForwarder(cfg)
+	f.sched = sched
+	if sched != nil && cfg.Scheduler != nil {
+		f.sameAccountRetries = cfg.Scheduler.SameAccountRetries
+	}
+	return f
+}
+
+// NewRemoteForwarder constructs the relay data plane without an in-process account Manager.
+func NewRemoteForwarder(cfg *config.Config, sched *schedule.Scheduler) *Forwarder {
+	f := newForwarder(cfg)
+	f.remote = sched
+	return f
+}
+
+func newForwarder(cfg *config.Config) *Forwarder {
 	f := &Forwarder{
-		// Kiro 出站流量经云中转/调试 transport（按配置，两项都关时为默认）
 		client:            &http.Client{Timeout: 0, Transport: account.KiroTransport()},
 		firstTokenTimeout: cfg.FirstTokenTimeoutDur,
 		estimateUsage:     cfg.EstimateUsage,
-		sched:             sched,
 		trunc:             NewTruncationTracker(cfg.TruncationRecoveryEnabled),
 		paramLog:          cfg.AccessLogEnabled,
-	}
-	if sched != nil && cfg.Scheduler != nil {
-		f.sameAccountRetries = cfg.Scheduler.SameAccountRetries
 	}
 	if k := cfg.Kiro; k != nil {
 		f.kiroFirstTokenTimeout = k.FirstTokenTimeoutDur
@@ -74,7 +88,8 @@ type candidate struct {
 	acc      *account.Account // 账号本体
 	native   string
 	codec    proto.Codec
-	ov       *ir.Overrides    // 账号级请求参数覆盖（nil = 透传）
+	ov       *ir.Overrides // 账号级请求参数覆盖（nil = 透传）
+	runtime  upstreamv1.RuntimeMetadata
 	resolve  endpointResolver // 每请求解析 URL 与鉴权头（kiro 动态取 token/host）
 }
 
@@ -160,6 +175,10 @@ func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCo
 		log.Printf("relay: request %s", requestParams(clientCodec.Name(), req))
 	}
 	f.trunc.InjectNotices(req) // 上次截断的恢复提示（命中才修改）
+	if f.remote != nil {
+		f.forwardRemote(ctx, w, clientCodec, req)
+		return
+	}
 	f.forwardScheduled(ctx, w, clientCodec, req)
 }
 
@@ -193,6 +212,42 @@ func (f *Forwarder) accountCandidate(a *account.Account, model string) (candidat
 		cand.resolve = staticEndpoint(protocol, a.BaseURL, a.APIKey, native, a.Headers)
 	}
 	return cand, nil
+}
+
+func resolvedCandidate(t upstreamv1.ResolvedTarget) (candidate, error) {
+	c, err := proto.Get(t.Protocol)
+	if err != nil {
+		return candidate{}, err
+	}
+	a := &account.Account{Name: t.Account, Protocol: t.Protocol, Type: account.TypeAPIKey}
+	if t.Runtime.AccountType == account.TypeKiro || t.Protocol == "kiro" {
+		a.Type = account.TypeKiro
+		a.Kiro = &account.KiroAccount{FakeReasoning: t.Runtime.FakeReasoning, WebSearch: t.Runtime.WebSearch}
+	}
+	return candidate{
+		name: t.ID, protocol: t.Protocol, acc: a, native: t.NativeModel, codec: c, ov: t.RequestOverrides, runtime: t.Runtime,
+		resolve: func(context.Context) (string, map[string]string, *ir.Error) {
+			url := t.BaseURL
+			if t.Protocol == "kiro" {
+				url += "/generateAssistantResponse"
+			} else {
+				url, _ = endpoint(t.Protocol, t.BaseURL, t.APIKey, t.NativeModel)
+			}
+			headers := make(map[string]string, len(t.Headers)+2)
+			for k, v := range t.Headers {
+				headers[k] = v
+			}
+			if t.APIKey != "" {
+				_, defaults := endpoint(t.Protocol, t.BaseURL, t.APIKey, t.NativeModel)
+				for k, v := range defaults {
+					if _, ok := headers[k]; !ok {
+						headers[k] = v
+					}
+				}
+			}
+			return url, headers, nil
+		},
+	}, nil
 }
 
 // forwardScheduled 账号池调度模式：粘性取号 + 错误分类处置。
@@ -289,6 +344,68 @@ func (f *Forwarder) forwardScheduled(ctx context.Context, w http.ResponseWriter,
 			}
 		}
 	}
+}
+
+func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, req *ir.Request) {
+	tried := map[string]bool{}
+	var lastErr *ir.Error
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		sel, err := f.remote.Select(ctx, req.Model, tried)
+		if err != nil {
+			if lastErr == nil {
+				lastErr = &ir.Error{StatusCode: 503, Type: ir.ErrTypeUpstream, Message: "upstream control unavailable or no target", Retryable: true}
+			}
+			writeError(w, clientCodec, lastErr)
+			return
+		}
+		tried[sel.Target.ID] = true
+		cand, err := resolvedCandidate(sel.Target)
+		if err != nil {
+			lastErr = ir.NewHTTPError(500, "invalid resolved target")
+			continue
+		}
+		var usage upstreamv1.Usage
+		wrote, aerr := f.attempt(ctx, w, clientCodec, cand, req, func(u *ir.Usage) {
+			if u == nil || u.Estimated {
+				return
+			}
+			usage = upstreamv1.Usage{InputTokens: int64(u.InputTokens), OutputTokens: int64(u.OutputTokens), CacheRead: int64(u.CacheReadTokens), CacheCreation: int64(u.CacheCreationTokens)}
+		})
+		report := upstreamv1.ResultReport{ReportID: uuid.NewString(), TargetID: sel.Target.ID, Outcome: "normal", Usage: usage, At: time.Now()}
+		if aerr != nil {
+			report.Outcome = "abnormal"
+			report.Status = aerr.StatusCode
+			report.Message = excerpt(aerr.Message)
+		}
+		go f.reportRemote(sel, report)
+		if aerr == nil || wrote {
+			return
+		}
+		lastErr = aerr
+		if !aerr.Retryable {
+			writeError(w, clientCodec, aerr)
+			return
+		}
+	}
+}
+
+func (f *Forwarder) reportRemote(sel schedule.Selection, report upstreamv1.ResultReport) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = f.remote.Report(ctx, sel.GroupID, sel.Target, report)
+		if err == nil {
+			return
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	log.Printf("relay: report %s target %s failed after retries: %v", report.ReportID, sel.Target.ID, err)
 }
 
 // quotaFallbackCooldown GetUsageLimits 不可得（免费账号无 profileArn 等）时
@@ -444,8 +561,22 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 // 注入走可选接口，relay 不依赖具体类型。
 func (f *Forwarder) newDecoder(cand candidate, req *ir.Request) proto.StreamDecoder {
 	dec := cand.codec.NewStreamDecoder()
+	f.configureDecoder(dec, cand, req)
+	return dec
+}
+
+// ApplyResolvedRuntimeForTest exercises production decoder metadata injection.
+func (f *Forwarder) ApplyResolvedRuntimeForTest(dec proto.StreamDecoder, target upstreamv1.ResolvedTarget, req *ir.Request) {
+	cand, err := resolvedCandidate(target)
+	if err != nil {
+		return
+	}
+	f.configureDecoder(dec, cand, req)
+}
+
+func (f *Forwarder) configureDecoder(dec proto.StreamDecoder, cand candidate, req *ir.Request) {
 	if cand.acc == nil || cand.acc.Type != account.TypeKiro {
-		return dec
+		return
 	}
 	if sd, ok := dec.(interface{ SetModel(string) }); ok {
 		sd.SetModel(req.Model)
@@ -455,14 +586,17 @@ func (f *Forwarder) newDecoder(cand candidate, req *ir.Request) proto.StreamDeco
 			sd.SetFakeReasoning(true)
 		}
 	}
-	if f.sched != nil {
+	if cand.runtime.MaxInputTokens > 0 {
+		if sd, ok := dec.(interface{ SetMaxInputTokens(int) }); ok {
+			sd.SetMaxInputTokens(cand.runtime.MaxInputTokens)
+		}
+	} else if f.sched != nil {
 		if rt := f.sched.KiroRuntimeOf(cand.acc.Name); rt != nil {
 			if sd, ok := dec.(interface{ SetMaxInputTokens(int) }); ok {
 				sd.SetMaxInputTokens(int(rt.Models.MaxInputTokens(cand.native)))
 			}
 		}
 	}
-	return dec
 }
 
 // recordTruncation 流结束后探测解码器的截断上报缝并记录（kiro 实现）。
@@ -541,6 +675,14 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream closed stream without any event", Retryable: true}
 	}
 
+	firstEvents, err := dec.Feed(first.Event, first.Data)
+	if err != nil {
+		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event decode: " + err.Error(), Retryable: true}
+	}
+	if len(firstEvents) == 0 {
+		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event produced no IR event", Retryable: true}
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -593,8 +735,8 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 		return emit(events)
 	}
 
-	if !feed(first) {
-		sum.log()  // 客户端断开，流已中断——按已发部分出摘要
+	if !emit(firstEvents) {
+		sum.log() // 客户端断开，流已中断——按已发部分出摘要
 		csum.log()
 		return true, nil
 	}
@@ -608,7 +750,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 			break
 		}
 		if !feed(ev) {
-			sum.log()  // 客户端断开，流已中断——按已发部分出摘要
+			sum.log() // 客户端断开，流已中断——按已发部分出摘要
 			csum.log()
 			return true, nil
 		}
@@ -666,6 +808,16 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 	}
 
 	agg := ir.NewAggregator()
+	firstEvents, err := dec.Feed(first.Event, first.Data)
+	if err != nil {
+		return nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event decode: " + err.Error(), Retryable: true}
+	}
+	if len(firstEvents) == 0 {
+		return nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event produced no IR event", Retryable: true}
+	}
+	for _, e := range firstEvents {
+		agg.Feed(e)
+	}
 	feed := func(ev SSEEvent) {
 		events, err := dec.Feed(ev.Event, ev.Data)
 		if err != nil {
@@ -675,7 +827,6 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 			agg.Feed(e)
 		}
 	}
-	feed(first)
 	for {
 		ev, ok, rerr := er.Next()
 		if rerr != nil {
@@ -758,6 +909,10 @@ func (f *Forwarder) attemptStrict(ctx context.Context, w http.ResponseWriter, cl
 // 原生计数；无可用账号时本地粗估并记日志。粗估按首个候选的协议语义
 // （kiro 账号 → kiro tokenizer；其余 → IR 通用估算）。
 func (f *Forwarder) CountTokens(ctx context.Context, req *ir.Request) (int, []byte) {
+	if f.remote != nil {
+		est := ir.EstimateRequestTokens(req)
+		return 200, []byte(fmt.Sprintf(`{"input_tokens":%d}`, est))
+	}
 	var cands []candidate
 	tried := map[string]bool{}
 	for {

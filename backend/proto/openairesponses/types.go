@@ -10,7 +10,9 @@ const Name = "openai-responses"
 
 type request struct {
 	Model              string          `json:"model"`
-	Instructions       string          `json:"instructions,omitempty"`
+	// instructions 无 omitempty：订阅端点（Codex 形态）要求字段存在，
+	// 无 system 时输出空串（官方 API 同样接受）。
+	Instructions string `json:"instructions"`
 	Input              json.RawMessage `json:"input,omitempty"` // string 或 []inputItem（官方两种形态均支持）
 	MaxOutputTokens    int             `json:"max_output_tokens,omitempty"`
 	Temperature        *float64        `json:"temperature,omitempty"`

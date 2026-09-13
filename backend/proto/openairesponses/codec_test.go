@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"relayd/backend/ir"
+	"relayd/backend/proto"
 )
 
 // 请求方向：仅本族形态签名可还原 reasoning item（encrypted_content）；
@@ -82,5 +83,33 @@ func TestDecodeRequest_InputShapes(t *testing.T) {
 	}
 	if len(req.Messages) != 0 {
 		t.Fatalf("unknown items must be skipped, got %+v", req.Messages)
+	}
+}
+
+// codex 别名 codec：协议名独立注册，编解码与 openai-responses 同一实现；
+// instructions 恒存在（订阅端点要求字段，无 system 时输出空串）。
+func TestCodexCodec(t *testing.T) {
+	c := New()
+	cx := codexCodec{codec: codec{}}
+	if c.Name() != "openai-responses" || cx.Name() != NameCodex {
+		t.Fatalf("codec names = %q / %q", c.Name(), cx.Name())
+	}
+	if _, err := proto.Get(NameCodex); err != nil {
+		t.Fatalf("codex codec not registered: %v", err)
+	}
+	out, err := cx.EncodeRequest(&ir.Request{
+		Model:   "gpt-5.6-sol",
+		Stream:  true,
+		Thinking: &ir.ThinkingConfig{Enabled: true, Effort: "xhigh"},
+		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{`"instructions":`, `"store":false`, `"effort":"xhigh"`, `reasoning.encrypted_content`} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("encoded missing %s: %s", want, s)
+		}
 	}
 }

@@ -15,6 +15,8 @@ import (
 	"relayd/backend/ir"
 	"relayd/backend/proto"
 	"relayd/backend/proto/kiro"
+
+	"github.com/google/uuid"
 )
 
 // Forwarder 把 IR 请求转发到上游，并把上游响应回传给客户端。
@@ -124,6 +126,22 @@ func endpoint(protocol, baseURL, apiKey, nativeModel string) (url string, header
 		}
 	case "openai-responses":
 		return baseURL + "/v1/responses", map[string]string{"Authorization": "Bearer " + apiKey}
+	case "codex":
+		// Codex 订阅端点（ChatGPT OAuth）：路径无 /v1 前缀；身份头必须配套
+		// （originator 与 User-Agent 首段一致、version 不低于上游门槛，
+		// 否则上游 404 —— sub2api issue #3901）。账号 Headers 可覆盖默认头，
+		// chatgpt-account-id 由账号配置补充（多 workspace 账号必需）。
+		if baseURL == "" {
+			baseURL = "https://chatgpt.com/backend-api/codex"
+		}
+		return baseURL + "/responses", map[string]string{
+			"Authorization": "Bearer " + apiKey,
+			"originator":    "codex-tui",
+			"User-Agent":    "codex-tui/0.146.0 (Ubuntu 22.4.0; x86_64) xterm-256color",
+			"version":       "0.146.0",
+			"OpenAI-Beta":   "responses=experimental",
+			"session_id":    uuid.NewString(), // 每请求新会话 id，对齐 sub2api 隔离语义
+		}
 	case "gemini":
 		return fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", baseURL, nativeModel),
 			map[string]string{"x-goog-api-key": apiKey}

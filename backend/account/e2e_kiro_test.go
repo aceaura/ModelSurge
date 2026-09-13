@@ -350,6 +350,27 @@ func TestE2EKiro403ForceRefreshRetry(t *testing.T) {
 	}
 }
 
+// 上游请求带 Connection: close：防流式响应后连接滞留 CLOSE_WAIT（KiroaaS issue#38）。
+func TestE2EKiroConnectionCloseHeader(t *testing.T) {
+	var gotClose atomic.Bool
+	gw, _, _ := newKiroEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Connection") == "close" {
+			gotClose.Store(true)
+		}
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(200)
+		_, _ = w.Write(kiroChatStream("CLOSE_HEADER"))
+	})
+
+	status, body := postChat(t, gw.URL, "/v1/messages", anthropicChat)
+	if status != 200 || !strings.Contains(body, "CLOSE_HEADER") {
+		t.Fatalf("status = %d, body = %s", status, body)
+	}
+	if !gotClose.Load() {
+		t.Error("upstream request missing Connection: close header")
+	}
+}
+
 // 混合池（kiro + api-key）瞬时错误：原地重试耗尽 → 熔断切号；
 // 熔断冷却期内后续请求直达兜底账号。
 func TestE2EKiroTransientBreakerMixedPool(t *testing.T) {

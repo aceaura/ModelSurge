@@ -109,6 +109,7 @@ func kiroEndpoint(rt *account.KiroRuntime) endpointResolver {
 				Message: "kiro token: " + err.Error(), Retryable: true}
 		}
 		headers := account.KiroHeaders(rt.Auth.Fingerprint(), token, account.TargetGenerateAssistantResponse)
+		headers["Connection"] = "close" // 防流式响应后连接滞留 CLOSE_WAIT（KiroaaS issue#38 同款）
 		return rt.Auth.ChatHost() + "/generateAssistantResponse", headers, nil
 	}
 }

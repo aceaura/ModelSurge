@@ -1,141 +1,163 @@
-# relayd / ModelSurge 会话总结
+# ModelSurge 会话总结
 
-日期：2026-09-09
+日期：2026-09-14
 
-## 项目目标
+## 当前定案
 
-`relayd` 是一个个人 LLM relay gateway：把多个 OpenAI、Anthropic 等协议的上游订阅聚合成一个本地出口，按 canonical model 统一路由，并在余额耗尽、429、连续失败或探测失败时自动摘除上游；恢复后通过 half-open 重新接入。项目分为三层：
-
-- `strategy/`：无 I/O 的状态机、信号分类、熔断与优先级/SWRR 路由。
-- `backend/`：配置与模型 catalog、HTTP ingress、relaykit 协议转换、egress 转发、余额/ping 探测、调度、admin API、事件环。
-- `surge/`：Flutter Windows 管理客户端，采用深色壳、浅色内容区、柠檬绿强调色的 KiroaaS 风格。
-
-## 本会话完成的代码
-
-### 本地上游模拟器
-
-新增 `cmd/relaymock`，一个进程可以启动多个 mock 上游实例：
-
-- OpenAI：`POST /v1/chat/completions`，支持流式和非流式响应。
-- Anthropic：`POST /v1/messages`，支持流式和非流式响应。
-- OpenAI 余额探测：`GET /api/user/self`，返回 `data.quota`。
-- 控制接口：`POST /mock/control`，支持 `quota`、`mode`、`delay_ms`；故障模式包括 `normal`、`ratelimit`、`slow`、`down`、`auth_error`。
-- 状态接口：`GET /mock/state`。
-
-演示配置在 `demo/relaymock.yaml`，默认启动 `st-a:9001`、`st-b:9002`、`cl-01:9003`。
-
-### localhost 闭环
-
-当时的单体 `relayd.yaml` 本地配置记录如下（该入口现已退役，当前使用 `demo/relay.yaml` + `demo/upstream.yaml`）：
-
-- relay：`127.0.0.1:8080`
-- admin：`127.0.0.1:8081`
-- admin token：`sk-local-change-me`
-- 3 个上游：两个 OpenAI mock station、一个 Anthropic mock。
-
-一键启动脚本：
-
-- Windows：`powershell -ExecutionPolicy Bypass -File demo/start.ps1`
-- Git Bash：`bash demo/start.sh`
-
-脚本会构建产物之外启动 mock、relayd 和已构建的 Flutter 客户端，并检查 admin API。
-
-### 协议转换修复与实测
-
-新增 `e2e_cross_test.go`，覆盖四条路径：
-
-1. Claude 客户端 → OpenAI 上游，非流式。
-2. Claude 客户端 → OpenAI 上游，流式。
-3. OpenAI 客户端 → Claude 上游，非流式。
-4. OpenAI 客户端 → Claude 上游，流式。
-
-过程中修复了两个实际问题：
-
-- relaykit 的请求 converter 保留源请求中的 `model` 字段；relayd 现在在转换完成后显式改写为上游 native model。
-- 非流式响应此前被错误送入 SSE 流转换器；新增 `ConvertResponseBody`，完整响应按 DTO 转换，流式响应继续走 `StreamConvert`。
-
-### 后端健壮性
-
-- `request_timeout` 已通过 `NewForwarderWithTimeout` 接入上游转发；响应 body 关闭时取消上下文，避免影响流式 body 的读取。
-- `Snapshot` 的可选时间字段改为指针，JSON 不再泄露 `0001-01-01T00:00:00Z`。
-- 429 cooldown 会通过事件回调进入 admin events。
-- 每个上游记录请求数、成功数和最近延迟，并由 admin API 返回。
-- 成功的 balance/ping 探测可以把 `auto_disabled` 上游直接推进 `half_open`，再按 `success_to_close` 恢复为 enabled；不再无条件等待完整 open window。
-
-### Flutter 客户端
-
-- token 和 admin 地址使用 `shared_preferences` 持久化，重启后自动恢复。
-- Dashboard、Events、Models、Upstreams 对 admin API 错误有明确提示，不再无限 spinner 或空白。
-- Upstream card 增加余额进度条、请求/成功数、最近延迟。
-- `flutter analyze` 通过，Windows Release 构建通过。
-
-## 验证结果
-
-在 Windows 环境完成：
+仓库已收口为三个独立 Go module 和一个保持不变的 Flutter 工程：
 
 ```text
-go vet ./...
-go test ./...
-flutter analyze
-flutter build windows
+agent/       对外数据面与严格 IR
+replay/      UserModel 调度、目标缓存与 Replay admin
+upstream/    上游账号、凭据、模型、额度与 Upstream admin
+surge/       Flutter 管理前端，功能不变
 ```
 
-均通过。运行时验证包括：
+生产请求链路为：
 
-- OpenAI/Anthropic mock 的流式和非流式响应。
-- st-a 余额耗尽 → `auto_disabled` → 请求切到 st-b。
-- 余额恢复 → `half_open` → `enabled`。
-- 429 → `rate limited, cooldown 5s` 事件可在 `/admin/events` 查看。
-- admin JSON 不再包含零时间字段。
+```text
+Client → Agent → Replay → Upstream（控制面）
+            └────────────→ Upstream LLM API（实际推理 HTTP）
+```
+
+Agent 每次请求都从 Replay 获取 `TargetLease`。Replay 的缓存不能使用时请求 Upstream 评估并解析候选。实际 LLM HTTP 和流式响应始终由 Agent 发出和处理。
+
+## 架构不变式
+
+- 请求与响应都严格经过 IR；同协议也不透传。
+- Agent 是唯一对外服务，也是唯一 LLM HTTP 发起者。
+- 首字节前 Agent 可以携带 `tried_ids` 向 Replay redispatch；首字节后目标锁定。
+- `agent.db`、`replay.db`、`upstream.db` 分别由所属进程独占。
+- Agent→Replay 与 Replay→Upstream 使用不同 service key。
+- `TargetLease` / `ResolvedTarget` 中的凭据不得持久化到 Agent 或 Replay，也不得进入日志。
+- surge 本轮不改功能。
+
+详细架构、组件图、时序图、内部 API、数据归属、缓存语义和 Compose 边界见 `design/architecture.md`。
+
+## 当前目录与入口
+
+| 模块 | 入口 | 配置 | 数据库 |
+|---|---|---|---|
+| Agent | `agent/cmd/agent` | `agent/agent.yaml` | `/data/agent.db` |
+| Replay | `replay/cmd/replay` | `replay/replay.yaml` | `/data/replay.db` |
+| Upstream | `upstream/cmd/upstream` | `upstream/upstream.yaml` | `/data/upstream.db` |
+| surge | Flutter 工程 | Flutter 自有配置 | 无 |
+
+根 `docker-compose.yml` 是推荐部署入口，项目名为 `modelsurge`，健康依赖顺序为：
+
+```text
+upstream healthy → replay healthy → agent
+```
+
+只有 Agent 默认映射 `127.0.0.1:18099`；Replay `18101` 和 Upstream `18100` 只在 Compose 私网可访问。三个服务分别使用 `agent-data`、`replay-data`、`upstream-data` named volume。
+
+## 配置变量
+
+本地部署前复制 `.env.example` 为 `.env`，并为以下变量填写不同的随机值：
+
+```text
+MODELSURGE_AGENT_REPLAY_KEY
+MODELSURGE_REPLAY_UPSTREAM_KEY
+MODELSURGE_REPLAY_ADMIN_KEY
+MODELSURGE_UPSTREAM_ADMIN_KEY
+```
+
+可选端口变量：
+
+```text
+MODELSURGE_AGENT_BIND=127.0.0.1
+MODELSURGE_AGENT_PORT=18099
+```
+
+仓库中的正式 YAML 仅引用环境变量，不提供真实密钥。`.env`、数据库、日志和构建产物均不应提交。
 
 ## 常用命令
 
-构建并启动：
+### Compose（推荐）
 
-```powershell
-go build -o upstream.exe ./cmd/upstream
-go build -o relay.exe ./cmd/relay
-go build -o relaymock.exe ./cmd/relaymock
+```bash
+cp .env.example .env
+# 编辑 .env，填入独立随机密钥
+docker compose config
+docker compose up -d --build
+docker compose ps
+docker compose logs -f agent replay upstream
+```
+
+停止但保留数据：
+
+```bash
+docker compose down
+```
+
+除非确认需要删除三库数据，否则不要使用 `docker compose down -v`。
+
+### Go 模块验证
+
+```bash
+cd upstream
+go test ./...
+go vet ./...
+go build ./cmd/upstream
+
+cd ../replay
+go test ./...
+go vet ./...
+go build ./cmd/replay
+
+cd ../agent
+go test ./...
+go vet ./...
+go build ./cmd/agent
+```
+
+### surge 验证
+
+```bash
 cd surge
 flutter pub get
 flutter analyze
-flutter build windows
-cd ..
-powershell -ExecutionPolicy Bypass -File demo/start.ps1
+flutter build windows --release
 ```
 
-查看当前双进程状态：
+## 健康检查
+
+Agent 对外健康检查：
 
 ```bash
 curl http://127.0.0.1:18099/health
-curl -H 'Authorization: Bearer local-service-key' \
-  http://127.0.0.1:18100/internal/v1/health
 ```
 
-调用本地出口：
+内部健康检查需要在 Compose 网络内携带对应 Bearer key：
+
+```bash
+wget --header="Authorization: Bearer $MODELSURGE_REPLAY_UPSTREAM_KEY" \
+  -qO- http://upstream:18100/internal/v1/health
+
+wget --header="Authorization: Bearer $MODELSURGE_AGENT_REPLAY_KEY" \
+  -qO- http://replay:18101/internal/v1/health
+```
+
+## 调用示例
+
+在 Upstream 创建账号/模型并在 Replay 创建 UserModel/Group 后，通过 Agent 调用：
 
 ```bash
 curl -N -X POST http://127.0.0.1:18099/v1/chat/completions \
-  -H 'Authorization: Bearer change-client-key' \
+  -H 'Authorization: Bearer <UserModel client key>' \
   -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"configured-user-model","stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-故障注入：
+## 验证边界
 
-```bash
-curl -X POST http://127.0.0.1:9001/mock/control -d '{"quota":0}'
-curl -X POST http://127.0.0.1:9002/mock/control -d '{"mode":"ratelimit"}'
-curl -X POST http://127.0.0.1:9002/mock/control -d '{"mode":"normal"}'
-```
+本次仓库收口不运行 Docker，也不创建本地 `.env`、SQLite、日志或构建产物。后续需要在具备 Docker 的环境中验证：
 
-## 提交边界与后续工作
-
-提交应包含 Go 后端、mock、demo 配置/脚本、Flutter 源码、测试、`README.md` 和本总结文档；不应包含：
-
-- `relay.exe`、`upstream.exe`、`relaymock.exe` 等构建产物。
-- `*.log` 运行日志。
-- `surge/build/`、`surge/.dart_tool/`、`surge/.idea/` 等生成目录。
-- 真实 API key 或真实上游配置。
-
-当前容器配置为 `relay.yaml` 与 `upstream.yaml`，本地演示配置位于 `demo/relay.yaml` 与 `demo/upstream.yaml`。
+1. `docker compose config` 能正确展开。
+2. 三个 Dockerfile 能构建，镜像内有 `ca-certificates`、`tzdata`、`wget`。
+3. Upstream 健康后 Replay 启动，Replay 健康后 Agent 启动。
+4. 只有 Agent 暴露宿主端口。
+5. 两段内部密钥不可互换，Replay/Upstream admin key 独立。
+6. 三个 named volume 各自产生对应数据库。
+7. 每请求 dispatch、缓存失效后的 Upstream evaluate、首字节前 redispatch 和首字节后锁定符合设计。
+8. surge 行为没有变化。

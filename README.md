@@ -1,122 +1,176 @@
 # ModelSurge
 
-ModelSurge 是由 `surge`、`relay`、`upstream` 三个进程组成的 LLM 协议转换网关。客户端可以用 **Anthropic / OpenAI Chat / OpenAI Responses / Gemini** 任一协议接入，上游可以是任一已注册协议。所有转换都由 `relay` 经统一中间表示（IR）中转，同协议也禁止透传。
+ModelSurge 是一个由三个独立 Go module 组成的 LLM 协议转换网关：
 
-## 入口矩阵
+```text
+Client → Agent → Replay → Upstream
+            └──────────────→ Upstream LLM API
+```
 
-单一监听地址（如 `http://1.1.1.1:8080`），按路径前缀区分接入协议：
+- **Agent** 是唯一对外进程，每次请求都向 Replay 获取 `TargetLease`，并由 Agent 实际发出 LLM HTTP 请求。
+- **Replay** 管理 UserModel、调度组、Policy 和目标缓存；缓存不可用时向 Upstream 请求评估与解析。
+- **Upstream** 管理账号、凭据、UpstreamModel、token、额度、冷却和运行状态。
+- **surge** 保持现有 Flutter 管理前端功能不变。
+
+所有协议转换严格经过 IR；即使入站与目标协议相同也禁止透传。首字节写出前 Agent 可携带已尝试目标向 Replay redispatch；首字节写出后目标锁定。
+
+完整设计见 [`design/architecture.md`](design/architecture.md)。
+
+## 仓库结构
+
+```text
+agent/       Agent 独立 Go module；对外 HTTP、codec、IR、LLM 调用、agent.db
+replay/      Replay 独立 Go module；调度、缓存、Replay admin、replay.db
+upstream/    Upstream 独立 Go module；账号/凭据/模型/额度、Upstream admin、upstream.db
+surge/       Flutter 管理前端，功能保持不变
+design/      架构设计
+docs/        协议转换研究资料
+docker-compose.yml
+.env.example
+```
+
+三个数据库由各自进程独占，不跨库直读；两段内部 API 使用不同密钥：
+
+- `MODELSURGE_AGENT_REPLAY_KEY`
+- `MODELSURGE_REPLAY_UPSTREAM_KEY`
+
+## 对外协议入口
+
+Agent 默认监听 `127.0.0.1:18099`（Compose 容器内为 `0.0.0.0:18099`）。
 
 | 客户端入口 | 协议 |
 |---|---|
-| `POST /anthropic/v1/messages` | anthropic |
-| `POST /anthropic/v1/messages/count_tokens` | anthropic 计数（无 anthropic 上游时本地粗估） |
-| `POST /openai/v1/chat/completions` | openai-chat |
-| `POST /openai/v1/responses` | openai-responses |
-| `POST /gemini/v1beta/models/{model}:generateContent` | gemini（非流式） |
-| `POST /gemini/v1beta/models/{model}:streamGenerateContent` | gemini（流式） |
-| `GET /openai/v1/models` | 模型列表 |
+| `POST /anthropic/v1/messages` | Anthropic |
+| `POST /anthropic/v1/messages/count_tokens` | Anthropic token 计数 |
+| `POST /openai/v1/chat/completions` | OpenAI Chat Completions |
+| `POST /openai/v1/responses` | OpenAI Responses |
+| `POST /gemini/v1beta/models/{model}:generateContent` | Gemini 非流式 |
+| `POST /gemini/v1beta/models/{model}:streamGenerateContent` | Gemini 流式 |
+| `GET /openai/v1/models` | UserModel 列表 |
+| `GET /health` | Agent 健康检查 |
 
-无前缀的原生路径（`/v1/messages`、`/v1/chat/completions` 等）同样保留可用。
+无前缀兼容入口（如 `/v1/messages`、`/v1/chat/completions`、`/v1/responses`、`/v1/models`）仍由 Agent 提供。
 
-4 客户端协议 × 4 上游协议 × 流式/非流式 = 32 条路径全部支持（`backend/server/e2e_cross_test.go` 矩阵覆盖）。
+## 核心行为
 
-## 架构
-
-```
-surge/                      Flutter 管理前端，本阶段保留现有功能
-backend/cmd/relay/           客户端 HTTP、UserModelGroup 调度、IR、codec、转发与响应回写
-backend/cmd/upstream/        UpstreamModel、账号凭据、Kiro token、额度与评估控制面
-backend/relaystore/          relay.db：UserModel、调度组、Policy、组内目标缓存
-backend/upstreamstore/       upstream.db：账号、UpstreamModel、状态、额度与 usage
-backend/contract/upstreamv1/ relay 与 upstream 的版本化 HTTP JSON DTO
-backend/ir/                  协议无关 Request/Response/Block/流事件/Usage/Error
-backend/proto/               anthropic / openaichat / openairesponses / gemini / kiro codec
-backend/relay/               上游调用、流解码、pre-write 重试与响应聚合
-backend/cmd/relaymock/       本地上游模拟器
-```
-
-`relay` 与 `upstream` 仅通过带 service key 的内部 HTTP JSON API 通信；协议原始字节只由 `relay` 处理。两进程分别独占 `relay.db` 和 `upstream.db`，不跨库直读。
-
-核心设计（调研 new-api / sub2api / kiro-gateway 后的提炼，详见 `docs/protocol-conversion-study.md`）：
-
-- **IR 枢纽**：跨协议转换 = 解码为 IR + 从 IR 编码，无 N² 直转。
-- **上游永远流式**：强制 `stream=true`；客户端要非流式时网关聚合 SSE 后一次性返回 JSON。
-- **block 开合不变式**：编码器保证 start→delta*→stop，断流由 Finish 兜底补齐终止事件。
-- **签名链保真与防 400**：签名按到达时的协议形态标记（`SignatureFrom`）。同协议往返原样透传；跨协议回放时保守降级（Anthropic 降为 text 块 / Responses 不构造 reasoning item / Gemini 置空 thoughtSignature）——Anthropic 对历史 thinking 块强制签名校验、Gemini 3 校验 functionCall 签名，透传外族签名必 400，宁可断签名链保住请求。降级均记入诊断。
-- **能力声明 + 诊断**：codec 声明能力（`Caps()`：thinking 签名/图片/托管工具），转发前对比请求特征，必然有损项记日志并写入 `X-Relayd-Notes` 响应头，不再静默丢失。
-- **字节未出前可重试**：连接失败 / 429 / 5xx / 首事件超时（`first_token_timeout`，默认 30s）且尚未向客户端写字节时，换下一个候选上游重发；写出第一字节后锁死，错误只在流内渲染。
-- **托管工具声明映射**：Anthropic `web_search`/`code_execution` ↔ Responses `web_search`/`code_interpreter` ↔ Gemini `google_search`/`code_execution` 三向互转（仍由上游服务器执行，网关不做仿真）；Chat Completions 无此能力，丢弃并记诊断。
-- **usage 估算兜底（opt-in）**：`estimate_usage: true` 后上游不上报 usage 时按文本粗估并在日志标注，默认关闭（估算值不代表真实计费）。
-- **访问日志**：`access_log`（默认开）记录每请求的 method/path/status/耗时（含鉴权失败的 401）。
-- **优雅停机**：SIGINT/SIGTERM 后停止收新请求，等在途请求（含流式响应）最多 15s 完成再退出。
+- **严格 IR**：客户端请求先解码为 IR，再编码为目标协议；响应反向执行。不存在同协议快捷路径。
+- **Agent 执行数据面**：Replay 和 Upstream 只传内部 JSON DTO，实际 LLM HTTP/SSE 由 Agent 处理。
+- **每请求租约**：Agent 不复用旧租约，每个客户端请求都调用 Replay `/internal/v1/dispatch`。
+- **Replay 缓存与 failover**：正常缓存走快速 resolve；缓存缺失、异常、过期或目标已尝试时，Replay 请求 Upstream evaluate，再按 Policy 选择目标。
+- **首字节边界**：首字节前可换目标；首字节后禁止 redispatch。
+- **独立持久化**：`agent.db`、`replay.db`、`upstream.db` 分属三个进程和三个 named volume。
+- **幂等结果上报**：Agent→Replay→Upstream 的结果链按 report ID 支持安全重试。
 
 ## 配置
 
-运行配置拆为 `backend/relay.yaml` 与 `backend/upstream.yaml`。部署密钥通过环境变量注入，不写入镜像或版本库：
+正式配置位于：
+
+- `agent/agent.yaml`
+- `replay/replay.yaml`
+- `upstream/upstream.yaml`
+
+配置文件通过 `${ENV_VAR}` 注入密钥，不包含默认真实值。Compose 内部 URL 使用服务名：
 
 ```yaml
-# relay.yaml
-listen: 0.0.0.0:18099
-db_path: /data/relay.db
+# agent/agent.yaml
+replay_url: http://replay:18101
+service_key: ${MODELSURGE_AGENT_REPLAY_KEY}
+db_path: /data/agent.db
+
+# replay/replay.yaml
 upstream_url: http://upstream:18100
-service_key: ${MODELSURGE_SERVICE_KEY}
+agent_service_key: ${MODELSURGE_AGENT_REPLAY_KEY}
+upstream_service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}
+db_path: /data/replay.db
 
-# upstream.yaml
-listen: 0.0.0.0:18100
+# upstream/upstream.yaml
+service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}
 db_path: /data/upstream.db
-service_key: ${MODELSURGE_SERVICE_KEY}
 ```
 
-账号与 UpstreamModel 归 `upstream` 管理；UserModel、调度组、Policy 和目标缓存归 `relay` 管理：
+Replay 和 Upstream 管理面使用独立 admin key，均只在 Compose 私网 listener 上提供；默认不映射宿主端口。
+
+## Compose 部署（推荐）
+
+本仓库以根目录 Compose 为主要部署方式：
 
 ```bash
-curl -X POST http://127.0.0.1:18100/admin/accounts \
-  -H "X-Admin-Key: change-upstream-admin-key" -H "Content-Type: application/json" \
-  -d '{"name":"claude","type":"api-key","protocol":"anthropic","base_url":"https://api.anthropic.com","api_key":"sk-ant-xxx","models":{"claude-sonnet-4":"claude-sonnet-4-20250514"}}'
+cp .env.example .env
+# 将 .env 中所有空密钥填为不同的随机值
+docker compose config
+docker compose up -d --build
+docker compose ps
 ```
 
-账号按声明顺序粘性调度，支持限流冷却（429 重置时间入库）、401 禁用、瞬时错误原地重试与熔断切号；逐笔 usage 记账。`GET /v1/models` 返回全部启用账号的模型并集。
+Compose 项目名固定为 `modelsurge`，健康依赖顺序为 `upstream → replay → agent`。只有 Agent 映射宿主端口：
 
-api-key 账号的 `base_url` 支持自适应探测（GET 模型列表，零 token 消耗）：裸域名自动补 scheme；带 `/v1` 或完整端点的 SDK 风格写法自动剥版本段/端点尾段；`/api/v1` 等网关路径自动试出正确根地址。建号/更新时探测并把解析出的根地址写回 `base_url`（响应带 `probe` 报告：逐候选证据 + 上游模型列表）；`POST /admin/accounts/{name}/test` 可随时重探测修正。
+```text
+${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-18099}
+```
 
-kiro 账号支持三种认证方法（`refresh_token` / `creds_file` / `cli_db`），每种均可用路径或内联字符串接入（`creds_text` 文本 XOR `creds_b64` base64，与路径字段三选一）：文本区直接粘贴凭据即可建号，无需往服务器放文件。`refresh_token` 内联支持裸串或 `{"refreshToken":...}` JSON；`creds_file` 内联为 credentials.json 原文；`cli_db` 内联为提取的凭据 JSON 或 base64(SQLite 库文件)。token 轮转统一由 `token_state` 列持久化，内联字段不回写。
+数据卷：
 
-## 运行与测试
+- `modelsurge_agent-data` → `/data/agent.db`
+- `modelsurge_replay-data` → `/data/replay.db`
+- `modelsurge_upstream-data` → `/data/upstream.db`
+
+停止服务使用 `docker compose down`。除非确认要删除全部持久化数据，否则不要添加 `-v`。
+
+仓库不再维护旧本地 demo 启动脚本；需要联调时以 Compose 和管理 API 为主。
+
+## 管理面
+
+Upstream 管理账号和上游模型，例如：
 
 ```bash
-cd backend
-go build -o upstream.exe ./cmd/upstream
-go build -o relay.exe ./cmd/relay
-go build -o relaymock.exe ./cmd/relaymock
-bash demo/start.sh
+# Upstream 默认不映射宿主端口；请从 Compose 网络内或临时安全转发后调用。
+curl -X POST http://upstream:18100/admin/accounts \
+  -H "X-Admin-Key: $MODELSURGE_UPSTREAM_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"provider","type":"api-key","protocol":"anthropic","base_url":"https://api.anthropic.com","api_key":"replace-locally","models":{"claude-sonnet":"claude-sonnet"}}'
+```
 
+Replay 管理 UserModel、Group、成员、Policy 和缓存，接口位于 `http://replay:18101/admin/*`，使用 `MODELSURGE_REPLAY_ADMIN_KEY`。
+
+不要把上游真实 key、admin key 或内部 service key 写入 YAML、命令历史或版本库。
+
+## 本地构建与测试
+
+三个 module 分别运行：
+
+```bash
+cd upstream
 go test ./...
 go vet ./...
+go build ./cmd/upstream
 
-cd ../surge
+cd ../replay
+go test ./...
+go vet ./...
+go build ./cmd/replay
+
+cd ../agent
+go test ./...
+go vet ./...
+go build ./cmd/agent
+```
+
+Flutter 前端命令保持不变：
+
+```bash
+cd surge
 flutter pub get
 flutter analyze
 flutter build windows --release
 ```
 
-Docker Compose 部署：
+## 调用示例
+
+完成 Upstream 账号与 Replay UserModel 配置后，通过 Agent 调用：
 
 ```bash
-cd backend
-cp .env.example .env
-# 编辑 .env，将四个 replace-with-* 值替换为独立随机密钥
-docker compose up -d --build
-docker compose ps
-docker compose logs -f
-```
-
-默认只向宿主机暴露 `relay` 的 `127.0.0.1:18099`，`upstream` 仅在 Compose 网络内可访问。`relay.db` 与 `upstream.db` 分别持久化在 `modelsurge_relay-data`、`modelsurge_upstream-data` named volume 中。端口冲突时可在 `.env` 设置 `MODELSURGE_RELAY_PORT`；停止服务使用 `docker compose down`，不要添加 `-v`，除非确认需要删除全部持久化数据。
-
-调用示例：
-
-```bash
-# Anthropic 客户端 -> 任意协议上游
-curl -N -X POST http://127.0.0.1:18099/v1/messages \
-  -H "Authorization: Bearer change-client-key" -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4o","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}'
+curl -N -X POST http://127.0.0.1:18099/v1/chat/completions \
+  -H "Authorization: Bearer <UserModel client key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"configured-user-model","stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```

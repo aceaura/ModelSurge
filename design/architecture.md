@@ -1,219 +1,274 @@
-# ModelSurge 三进程架构设计
+# ModelSurge 最终三模块架构
 
-> 2026-09-13 定案。系统拆分为 `surge`、`relay`、`upstream` 三个独立进程。`relay` 与 `upstream` 各自拥有独立 SQLite，不跨库直连。
+> 最终仓库边界为 `agent/`、`replay/`、`upstream/` 三个独立 Go module；`surge/` 保持现有 Flutter 功能不变。请求链路固定为 **Client → Agent → Replay → Upstream（控制面）**，实际 LLM HTTP 固定由 **Agent → Upstream LLM API（数据面）** 发出。
 
-## 一、进程职责
+## 1. 模块职责
 
-| 进程 | 职责 | 持久化 |
+| 模块 / 进程 | 职责 | 持久化 |
 |---|---|---|
-| `surge` | 前端管理界面；沿用现有 Flutter 工程，本阶段保留但不改功能 | 无 |
-| `relay` | 客户端 HTTP 接入、UserModel、UserModelGroup、Policy、组内目标缓存、inbound/outbound codec、IR、上游请求执行、重试、流控与响应回写 | `relay.db` |
-| `upstream` | UpstreamModel、Upstream Info、上游账号与凭据、token 生命周期、模型目录、额度查询、评估与运行状态 | `upstream.db` |
+| `agent` | 唯一对外 HTTP 入口；客户端鉴权；四种入站协议 codec；严格 IR 转换；每次请求向 Replay 获取 `TargetLease`；实际调用 LLM；流式/非流式响应编码；首字节前 redispatch；可靠结果上报 | `agent.db` |
+| `replay` | UserModel、UserModelGroup、成员与 Policy；目标缓存；校验客户端模型与 key；为 Agent 调度并签发短期 `TargetLease`；缓存不可用时请求 Upstream 评估/解析；接收结果并转报 Upstream；Replay admin API | `replay.db` |
+| `upstream` | 上游账号与凭据；UpstreamModel 目录；token 生命周期；模型解析；额度、冷却、熔断、可用性评估与 usage；Upstream admin API | `upstream.db` |
+| `surge` | Flutter 管理前端；本次仓库收口不改变其功能 | 无 |
 
-`relay` 与 `upstream` 通过内部 HTTP JSON API 通信。该接口只传控制面 DTO，不传客户端或上游协议原始字节。
+三个进程分别独占自己的 SQLite，禁止跨库读取。含短期凭据的 `TargetLease` / `ResolvedTarget` 只能在受信内部网络中传输，不得持久化到 Agent 或 Replay，也不得写入日志和错误响应。Agent→Replay 与 Replay→Upstream 使用两把不同的内部密钥。
 
-## 二、强制不变式
+## 2. 严格 IR 不变式
 
-1. 所有请求都严格执行：`客户端原生协议 → inbound codec DecodeRequest → IR → outbound codec EncodeRequest → 上游原生协议`。
-2. 所有响应都严格反向经过：`上游原生协议 → outbound codec 解码 → IR Event/Response → inbound codec 编码 → relay HTTP Server → Client`。
-3. 即使源协议和目标协议相同，也必须经过 IR，禁止透传、旁路和同协议快捷路径。
-4. `relay` 是协议数据面的唯一执行者；`upstream` 只提供候选、凭据、覆盖参数、额度和评估结果。
-5. `relay.db` 与 `upstream.db` 由所属进程独占；进程之间不得直接读取对方 SQLite。
-6. 向客户端写出首字节前可失效缓存、重新调度并换候选；写出后锁定当前目标，错误只能按客户端协议在流内返回。
+所有请求必须经过统一中间表示（IR）：
 
-## 三、组件图
+```text
+客户端原生请求
+  → inbound codec DecodeRequest
+  → IR Request
+  → 应用 TargetLease.request_overrides
+  → outbound codec EncodeRequest
+  → 上游原生请求
+```
+
+所有响应严格反向经过 IR：
+
+```text
+上游原生响应 / 事件流
+  → outbound codec DecodeResponse / StreamDecoder
+  → IR Response / Event
+  → inbound codec EncodeResponse / StreamEncoder
+  → 客户端原生响应
+```
+
+即使客户端协议与目标协议相同，也必须执行 `Decode → IR → Encode`，禁止原始 body、SSE frame 或协议 DTO 旁路。协议原始字节只在 Agent 内处理；Replay 和 Upstream 的内部 API 只传版本化 JSON DTO。
+
+**Agent 是实际 LLM HTTP 的唯一发起者。** Replay 只返回 `TargetLease`，Upstream 只提供解析后的目标、凭据和运行状态，不代理模型推理流量。
+
+## 3. 核心组件图
 
 ```mermaid
 flowchart LR
     C["Client"]
-
-    subgraph S["surge process"]
-        SU["Flutter Frontend<br/>本阶段留空，不改功能"]
+    subgraph A["agent process"]
+        HTTP["Public HTTP Server<br/>Anthropic · OpenAI Chat<br/>OpenAI Responses · Gemini"]
+        IN["Inbound Codec"]
+        IR["Strict IR<br/>唯一协议交汇点"]
+        OUT["Outbound Codec"]
+        EXEC["LLM HTTP Executor<br/>Retry · Stream · Aggregate"]
+        RC["Replay Client"]
+        OUTBOX["Result Outbox"]
+        ADB[("agent.db")]
+        HTTP --> IN --> IR --> OUT --> EXEC
+        RC --> IR
+        EXEC --> IR --> HTTP
+        EXEC --> OUTBOX
+        OUTBOX --- ADB
     end
-
-    subgraph R["relay process"]
-        HS["HTTP Server<br/>anthropic · openai-chat<br/>openai-responses · gemini"]
-        IC["Inbound Codec"]
-        IR["IR<br/>唯一协议交汇点"]
-
-        subgraph SCH["UserModelGroup"]
-            UM["UserModel"]
-            TC["Target Cache<br/>目标 + 上次结果"]
-            PO["Policy<br/>preset / dynamic"]
-        end
-
-        OC["Outbound Codec"]
-        FW["Forward / Retry / Stream"]
-        RC["Upstream Client<br/>内部 HTTP JSON"]
-        RDB[("relay.db")]
-
-        HS --> IC --> IR
-        IR --> SCH
-        SCH --> OC --> FW
-        SCH --> RC
-        SCH --- RDB
+    subgraph R["replay process"]
+        RAPI["Agent↔Replay Internal API"]
+        AUTH["UserModel Auth"]
+        POLICY["UserModelGroup + Policy"]
+        CACHE["Target Cache"]
+        UC["Upstream Client"]
+        RADMIN["Replay Admin"]
+        RDB[("replay.db")]
+        RAPI --> AUTH --> POLICY
+        POLICY <--> CACHE
+        POLICY --> UC
+        RADMIN --> POLICY
+        AUTH --- RDB
+        POLICY --- RDB
+        CACHE --- RDB
     end
-
     subgraph U["upstream process"]
-        API["Internal HTTP JSON API"]
+        UAPI["Replay↔Upstream Internal API"]
         CAT["UpstreamModel Catalog"]
-        INFO["Upstream Info<br/>protocol · native model · overrides<br/>address · credential"]
-        QUOTA["Quota Query"]
-        EVAL["Evaluation"]
-        AUTH["Account / Token Lifecycle"]
+        RESOLVE["Target Resolve"]
+        EVAL["Quota / Availability Evaluation"]
+        ACCOUNT["Account · Credential · Token Lifecycle"]
+        UADMIN["Upstream Admin"]
         UDB[("upstream.db")]
-
-        API --> CAT
-        CAT --> INFO
-        CAT --> QUOTA
+        UAPI --> CAT
+        CAT --> RESOLVE
         CAT --> EVAL
-        CAT --> AUTH
+        CAT --> ACCOUNT
+        UADMIN --> ACCOUNT
         CAT --- UDB
+        ACCOUNT --- UDB
     end
-
-    A["Upstream LLM API"]
-
-    SU -.->|管理面，后续接入| R
-    SU -.->|管理面，后续接入| U
-    C -->|客户端原生协议| HS
-    RC <-->|控制面 DTO| API
-    FW -->|上游原生协议| A
-    A -->|上游原生响应流| FW
-    FW -->|解码为 IR Event| IR
-    IR -->|客户端协议编码| HS
-    HS -->|响应| C
+    LLM["Upstream LLM API"]
+    S["surge<br/>功能保持不变"]
+    C -->|"客户端协议"| HTTP
+    RC <-->|"TargetLease / ResultReport<br/>独立 service key"| RAPI
+    UC <-->|"Evaluate / Resolve / ResultReport<br/>另一把 service key"| UAPI
+    EXEC <-->|"实际 LLM HTTP / SSE"| LLM
+    S -.->|"管理面"| RADMIN
+    S -.->|"管理面"| UADMIN
 ```
 
-## 四、串行时序图
+## 4. 串行请求时序
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant C as Client
-    participant HS as relay / HTTP Server
-    participant IR as relay / Codec + IR
-    participant G as relay / UserModelGroup<br/>（含目标缓存与 Policy）
-    participant UC as relay / Upstream Client
-    participant U as upstream process
+    participant A as Agent
+    participant IR as Agent Codec + IR
+    participant R as Replay
+    participant RDB as replay.db
+    participant U as Upstream
     participant UDB as upstream.db
-    participant A as Upstream LLM API
+    participant L as Upstream LLM API
+    participant ADB as agent.db
 
-    C->>HS: 调用 UserModel（客户端原生协议）
-    HS->>HS: 鉴权并识别 inbound protocol
-    HS->>IR: DecodeRequest
-    Note over IR: 同协议调用也必须先解码为 IR
-    IR->>G: 按 UserModelName 定位 UserModelGroup
-    G->>G: 读取组内目标缓存
-
-    alt 缓存命中且上次请求正常
-        G->>UC: resolve(cached UpstreamModel ID)
-        UC->>U: GET /internal/v1/models/{id}/resolve
-        U->>UDB: 读取 UpstreamModel + Upstream Info
-        U-->>UC: ResolvedTarget DTO
-    else 缓存未命中或上次请求异常
-        G->>UC: candidates(group member IDs)
-        UC->>U: POST /internal/v1/candidates/evaluate
-        U->>UDB: 读取成员、账号状态与评估配置
-        U->>U: 查询额度并执行评估方法
-        U-->>UC: CandidateEvaluation DTO 列表
-        UC-->>G: 候选及评估结果
-        G->>G: Policy 排序并选择目标
-        G->>G: 将目标写入组内缓存
-        G->>UC: resolve(selected UpstreamModel ID)
-        UC->>U: GET /internal/v1/models/{id}/resolve
-        U-->>UC: ResolvedTarget DTO
+    C->>A: 客户端原生请求
+    A->>IR: DecodeRequest → IR
+    Note over A,IR: 同协议仍必须经过 IR
+    A->>R: POST /internal/v1/dispatch<br/>model + protocol + client key + request ID
+    R->>RDB: 校验 UserModel，读取 Group / Policy / Cache
+    alt 缓存目标正常、未过期且未尝试
+        R->>U: GET /internal/v1/models/{id}/resolve
+        U->>UDB: 读取账号、模型、凭据与运行状态
+        U-->>R: ResolvedTarget
+    else 缓存缺失、异常、过期或 resolve 失败
+        R->>U: POST /internal/v1/candidates/evaluate
+        U->>UDB: 查询候选、额度、冷却与熔断状态
+        U-->>R: CandidateEvaluation[]
+        R->>R: Policy 排序并选择候选
+        R->>U: GET /internal/v1/models/{id}/resolve
+        U-->>R: ResolvedTarget
+        R->>RDB: 写入目标缓存与 normal 状态
     end
-
-    UC-->>G: protocol + native model + overrides + endpoint + credential
-    G-->>IR: 选定目标与覆盖参数
-    IR->>IR: 应用覆盖参数并执行 outbound EncodeRequest
-    IR->>A: relay 直接调用上游地址
-    A-->>IR: 上游原生响应流
-    IR->>IR: outbound decoder → IR Event/Response
-    IR->>UC: report(target ID, result, usage)
-    UC->>U: POST /internal/v1/results
-    U->>UDB: 更新额度、冷却、熔断与用量状态
-    IR->>G: 更新组内缓存结果
-    IR->>HS: 按客户端协议编码
-    HS-->>C: 流式逐块或聚合响应
-
-    Note over G,IR: 首字节前失败可失效缓存并重新调度；首字节后不可换目标
+    R-->>A: TargetLease
+    A->>IR: 应用 overrides，EncodeRequest
+    A->>L: Agent 发出实际 LLM HTTP
+    alt 首字节前失败且仍有候选
+        A->>R: 再次 dispatch，携带 tried_ids
+        R->>U: 必要时重新 evaluate + resolve
+        U-->>R: 新 ResolvedTarget
+        R-->>A: 新 TargetLease
+        A->>L: 重新编码并调用新目标
+    else 已向客户端写出首字节
+        Note over A,L: 目标锁定，禁止 redispatch
+    end
+    L-->>A: 上游原生响应或事件流
+    A->>IR: Decode 为 IR Response / Event
+    IR-->>C: 按客户端协议编码并回写
+    A->>ADB: 持久化待上报结果（必要时）
+    A->>R: POST /internal/v1/results
+    R->>RDB: 幂等更新目标缓存结果
+    R->>U: POST /internal/v1/results
+    U->>UDB: 幂等更新 usage / 冷却 / 熔断 / 状态
 ```
 
-## 五、进程接口
+核心故障边界：**首字节前可 redispatch，首字节后目标锁定**。首字节前的连接失败、可重试状态、首事件超时或目标失效，可让 Agent 携带 `tried_ids` 再向 Replay 获取新租约；一旦向客户端写出任何响应字节，不得切换目标，只能按客户端协议完成流或返回流内错误。
 
-内部 API 只监听 loopback 或容器私网，并由独立 service key 鉴权。
+## 5. 两段内部 API
+
+两段 API 都使用 `/internal/v1`，但运行在不同服务上并使用独立 Bearer key。
+
+### 5.1 Agent → Replay
+
+鉴权：`Authorization: Bearer ${MODELSURGE_AGENT_REPLAY_KEY}`。
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| `GET` | `/internal/v1/models` | 返回可用 UpstreamModel 摘要，供组成员配置与模型列表使用 |
-| `GET` | `/internal/v1/models/{id}/resolve` | 返回一次调用所需的 ResolvedTarget |
-| `POST` | `/internal/v1/candidates/evaluate` | 对指定组成员执行额度查询与评估，返回候选状态 |
-| `POST` | `/internal/v1/results` | 上报调用结果与 usage，更新账号/模型运行状态 |
-| `GET` | `/internal/v1/health` | 进程健康检查 |
+| `GET` | `/internal/v1/health` | Replay、Replay DB 与 Upstream 连通状态 |
+| `GET` | `/internal/v1/models` | 返回 Agent 对外可见的 UserModel 摘要 |
+| `POST` | `/internal/v1/dispatch` | 每次请求获取 `TargetLease`；redispatch 时携带 `tried_ids` |
+| `POST` | `/internal/v1/results` | Agent 幂等上报请求结果和 usage |
 
-`ResolvedTarget` 至少包含：
+`TargetLease` 包括请求/组/目标 ID、目标协议、native model、base URL、短期 credential/headers、request overrides 和 runtime metadata。Replay 管理面位于 `/admin/*`，使用独立 `X-Admin-Key`，管理 UserModel、Group、成员、Policy 与缓存。
+
+### 5.2 Replay → Upstream
+
+鉴权：`Authorization: Bearer ${MODELSURGE_REPLAY_UPSTREAM_KEY}`。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `GET` | `/internal/v1/health` | Upstream 与 Upstream DB 健康检查 |
+| `GET` | `/internal/v1/models` | 返回 UpstreamModel 摘要 |
+| `GET` | `/internal/v1/models/{id}/resolve` | 返回单次调度所需的 `ResolvedTarget` |
+| `POST` | `/internal/v1/candidates/evaluate` | 对候选执行可用性、额度、冷却和评分评估 |
+| `POST` | `/internal/v1/results` | Replay 幂等转报结果和 usage |
+
+Upstream 管理面位于 `/admin/*`，使用另一独立 `X-Admin-Key`，负责账号、凭据、模型和运行状态管理。
+
+## 6. 三个数据库的唯一归属
+
+### `agent.db`
+
+仅 Agent 打开；保存结果可靠上报所需的 outbox / 幂等状态等 Agent 本地运行数据；不保存上游账号凭据，不缓存 `TargetLease`。
+
+### `replay.db`
+
+仅 Replay 打开；保存 `user_models`、`schedule_groups`、`schedule_group_members`、组目标缓存、Policy、结果幂等记录和 Replay 管理面数据。目标缓存属于 UserModelGroup，与组配置位于同一事务域。
+
+### `upstream.db`
+
+仅 Upstream 打开；保存上游账号、凭据来源与 token 状态、UpstreamModel、native model、协议、base URL、请求覆盖参数、额度、冷却、熔断、模型状态和 usage。
+
+Compose 分别使用 `agent-data`、`replay-data`、`upstream-data` named volume 挂载到三个容器的 `/data`，禁止共享 volume。
+
+## 7. 缓存与 failover
+
+- Replay 的目标缓存属于 UserModelGroup，而不是 Agent。
+- 快路径：缓存目标为 `normal`、未过 TTL、未出现在 `tried_ids`，Replay 直接向 Upstream resolve；成功即签发租约。
+- 慢路径：缓存缺失、异常、过期、目标已尝试或 resolve 失败，Replay 请求 Upstream evaluate，按组 Policy 排序，resolve 可用候选并刷新缓存。
+- Upstream 是账号凭据和可用状态的权威源；Replay 不持久化凭据，也不凭过期租约离线兜底。
+- Agent 每次客户端请求都必须 dispatch；不得把上一次 `TargetLease` 用于新请求。
+- 首字节前失败时，Agent 可携带已尝试目标重新 dispatch；首字节后锁定。
+- 两段结果接口都按 `report_id` 幂等，允许安全重试。
+- Replay 不可用时 Agent 不能自行选择目标；Upstream 不可用且 Replay 无法解析缓存目标时，Replay 返回可重试错误。
+
+## 8. 代码目录映射
 
 ```text
-upstream_model_id
-protocol
-native_model
-request_overrides
-base_url
-credential / headers
-runtime metadata（例如 Kiro token、region、host）
+agent/                         独立 Go module
+  cmd/agent/                   Agent 入口
+  server/                      对外 HTTP 路由
+  proto/ + ir/ + normalize/    严格协议转换
+  relay/                       LLM HTTP、流处理、redispatch、结果上报
+  replayclient/                Agent→Replay 客户端
+  agentstore/                  agent.db
+  agent.yaml                   正式容器配置
+
+replay/                        独立 Go module
+  cmd/replay/                  Replay 入口
+  service/                     内部 API 与 Replay admin
+  schedule/                    Group、Policy、缓存与 failover
+  upstreamclient/              Replay→Upstream 客户端
+  relaystore/                  replay.db（内部包名不代表进程名）
+  contract/replayv1/           Agent→Replay DTO
+  replay.yaml                  正式容器配置
+
+upstream/                      独立 Go module
+  cmd/upstream/                Upstream 入口
+  service/                     Replay→Upstream 内部 API
+  internal/http/               Upstream admin
+  account/ + proto/kiro/       账号、凭据与 Kiro 生命周期
+  upstreamstore/               upstream.db
+  contract/upstreamv1/         Replay→Upstream DTO
+  upstream.yaml                正式容器配置
+
+surge/                         Flutter 管理前端，功能不变
+docker-compose.yml             最终三服务部署
+.env.example                   部署变量模板
 ```
 
-凭据仅在内部受信网络按单次 resolve 返回，不写入 `relay.db`，也不得进入日志、错误体或诊断响应。
+三个生产进程必须分别从各自 module 构建；运行时只通过 HTTP DTO 通信，不允许进程内 Manager 直连或跨库访问。
 
-## 六、数据归属
+## 9. Compose 部署
 
-### relay.db
+根 `docker-compose.yml` 固定项目名 `modelsurge`，健康依赖顺序为：
 
-| 数据 | 说明 |
-|---|---|
-| `user_models` | UserModelName、客户端协议、客户端接入密钥、启用状态 |
-| `schedule_groups` | UserModel 到调度组的映射、Policy 配置 |
-| `schedule_group_members` | 调度组内有序 UpstreamModel ID 引用 |
-| `target_cache` | 每个 UserModelGroup 当前目标、上次结果、更新时间 |
+```text
+upstream healthy → replay healthy → agent 对外
+```
 
-目标缓存属于 UserModelGroup，并与组配置写在同一数据库事务域内。
+- 只有 Agent 映射宿主端口：`${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-18099}:18099`。
+- Replay `18101` 和 Upstream `18100` 只在 Compose 网络内可访问。
+- 三份配置分别只读挂载到 `/app/agent.yaml`、`/app/replay.yaml`、`/app/upstream.yaml`。
+- 三个数据库分别写入各自 `/data` named volume。
+- Agent→Replay 使用 `MODELSURGE_AGENT_REPLAY_KEY`；Replay→Upstream 使用 `MODELSURGE_REPLAY_UPSTREAM_KEY`。
+- Replay admin 和 Upstream admin 各自使用独立环境变量密钥。
+- 正式 YAML 中服务 URL 使用 Compose DNS 名称：`http://replay:18101` 与 `http://upstream:18100`。
+- 复制 `.env.example` 为本地 `.env` 并填入随机密钥后再启动；仓库不提供真实密钥，也不提交 `.env`。
 
-### upstream.db
-
-| 数据 | 说明 |
-|---|---|
-| `accounts` | 服务商账号、凭据、token 来源、冷却与凭据状态 |
-| `upstream_models` | UpstreamModel、协议、native model、请求覆盖参数、账号关联 |
-| `quota_state` | 额度窗口、查询结果与更新时间 |
-| `model_state` | 模型级失败、429、熔断与评估状态 |
-| `usage_log` | 按账号和 UpstreamModel 记录用量 |
-
-## 七、缓存与故障语义
-
-- **快路径**：缓存命中且上次请求正常时，直接 resolve 缓存的 UpstreamModel，跳过额度查询、评估和 Policy 排序。
-- **慢路径**：缓存未命中、目标不存在、resolve 失败或上次请求异常时，请求 upstream 评估候选，由 relay 的 Policy 排序并写回新目标。
-- **进程不可用**：upstream 不可用且 relay 无法 resolve 目标时，relay 在写出首字节前返回客户端协议对应的可重试错误，不使用过期凭据兜底。
-- **配置变化**：删除或禁用 UpstreamModel 后，resolve 返回 not found/unavailable；relay 立即使对应组内缓存失效。
-- **结果上报**：upstream 的运行状态更新与 relay 的目标缓存更新分别落各自数据库，接口必须幂等，允许安全重试。
-
-## 八、迁移与部署
-
-1. 保留客户端四协议端点与鉴权行为。
-2. 现有 Flutter 工程已迁移为 `surge/`，本阶段不改变功能。
-3. 新增 `relay` 与 `upstream` 两个可执行入口和独立配置。
-4. 旧账号 SQLite 只读迁移到 `upstream.db`；迁移可重复执行，不删除或改写旧库。
-5. `relay.db` 初始化 UserModel、UserModelGroup、成员引用与目标缓存结构。
-6. Compose 同时启动 `upstream`、`relay`；`relay` 等待 upstream health ready 后对外服务。
-7. 迁移期间保留金丝雀测试，验证 4×4 协议转换与同协议强制 IR 路径。
-
-## 九、代码边界
-
-| 进程 | 代码职责 |
-|---|---|
-| `surge` | `surge/`（Flutter 管理前端，本阶段功能保持不变） |
-| `relay` | HTTP Server、codec、IR、normalize、UserModelGroup、Policy、目标缓存、Forwarder、upstream HTTP client |
-| `upstream` | 现账号接入能力、Kiro token 生命周期、UpstreamModel/Info、额度与评估、内部 HTTP Server |
-| 共享 | 仅版本化控制面 DTO；不得共享数据库 Store、运行时 Manager 或协议 transport |
-
-物理目录可以共享 Go module 以复用 codec/IR，但两个生产入口必须分别构建为独立二进制，并且运行时没有进程内 Manager 直连。
+本次收口不运行 Docker。实际部署验证应在具备 Docker 的环境中执行 `docker compose config`、构建、健康依赖和端到端调用检查。

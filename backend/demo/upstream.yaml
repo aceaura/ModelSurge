@@ -1,8 +1,0 @@
-listen: 127.0.0.1:18100
-db_path: ./data/demo-upstream.db
-service_key: local-service-key
-admin_key: change-upstream-admin-key
-cooldowns:
-  default: 5h
-  window_7h: 7h
-  monthly: 24h

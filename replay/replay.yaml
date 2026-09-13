@@ -1,0 +1,9 @@
+listen: 0.0.0.0:18101
+db_path: /data/replay.db
+upstream_url: http://upstream:18100
+agent_service_key: ${MODELSURGE_AGENT_REPLAY_KEY}
+upstream_service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}
+admin_key: ${MODELSURGE_REPLAY_ADMIN_KEY}
+upstream_timeout: 10s
+cache_ttl: 12h
+bootstrap_client_key: ${MODELSURGE_BOOTSTRAP_CLIENT_KEY}

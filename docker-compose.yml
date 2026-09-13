@@ -1,0 +1,86 @@
+name: modelsurge
+
+services:
+  upstream:
+    build:
+      context: .
+      dockerfile: upstream/Dockerfile
+    environment:
+      MODELSURGE_REPLAY_UPSTREAM_KEY: ${MODELSURGE_REPLAY_UPSTREAM_KEY:?set MODELSURGE_REPLAY_UPSTREAM_KEY in .env}
+      MODELSURGE_UPSTREAM_ADMIN_KEY: ${MODELSURGE_UPSTREAM_ADMIN_KEY:?set MODELSURGE_UPSTREAM_ADMIN_KEY in .env}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - upstream-data:/data
+      - ./upstream/upstream.yaml:/app/upstream.yaml:ro
+    expose:
+      - "18100"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'wget --quiet --output-document=/dev/null --header="Authorization: Bearer $$MODELSURGE_REPLAY_UPSTREAM_KEY" http://127.0.0.1:18100/internal/v1/health'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  replay:
+    build:
+      context: .
+      dockerfile: replay/Dockerfile
+    depends_on:
+      upstream:
+        condition: service_healthy
+    environment:
+      MODELSURGE_AGENT_REPLAY_KEY: ${MODELSURGE_AGENT_REPLAY_KEY:?set MODELSURGE_AGENT_REPLAY_KEY in .env}
+      MODELSURGE_REPLAY_UPSTREAM_KEY: ${MODELSURGE_REPLAY_UPSTREAM_KEY:?set MODELSURGE_REPLAY_UPSTREAM_KEY in .env}
+      MODELSURGE_REPLAY_ADMIN_KEY: ${MODELSURGE_REPLAY_ADMIN_KEY:?set MODELSURGE_REPLAY_ADMIN_KEY in .env}
+      MODELSURGE_BOOTSTRAP_CLIENT_KEY: ${MODELSURGE_BOOTSTRAP_CLIENT_KEY:-}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - replay-data:/data
+      - ./replay/replay.yaml:/app/replay.yaml:ro
+    expose:
+      - "18101"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'wget --quiet --output-document=/dev/null --header="Authorization: Bearer $$MODELSURGE_AGENT_REPLAY_KEY" http://127.0.0.1:18101/internal/v1/health'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    depends_on:
+      replay:
+        condition: service_healthy
+    environment:
+      MODELSURGE_AGENT_REPLAY_KEY: ${MODELSURGE_AGENT_REPLAY_KEY:?set MODELSURGE_AGENT_REPLAY_KEY in .env}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - agent-data:/data
+      - ./agent/agent.yaml:/app/agent.yaml:ro
+    ports:
+      - "${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-18099}:18099"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --output-document=/dev/null
+        - http://127.0.0.1:18099/health
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  agent-data:
+  replay-data:
+  upstream-data:

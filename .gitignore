@@ -1,7 +1,38 @@
-# Go and Windows build artifacts
+# Local environment (keep the template tracked)
+.env
+**/.env
+!.env.example
+
+# Runtime databases and SQLite sidecars
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+data/
+agent/data/
+replay/data/
+upstream/data/
+
+# Logs and debug output
+*.log
+agent/kiro-debug/
+replay/kiro-debug/
+upstream/kiro-debug/
+
+# Go and platform build artifacts
 *.exe
 *.exe~
-*.log
+*.test
+*.out
+agent/bin/
+replay/bin/
+upstream/bin/
+agent/dist/
+replay/dist/
+upstream/dist/
 
 # Flutter generated files
 surge/.dart_tool/
@@ -16,12 +47,3 @@ surge/.flutter-plugins-dependencies
 Thumbs.db
 .vscode/
 .kiro/
-
-# Local configs with real keys (never commit)
-.env
-backend/.env
-relayd-ark.yaml
-relayd-local.yaml
-
-# Runtime SQLite data (accounts table contains real upstream keys)
-data/

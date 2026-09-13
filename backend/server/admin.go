@@ -66,16 +66,16 @@ func adminError(w http.ResponseWriter, status int, field, msg string) {
 // accountDTO 管理面账号输入（凭据全量；enabled 缺省 true；
 // json.RawMessage 不用——直接复用 account 字段，Enabled 需三态故包一层）。
 type accountDTO struct {
-	Name             string            `json:"name"`
-	Type             string            `json:"type"`
-	Enabled          *bool             `json:"enabled"`
-	Protocol         string            `json:"protocol"`
-	BaseURL          string            `json:"base_url"`
-	APIKey           string            `json:"api_key"`
-	Models           map[string]string `json:"models"`
-	Headers          map[string]string `json:"headers"`
-	ModelsAllowlist  []string          `json:"models_allowlist"`
-	RequestOverrides *ir.Overrides     `json:"request_overrides"`
+	Name             string               `json:"name"`
+	Type             string               `json:"type"`
+	Enabled          *bool                `json:"enabled"`
+	Protocol         string               `json:"protocol"`
+	BaseURL          string               `json:"base_url"`
+	APIKey           string               `json:"api_key"`
+	Models           map[string]string    `json:"models"`
+	Headers          map[string]string    `json:"headers"`
+	ModelsAllowlist  []string             `json:"models_allowlist"`
+	RequestOverrides *ir.Overrides        `json:"request_overrides"`
 	Kiro             *account.KiroAccount `json:"kiro"`
 }
 
@@ -106,21 +106,8 @@ func (d *accountDTO) validate() error {
 		if d.Kiro == nil {
 			return errors.New("kiro: required for kiro accounts")
 		}
-		switch d.Kiro.Source {
-		case account.SourceRefreshToken:
-			if d.Kiro.RefreshToken == "" {
-				return errors.New("kiro.refresh_token: required when source is refresh_token")
-			}
-		case account.SourceCredsFile:
-			if d.Kiro.CredsFile == "" {
-				return errors.New("kiro.creds_file: required when source is creds_file")
-			}
-		case account.SourceCliDB:
-			if d.Kiro.CliDB == "" {
-				return errors.New("kiro.cli_db: required when source is cli_db")
-			}
-		default:
-			return errors.New("kiro.source: must be one of refresh_token/creds_file/cli_db")
+		if err := account.ValidateKiroCreds(d.Kiro); err != nil {
+			return err
 		}
 	}
 	for k, v := range d.Models {
@@ -139,17 +126,17 @@ func (d *accountDTO) validate() error {
 // toAccount DTO -> Account（enabled 缺省 true）。
 func (d *accountDTO) toAccount() *account.Account {
 	a := &account.Account{
-		Name:             d.Name,
-		Type:             d.Type,
-		Enabled:          d.Enabled == nil || *d.Enabled,
-		Protocol:         d.Protocol,
-		BaseURL:          d.BaseURL,
-		APIKey:           d.APIKey,
-		Models:           d.Models,
-		Headers:          d.Headers,
-		ModelsAllowlist:  d.ModelsAllowlist,
-		Overrides:        d.RequestOverrides,
-		Kiro:             d.Kiro,
+		Name:            d.Name,
+		Type:            d.Type,
+		Enabled:         d.Enabled == nil || *d.Enabled,
+		Protocol:        d.Protocol,
+		BaseURL:         d.BaseURL,
+		APIKey:          d.APIKey,
+		Models:          d.Models,
+		Headers:         d.Headers,
+		ModelsAllowlist: d.ModelsAllowlist,
+		Overrides:       d.RequestOverrides,
+		Kiro:            d.Kiro,
 	}
 	if a.Models == nil {
 		a.Models = map[string]string{}
@@ -183,6 +170,12 @@ func mergeKiroSecrets(in, existing *account.KiroAccount) *account.KiroAccount {
 	}
 	if in.CliDB == "" {
 		in.CliDB = existing.CliDB
+	}
+	if in.CredsText == "" {
+		in.CredsText = existing.CredsText
+	}
+	if in.CredsB64 == "" {
+		in.CredsB64 = existing.CredsB64
 	}
 	if in.Region == "" {
 		in.Region = existing.Region

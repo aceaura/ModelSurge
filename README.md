@@ -74,6 +74,8 @@ curl -X POST http://127.0.0.1:8080/admin/accounts \
 
 api-key 账号的 `base_url` 支持自适应探测（GET 模型列表，零 token 消耗）：裸域名自动补 scheme；带 `/v1` 或完整端点的 SDK 风格写法自动剥版本段/端点尾段；`/api/v1` 等网关路径自动试出正确根地址。建号/更新时探测并把解析出的根地址写回 `base_url`（响应带 `probe` 报告：逐候选证据 + 上游模型列表）；`POST /admin/accounts/{name}/test` 可随时重探测修正。
 
+kiro 账号支持三种认证方法（`refresh_token` / `creds_file` / `cli_db`），每种均可用路径或内联字符串接入（`creds_text` 文本 XOR `creds_b64` base64，与路径字段三选一）：文本区直接粘贴凭据即可建号，无需往服务器放文件。`refresh_token` 内联支持裸串或 `{"refreshToken":...}` JSON；`creds_file` 内联为 credentials.json 原文；`cli_db` 内联为提取的凭据 JSON 或 base64(SQLite 库文件)。token 轮转统一由 `token_state` 列持久化，内联字段不回写。
+
 ## 运行与测试
 
 ```bash

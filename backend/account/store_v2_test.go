@@ -100,6 +100,32 @@ func TestAccountCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 内联凭据账号 round-trip（无迁移，kiro JSON 列直存）
+	inline := &Account{
+		Name: "kiro-inline", Type: TypeKiro, Enabled: true,
+		Kiro: &KiroAccount{
+			Source:    "creds_file",
+			CredsText: `{"refreshToken":"rt-inline","clientId":"cid"}`,
+		},
+	}
+	if err := store.InsertAccount(inline); err != nil {
+		t.Fatal(err)
+	}
+	gotInline, err := store.GetAccount("kiro-inline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotInline.Kiro == nil ||
+		gotInline.Kiro.CredsText != inline.Kiro.CredsText ||
+		gotInline.Kiro.Source != "creds_file" {
+		t.Errorf("inline creds round-trip = %+v", gotInline.Kiro)
+	}
+	// 掩码：内联字段末 4 位，不留全文
+	masked := gotInline.Masked()
+	if masked.Kiro.CredsText != `****id"}` {
+		t.Errorf("inline creds not masked: %q", masked.Kiro.CredsText)
+	}
+
 	// token 状态轮转持久化 + 重启恢复
 	ts := &TokenState{
 		AccessToken: "at-1", RefreshToken: "rt-rotated",

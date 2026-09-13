@@ -288,11 +288,15 @@ func (s *AuthService) loadCredentials() {
 	s.ssoRegion = s.k.Region
 	switch s.k.Source {
 	case SourceCredsFile:
-		s.loadCredsFile()
+		if !s.loadInline() {
+			s.loadCredsFile()
+		}
 	case SourceCliDB:
-		s.loadCliDB()
+		if !s.loadInline() {
+			s.loadCliDB()
+		}
 	default: // refresh_token 直配
-		if s.token.RefreshToken == "" {
+		if !s.loadInline() && s.token.RefreshToken == "" {
 			s.token.RefreshToken = s.k.RefreshToken
 		}
 	}
@@ -328,10 +332,17 @@ func (s *AuthService) loadCredsFile() {
 		log.Printf("kiro auth %s: creds file %s: %v", s.name, s.k.CredsFile, err)
 		return
 	}
+	if err := s.applyCredsJSON(b); err != nil {
+		log.Printf("kiro auth %s: creds file %s parse: %v", s.name, s.k.CredsFile, err)
+	}
+}
+
+// applyCredsJSON 解析 camelCase 凭据 JSON 并填充 token 字段
+// （creds_file 路径/内联与 cli_db 提取 JSON 共用）。
+func (s *AuthService) applyCredsJSON(b []byte) error {
 	var f credsFileJSON
 	if err := json.Unmarshal(b, &f); err != nil {
-		log.Printf("kiro auth %s: creds file %s parse: %v", s.name, s.k.CredsFile, err)
-		return
+		return err
 	}
 	if s.token.RefreshToken == "" {
 		s.token.RefreshToken = f.RefreshToken
@@ -359,6 +370,7 @@ func (s *AuthService) loadCredsFile() {
 		s.clientIDHash = f.ClientIDHash
 		s.loadEnterpriseRegistration(f.ClientIDHash)
 	}
+	return nil
 }
 
 // loadEnterpriseRegistration 企业版 IDE 设备注册：~/.aws/sso/cache/{hash}.json。
@@ -385,18 +397,41 @@ func (s *AuthService) loadEnterpriseRegistration(hash string) {
 	}
 }
 
-// loadCliDB 从 kiro-cli SQLite 读凭据（auth_kv token key 优先级序 + 设备注册 +
+// loadCliDB 从 kiro-cli SQLite 读凭据（路径形态入口）。
+func (s *AuthService) loadCliDB() {
+	s.loadCliDBAt(expandHome(s.k.CliDB))
+}
+
+// loadCliDBBytes 内联 b64 形态：解码内容落临时文件走同一解析链，用毕即删。
+func (s *AuthService) loadCliDBBytes(b []byte) {
+	f, err := os.CreateTemp("", "kiro-cli-*.db")
+	if err != nil {
+		log.Printf("kiro auth %s: inline cli db temp file: %v", s.name, err)
+		return
+	}
+	path := f.Name()
+	defer os.Remove(path)
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		log.Printf("kiro auth %s: inline cli db write: %v", s.name, err)
+		return
+	}
+	f.Close()
+	s.loadCliDBAt(path)
+}
+
+// loadCliDBAt 从指定 SQLite 读凭据（auth_kv token key 优先级序 + 设备注册 +
 // state 表 profile ARN 区域检测）。db 值覆盖运行态——kiro-cli 重新登录后
 // 库内 token 比我们持久化的新。
-func (s *AuthService) loadCliDB() {
-	db, err := sql.Open("sqlite", "file:"+expandHome(s.k.CliDB)+"?_pragma=busy_timeout(5000)")
+func (s *AuthService) loadCliDBAt(path string) {
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		log.Printf("kiro auth %s: open cli db: %v", s.name, err)
 		return
 	}
 	defer db.Close()
 	if err := db.Ping(); err != nil {
-		log.Printf("kiro auth %s: cli db %s: %v", s.name, s.k.CliDB, err)
+		log.Printf("kiro auth %s: cli db %s: %v", s.name, path, err)
 		return
 	}
 

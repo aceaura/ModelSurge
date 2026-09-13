@@ -4,6 +4,7 @@
 package account_test
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -326,4 +327,69 @@ func kiroAccountByName(m *account.Manager, name string) account.Account {
 		}
 	}
 	panic(name + " not found")
+}
+
+// 内联凭据 e2e：text/b64 建号即调度走通 chat、响应脱敏、互斥/形态 400、
+// 空内联 PUT 沿用旧值。
+func TestE2EAdminInlineCreds(t *testing.T) {
+	gw, _, st := newAdminEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(200)
+		_, _ = w.Write(kiroChatStream("ADMIN_INLINE"))
+	})
+	credsB64 := base64.StdEncoding.EncodeToString([]byte(
+		`{"refreshToken":"rt-inline-file","region":"us-east-1"}`))
+
+	// text 形态（裸串）+ b64 形态（credentials.json 原文）建号
+	for _, tc := range []struct{ name, body string }{
+		{"k-text", `{"name":"k-text","type":"kiro","kiro":{"source":"refresh_token","creds_text":"rt-abcdef123456"}}`},
+		{"k-b64", `{"name":"k-b64","type":"kiro","kiro":{"source":"creds_file","creds_b64":"` + credsB64 + `"}}`},
+	} {
+		status, body := adminDo(t, "POST", gw.URL+"/admin/accounts", tc.body, adminKey)
+		if status != 201 {
+			t.Fatalf("create %s: status = %d, body = %s", tc.name, status, body)
+		}
+		if strings.Contains(body, "rt-abcdef123456") || strings.Contains(body, "rt-inline-file") {
+			t.Errorf("create %s: raw credential leaked: %s", tc.name, body)
+		}
+	}
+
+	// 两账号均可调度（内联凭据刷新走 mock）
+	if status, body := postChat(t, gw.URL, "/v1/messages", anthropicChat); status != 200 || !strings.Contains(body, "ADMIN_INLINE") {
+		t.Fatalf("chat via inline account: status = %d, body = %s", status, body)
+	}
+	if got := st.chat.Load(); got < 1 {
+		t.Errorf("kiro chat called %d times", got)
+	}
+
+	// 列表脱敏含内联字段
+	status, body := adminDo(t, "GET", gw.URL+"/admin/accounts", "", adminKey)
+	if status != 200 || !strings.Contains(body, `"creds_text":"****3456"`) {
+		t.Errorf("list: inline creds not masked: status = %d, body = %s", status, body)
+	}
+	if strings.Contains(body, "rt-inline-file") {
+		t.Errorf("list: raw creds_b64 leaked")
+	}
+
+	// 校验矩阵 400：互斥 / 非法 base64 / 非法内容
+	for _, tc := range []struct{ body, want string }{
+		{`{"name":"x","type":"kiro","kiro":{"source":"refresh_token","refresh_token":"rt","creds_text":"rt2"}}`, "conflict"},
+		{`{"name":"x","type":"kiro","kiro":{"source":"refresh_token","creds_b64":"!!!"}}`, "invalid base64"},
+		{`{"name":"x","type":"kiro","kiro":{"source":"creds_file","creds_text":"not json"}}`, "not valid JSON"},
+		{`{"name":"x","type":"kiro","kiro":{"source":"cli_db","creds_b64":"` + base64.StdEncoding.EncodeToString([]byte("garbage")) + `"}}`, "not a SQLite database"},
+	} {
+		if status, body := adminDo(t, "POST", gw.URL+"/admin/accounts", tc.body, adminKey); status != 400 || !strings.Contains(body, tc.want) {
+			t.Errorf("validate %q: status = %d, body = %s, want 400 mentioning %q", tc.body, status, body, tc.want)
+		}
+	}
+
+	// 空内联 PUT：沿用旧值（k-text 凭据仍有效）
+	status, body = adminDo(t, "PUT", gw.URL+"/admin/accounts/k-text",
+		`{"type":"kiro","kiro":{"source":"refresh_token"}}`, adminKey)
+	if status != 200 || !strings.Contains(body, `"creds_text":"****3456"`) {
+		t.Fatalf("put empty inline: status = %d, body = %s", status, body)
+	}
+	if strings.Contains(body, "rt-abcdef123456") {
+		t.Errorf("put response leaked raw credential")
+	}
 }

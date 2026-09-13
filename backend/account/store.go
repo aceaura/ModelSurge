@@ -68,6 +68,8 @@ type KiroAccount struct {
 	RefreshToken  string `json:"refresh_token,omitempty"`  // source=refresh_token 直配
 	CredsFile     string `json:"creds_file,omitempty"`     // source=creds_file 的 JSON 凭据文件路径
 	CliDB         string `json:"cli_db,omitempty"`         // source=cli_db 的 kiro cli SQLite 路径
+	CredsText     string `json:"creds_text,omitempty"`     // 内联凭据文本（按 source 解释；与路径字段/creds_b64 三选一）
+	CredsB64      string `json:"creds_b64,omitempty"`      // 内联凭据 base64（解码后按 source 解释；可含空白）
 	Region        string `json:"region,omitempty"`         // SSO 刷新区，默认 us-east-1
 	APIRegion     string `json:"api_region,omitempty"`     // API 区覆盖；空则按检测链推导
 	ProfileArn    string `json:"profile_arn,omitempty"`    // 可空，首次使用时自动获取回填
@@ -136,6 +138,8 @@ func (a *Account) Masked() Account {
 	if a.Kiro != nil {
 		k := *a.Kiro
 		k.RefreshToken = maskSecret(k.RefreshToken)
+		k.CredsText = maskSecret(k.CredsText)
+		k.CredsB64 = maskSecret(k.CredsB64)
 		if k.Token != nil {
 			t := *k.Token
 			t.AccessToken = maskSecret(t.AccessToken)

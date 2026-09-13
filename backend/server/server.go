@@ -60,6 +60,12 @@ func New(cfg *config.Config, sched *account.Manager) *Server {
 	s.mux.HandleFunc("POST /openai/v1/responses", s.handleChat("openai-responses"))
 	s.mux.HandleFunc("POST /gemini/v1beta/models/", s.handleGemini)
 	s.mux.HandleFunc("GET /openai/v1/models", s.handleModels)
+	// 无 /v1 前缀裸路径：客户端 base_url 不带 /v1 时（DeepSeek 原生风格 /chat/completions 等）自动适配
+	s.mux.HandleFunc("POST /chat/completions", s.handleChat("openai-chat"))
+	s.mux.HandleFunc("POST /responses", s.handleChat("openai-responses"))
+	s.mux.HandleFunc("POST /messages", s.handleChat("anthropic"))
+	s.mux.HandleFunc("POST /messages/count_tokens", s.handleCountTokens)
+	s.mux.HandleFunc("GET /models", s.handleModels)
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))

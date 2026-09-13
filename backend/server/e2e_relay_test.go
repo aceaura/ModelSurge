@@ -379,3 +379,45 @@ data: [DONE]
 		t.Errorf("completion_tokens estimated as zero: %s", s)
 	}
 }
+
+// TestBarePathRoutes 无 /v1 前缀裸路径与 /v1 全格式路由到同一处理器。
+func TestBarePathRoutes(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer up.Close()
+
+	gw := newGateway(t, &config.Config{}, apiKeyAcc("st", "openai-chat", up.URL, "m", "m"))
+
+	cases := []struct {
+		name, path, body string
+	}{
+		{"chat", "/chat/completions", `{"model":"m","messages":[{"role":"user","content":"hi"}]}`},
+		{"messages", "/messages", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`},
+		{"responses", "/responses", `{"model":"m","input":"hi"}`},
+		{"count_tokens", "/messages/count_tokens", `{"model":"m","messages":[{"role":"user","content":"hi"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Post(gw.URL+tc.path, "application/json", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != 200 {
+				t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+			}
+		})
+	}
+
+	resp, err := http.Get(gw.URL + "/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("GET /models status = %d", resp.StatusCode)
+	}
+}

@@ -1,20 +1,25 @@
+name: modelsurge
+
 services:
   upstream:
     build:
       context: .
       target: upstream
     image: modelsurge-upstream:latest
+    environment:
+      MODELSURGE_SERVICE_KEY: ${MODELSURGE_SERVICE_KEY:?MODELSURGE_SERVICE_KEY is required}
+      MODELSURGE_UPSTREAM_ADMIN_KEY: ${MODELSURGE_UPSTREAM_ADMIN_KEY:?MODELSURGE_UPSTREAM_ADMIN_KEY is required}
     volumes:
       - ./upstream.yaml:/app/upstream.yaml:ro
-      - ../data/upstream:/data
-      - ../data/legacy:/legacy:ro
+      - upstream-data:/data
     expose:
       - "18100"
     healthcheck:
-      test: ["CMD", "wget", "--header=Authorization: Bearer local-service-key", "-qO-", "http://127.0.0.1:18100/internal/v1/health"]
+      test: ["CMD-SHELL", "wget --header=\"Authorization: Bearer $$MODELSURGE_SERVICE_KEY\" -qO- http://127.0.0.1:18100/internal/v1/health >/dev/null"]
       interval: 5s
       timeout: 3s
       retries: 12
+      start_period: 5s
     restart: unless-stopped
 
   relay:
@@ -22,12 +27,26 @@ services:
       context: .
       target: relay
     image: modelsurge-relay:latest
+    environment:
+      MODELSURGE_SERVICE_KEY: ${MODELSURGE_SERVICE_KEY:?MODELSURGE_SERVICE_KEY is required}
+      MODELSURGE_CLIENT_KEY: ${MODELSURGE_CLIENT_KEY:?MODELSURGE_CLIENT_KEY is required}
+      MODELSURGE_RELAY_ADMIN_KEY: ${MODELSURGE_RELAY_ADMIN_KEY:?MODELSURGE_RELAY_ADMIN_KEY is required}
     depends_on:
       upstream:
         condition: service_healthy
     ports:
-      - "127.0.0.1:18099:18099"
+      - "${MODELSURGE_BIND_ADDRESS:-127.0.0.1}:${MODELSURGE_RELAY_PORT:-18099}:18099"
     volumes:
       - ./relay.yaml:/app/relay.yaml:ro
-      - ../data/relay:/data
+      - relay-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18099/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
     restart: unless-stopped
+
+volumes:
+  relay-data:
+  upstream-data:

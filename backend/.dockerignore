@@ -2,6 +2,7 @@
 data
 *.exe
 *.log
+.env
 relayd-ark.yaml
 relayd-local.yaml
 kiro-debug

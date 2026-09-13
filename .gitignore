@@ -18,6 +18,8 @@ Thumbs.db
 .kiro/
 
 # Local configs with real keys (never commit)
+.env
+backend/.env
 relayd-ark.yaml
 relayd-local.yaml
 

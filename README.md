@@ -52,19 +52,19 @@ backend/cmd/relaymock/       本地上游模拟器
 
 ## 配置
 
-运行配置拆为 `backend/relay.yaml` 与 `backend/upstream.yaml`：
+运行配置拆为 `backend/relay.yaml` 与 `backend/upstream.yaml`。部署密钥通过环境变量注入，不写入镜像或版本库：
 
 ```yaml
 # relay.yaml
 listen: 0.0.0.0:18099
 db_path: /data/relay.db
 upstream_url: http://upstream:18100
-service_key: local-service-key
+service_key: ${MODELSURGE_SERVICE_KEY}
 
 # upstream.yaml
 listen: 0.0.0.0:18100
 db_path: /data/upstream.db
-service_key: local-service-key
+service_key: ${MODELSURGE_SERVICE_KEY}
 ```
 
 账号与 UpstreamModel 归 `upstream` 管理；UserModel、调度组、Policy 和目标缓存归 `relay` 管理：
@@ -99,7 +99,18 @@ flutter analyze
 flutter build windows --release
 ```
 
-也可以在 `backend/` 运行 `docker compose up --build`，默认只向宿主机暴露 `relay` 的 `127.0.0.1:18099`。
+Docker Compose 部署：
+
+```bash
+cd backend
+cp .env.example .env
+# 编辑 .env，将四个 replace-with-* 值替换为独立随机密钥
+docker compose up -d --build
+docker compose ps
+docker compose logs -f
+```
+
+默认只向宿主机暴露 `relay` 的 `127.0.0.1:18099`，`upstream` 仅在 Compose 网络内可访问。`relay.db` 与 `upstream.db` 分别持久化在 `modelsurge_relay-data`、`modelsurge_upstream-data` named volume 中。端口冲突时可在 `.env` 设置 `MODELSURGE_RELAY_PORT`；停止服务使用 `docker compose down`，不要添加 `-v`，除非确认需要删除全部持久化数据。
 
 调用示例：
 

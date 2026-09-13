@@ -37,7 +37,7 @@ func load(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	return yaml.Unmarshal(b, v)
+	return yaml.Unmarshal([]byte(os.ExpandEnv(string(b))), v)
 }
 func LoadRelay(path string) (Relay, error) {
 	var c Relay

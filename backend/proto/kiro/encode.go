@@ -281,6 +281,10 @@ func toUnified(msgs []ir.Message, systemBlocks []ir.Block) ([]unifiedMsg, string
 			case ir.BlockToolResult:
 				if b.ToolResult != nil {
 					u.toolResults = append(u.toolResults, convertToolResult(*b.ToolResult))
+					// tool_result 内嵌图片并入同消息 images（KiroaaS
+					// converters_anthropic.py:169-208 对齐）：
+					// convertToolResult 只承载文本，图片单独走 userInputMessage.images。
+					u.images = append(u.images, toolResultImages(*b.ToolResult)...)
 				}
 			case ir.BlockThinking:
 				// 思考块不回传：Kiro 无签名验证通道，重发必 400
@@ -495,6 +499,18 @@ func convertToolResult(tr ir.ToolResult) map[string]any {
 		"status":    status,
 		"toolUseId": tr.ToolUseID,
 	}
+}
+
+// toolResultImages 提取 tool_result 内容块中的内嵌图片（历史消息里的
+// 截图结果块，Kiro toolResults 条目本身不承载图片）。
+func toolResultImages(tr ir.ToolResult) []ir.Image {
+	var out []ir.Image
+	for _, b := range tr.Content {
+		if b.Type == ir.BlockImage && b.Image != nil {
+			out = append(out, *b.Image)
+		}
+	}
+	return out
 }
 
 // convertImages IR 图片 -> Kiro images（剥 data URL 前缀）。

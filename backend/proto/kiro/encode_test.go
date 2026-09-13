@@ -295,6 +295,95 @@ func TestBuildPayload_URLImageSkipped(t *testing.T) {
 	}
 }
 
+// tool_result 内嵌图片并入同消息 images：convertToolResult 只承载文本，
+// 图片走 userInputMessage.images（KiroaaS converters_anthropic.py:169-208 对齐）。
+func TestBuildPayload_ToolResultEmbeddedImages(t *testing.T) {
+	// 当前消息：assistant toolUse + user toolResult(文本+图片) —— 图片进当前 userInput
+	// （须声明 tools，否则 toolResults 会被无声明剥离逻辑转为文本摘要）
+	req := textReq(
+		ir.Message{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{
+			ID: "call_1", Name: "shot", Input: json.RawMessage(`{}`),
+		}}}},
+		ir.Message{Role: ir.RoleUser, Content: []ir.Block{
+			{Type: ir.BlockToolResult, ToolResult: &ir.ToolResult{ToolUseID: "call_1", Content: []ir.Block{
+				{Type: ir.BlockText, Text: "screenshot"},
+				{Type: ir.BlockImage, Image: &ir.Image{MediaType: "image/png", Data: "data:image/png;base64,c2hvdA=="}},
+			}}},
+		}},
+	)
+	req.Tools = []ir.Tool{{Name: "shot", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	p := payloadOf(t, req, "claude-sonnet-4")
+	imgs, _ := userInput(t, p)["images"].([]any)
+	if len(imgs) != 1 {
+		t.Fatalf("current images len = %d, want 1", len(imgs))
+	}
+	if img := imgs[0].(map[string]any); img["format"] != "png" || img["source"].(map[string]any)["bytes"] != "c2hvdA==" {
+		t.Errorf("image = %v", img)
+	}
+	// toolResults 条目仍为纯文本
+	ctx := userInput(t, p)["userInputMessageContext"].(map[string]any)
+	trs := ctx["toolResults"].([]any)
+	if len(trs) != 1 {
+		t.Fatalf("toolResults len = %d, want 1", len(trs))
+	}
+	content := trs[0].(map[string]any)["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["text"] != "screenshot" {
+		t.Errorf("toolResult content = %v, want text-only", content)
+	}
+
+	// 历史消息：tool_result 带图并入该历史 user 条目的 images
+	hist := textReq(
+		ir.Message{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "first"}}},
+		ir.Message{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{
+			ID: "call_2", Name: "shot", Input: json.RawMessage(`{}`),
+		}}}},
+		ir.Message{Role: ir.RoleUser, Content: []ir.Block{
+			{Type: ir.BlockToolResult, ToolResult: &ir.ToolResult{ToolUseID: "call_2", Content: []ir.Block{
+				{Type: ir.BlockImage, Image: &ir.Image{MediaType: "image/jpeg", Data: "data:image/jpeg;base64,aGlzdA=="}},
+			}}},
+		}},
+		// 中间隔一条 assistant：否则相邻 user 被 mergeAdjacent 并入当前消息
+		ir.Message{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockText, Text: "got it"}}},
+		ir.Message{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "next"}}},
+	)
+	hist.Tools = []ir.Tool{{Name: "shot", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	p2 := payloadOf(t, hist, "claude-sonnet-4")
+	found := false
+	for _, e := range historyOf(t, p2) {
+		ui, ok := e.(map[string]any)["userInputMessage"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if imgs, ok := ui["images"].([]any); ok && len(imgs) == 1 {
+			if img := imgs[0].(map[string]any); img["format"] == "jpeg" && img["source"].(map[string]any)["bytes"] == "aGlzdA==" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("history user entry missing embedded tool_result image")
+	}
+}
+
+// 无图 tool_result 回归：不出 images 键。
+func TestBuildPayload_ToolResultNoImages(t *testing.T) {
+	req := textReq(
+		ir.Message{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{
+			ID: "call_3", Name: "t", Input: json.RawMessage(`{}`),
+		}}}},
+		ir.Message{Role: ir.RoleUser, Content: []ir.Block{
+			{Type: ir.BlockToolResult, ToolResult: &ir.ToolResult{ToolUseID: "call_3", Content: []ir.Block{
+				{Type: ir.BlockText, Text: "plain"},
+			}}},
+		}},
+	)
+	req.Tools = []ir.Tool{{Name: "t", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	p := payloadOf(t, req, "claude-sonnet-4")
+	if _, has := userInput(t, p)["images"]; has {
+		t.Errorf("images must be absent for text-only tool_result")
+	}
+}
+
 // 消息规整链：user 打头的 assistant 起始、连续 user 合并、连续同角色插合成。
 func TestBuildPayload_RoleShaping(t *testing.T) {
 	// assistant 打头 -> 补合成 user

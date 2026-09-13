@@ -397,8 +397,9 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	return f.collectUpstreamToClient(ctx, cancel, w, clientCodec, cand, req, dec, upBody, onUsage)
 }
 
-// newDecoder 构造上游流解码器；kiro 解码器注入模型名（message_start 回显）
-// 与输入上限（context_usage -> input 换算）。注入走可选接口，relay 不依赖具体类型。
+// newDecoder 构造上游流解码器；kiro 解码器注入模型名（message_start 回显）、
+// 输入上限（context_usage -> input 换算）与账号级 fake_reasoning。
+// 注入走可选接口，relay 不依赖具体类型。
 func (f *Forwarder) newDecoder(cand candidate, req *ir.Request) proto.StreamDecoder {
 	dec := cand.codec.NewStreamDecoder()
 	if cand.acc == nil || cand.acc.Type != account.TypeKiro {
@@ -406,6 +407,11 @@ func (f *Forwarder) newDecoder(cand candidate, req *ir.Request) proto.StreamDeco
 	}
 	if sd, ok := dec.(interface{ SetModel(string) }); ok {
 		sd.SetModel(req.Model)
+	}
+	if cand.acc.Kiro != nil && cand.acc.Kiro.FakeReasoning {
+		if sd, ok := dec.(interface{ SetFakeReasoning(bool) }); ok {
+			sd.SetFakeReasoning(true)
+		}
 	}
 	if f.sched != nil {
 		if rt := f.sched.KiroRuntimeOf(cand.acc.Name); rt != nil {

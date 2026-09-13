@@ -459,6 +459,37 @@ func TestDecoder_FakeReasoningTagExtraction(t *testing.T) {
 	)
 }
 
+// 账号级 fake_reasoning：全局关 + SetFakeReasoning(true) 时标签解析照常生效
+// （relay 经 newDecoder 注入缝挂载）。
+func TestDecoder_FakeReasoningAccountLevel(t *testing.T) {
+	old := opt
+	opt = Options{}
+	defer func() { opt = old }()
+
+	dec := &streamDecoder{}
+	dec.SetFakeReasoning(true)
+	p := eventStreamParser{}
+	var evs []ir.Event
+	for _, raw := range p.feed([]byte(
+		`{"content":"<thinking>secret "}` +
+			`{"content":"thoughts</thinking>Hello"}` +
+			`{"contextUsagePercentage":30.0}`,
+	)) {
+		out, err := dec.Feed("", raw.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, out...)
+	}
+	evs = append(evs, dec.Finish()...)
+	wantEvents(t, summary(evs),
+		"start",
+		"block_start:thinking", "think:secret thoughts", "sig", "block_stop",
+		"block_start:text", "text:Hello", "block_stop",
+		"delta:end_turn", "stop",
+	)
+}
+
 func TestDecoder_UsageCacheFields(t *testing.T) {
 	dec := &streamDecoder{}
 	p := eventStreamParser{}

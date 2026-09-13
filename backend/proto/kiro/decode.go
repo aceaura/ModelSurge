@@ -172,6 +172,8 @@ type streamDecoder struct {
 	msgID    string
 	model    string // Kiro 事件不携带模型名，由 relay 注入（SetModel）
 
+	fakeReasoning bool // 账号级 fake_reasoning，由 relay 注入（SetFakeReasoning）
+
 	maxInput int // context_usage 换算用输入上限；0 = DefaultMaxInputTokens
 
 	nextIndex       int
@@ -201,6 +203,10 @@ func (Codec) NewStreamDecoder() proto.StreamDecoder { return &streamDecoder{} }
 
 // SetModel 注入响应模型名（Kiro 上游不回显模型，message_start 需要它）。
 func (d *streamDecoder) SetModel(m string) { d.model = m }
+
+// SetFakeReasoning 开启思考标签解析（账号级 fake_reasoning；与全局
+// opt.FakeReasoning 取或）。
+func (d *streamDecoder) SetFakeReasoning(on bool) { d.fakeReasoning = on }
 
 // SetMaxInputTokens 注入模型输入上限（context_usage -> input 换算用）。
 func (d *streamDecoder) SetMaxInputTokens(n int) { d.maxInput = n }
@@ -281,7 +287,7 @@ func (d *streamDecoder) ensureStarted(out *[]ir.Event) {
 	}
 	d.started = true
 	d.msgID = "msg_" + randomHex(24)
-	if opt.FakeReasoning {
+	if opt.FakeReasoning || d.fakeReasoning {
 		d.tp = newThinkingParser()
 	}
 	*out = append(*out, ir.Event{Type: ir.EvMessageStart, MessageID: d.msgID, Model: d.model})

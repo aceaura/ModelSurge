@@ -320,6 +320,44 @@ func TestE2EKiroFakeReasoning(t *testing.T) {
 	}
 }
 
+// fake_reasoning 账号开关解码侧：上游正文携带思考控制标签时，账号开启解析为
+// thinking 块下发（客户端见 thinking_delta）；账号关闭时标签原样留在正文。
+func TestE2EKiroFakeReasoningDecode(t *testing.T) {
+	chat := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(200)
+		_, _ = w.Write(kiroChatStream("<thinking>secret thoughts</thinking>Hello"))
+	}
+	req := `{"model":"claude-sonnet-4-5","max_tokens":100,
+		"thinking":{"type":"enabled","budget_tokens":2000},
+		"messages":[{"role":"user","content":"hi"}]}`
+
+	gw, _ := newKiroFeatureEnv(t, &account.KiroAccount{
+		Source: account.SourceRefreshToken, RefreshToken: "rt-1", FakeReasoning: true,
+	}, chat)
+	status, body := postChat(t, gw.URL, "/v1/messages", req)
+	if status != 200 {
+		t.Fatalf("status = %d, body = %s", status, body)
+	}
+	if !strings.Contains(body, `"type":"thinking"`) || !strings.Contains(body, "secret thoughts") {
+		t.Errorf("expected thinking block with parsed content: %s", body)
+	}
+	if strings.Contains(unescapeJSON(body), "<thinking>") {
+		t.Errorf("control tag leaked to client: %s", body)
+	}
+
+	gw2, _ := newKiroFeatureEnv(t, &account.KiroAccount{
+		Source: account.SourceRefreshToken, RefreshToken: "rt-1",
+	}, chat)
+	status, body2 := postChat(t, gw2.URL, "/v1/messages", req)
+	if status != 200 {
+		t.Fatalf("status = %d, body = %s", status, body2)
+	}
+	if !strings.Contains(unescapeJSON(body2), "<thinking>") {
+		t.Errorf("expected raw control tag passthrough when account off: %s", body2)
+	}
+}
+
 // count_tokens 命中 kiro 账号：按 kiro tokenizer 语义本地估算
 // （与 IR 通用估算差异明显：图片块 100 vs 1100 token）。
 func TestE2EKiroCountTokens(t *testing.T) {

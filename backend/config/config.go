@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -181,8 +182,28 @@ func Load(path string) (*Config, error) {
 		if err := c.Kiro.parse(); err != nil {
 			return nil, err
 		}
+		eff := c.FirstTokenTimeoutDur
+		if c.Kiro.FirstTokenTimeoutDur > 0 {
+			eff = c.Kiro.FirstTokenTimeoutDur
+		} else if c.Kiro.FirstTokenTimeout == "0" {
+			eff = 0 // kiro 首事件超时显式禁用
+		}
+		warnTimeoutCross(eff, c.Kiro.StreamingReadTimeoutDur)
 	}
 	return &c, nil
+}
+
+// warnTimeoutCross 首事件超时与流式看门狗的语义交叉校验：前者是等上游
+// 首个事件的超时，后者是 chunk 间隔看门狗；首事件超时应小于看门狗，
+// 否则看门狗可能在上游吐出首事件前先断流。仅告警不报错。
+func warnTimeoutCross(effFirstToken, readTimeout time.Duration) {
+	if readTimeout <= 0 || effFirstToken <= 0 {
+		return
+	}
+	if effFirstToken >= readTimeout {
+		log.Printf("config warning: first_token_timeout (%s) >= kiro.streaming_read_timeout (%s): the streaming read watchdog may fire before the first event; consider a smaller first_token_timeout",
+			effFirstToken, readTimeout)
+	}
 }
 
 // parse 解析 kiro 段的 duration/数值字段并填默认值。

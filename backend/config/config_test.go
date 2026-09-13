@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -174,5 +177,90 @@ func TestLoad_ExampleYAML(t *testing.T) {
 	}
 	if c.Kiro == nil || c.Kiro.RecoveryTimeoutDur != 60*time.Second || c.Kiro.MaxBackoffMultiplier != 1440 {
 		t.Fatalf("example kiro defaults: %+v", c.Kiro)
+	}
+}
+
+// captureLog 捕获 log 输出，测试毕恢复。
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return &buf
+}
+
+// TestWarnTimeoutCross：首事件超时应小于流式看门狗；>= 时告警。
+func TestWarnTimeoutCross(t *testing.T) {
+	tests := []struct {
+		name  string
+		first time.Duration
+		read  time.Duration
+		warn  bool
+	}{
+		{"ok-smaller", 30 * time.Second, 5 * time.Minute, false},
+		{"warn-greater", 10 * time.Minute, time.Minute, true},
+		{"warn-equal", time.Minute, time.Minute, true},
+		{"skip-read-disabled", 10 * time.Minute, 0, false},
+		{"skip-first-disabled", 0, time.Minute, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := captureLog(t)
+			warnTimeoutCross(tt.first, tt.read)
+			got := buf.String()
+			if tt.warn && !strings.Contains(got, "first_token_timeout") {
+				t.Errorf("expected warning, got %q", got)
+			}
+			if !tt.warn && got != "" {
+				t.Errorf("unexpected warning: %q", got)
+			}
+		})
+	}
+}
+
+// TestLoad_TimeoutCrossWarn：Load 端到端接线——首事件超时 >= 看门狗时打告警，
+// 配置仍加载成功；kiro 覆盖值优先生效。
+func TestLoad_TimeoutCrossWarn(t *testing.T) {
+	buf := captureLog(t)
+	_, err := Load(writeCfg(t, minimalCfg+`
+first_token_timeout: 10m
+kiro:
+  streaming_read_timeout: 1m
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "first_token_timeout (10m0s) >= kiro.streaming_read_timeout (1m0s)") {
+		t.Errorf("expected cross warning, got %q", buf.String())
+	}
+
+	// kiro 覆盖值更小时不告警
+	buf.Reset()
+	_, err = Load(writeCfg(t, minimalCfg+`
+first_token_timeout: 10m
+kiro:
+  first_token_timeout: 30s
+  streaming_read_timeout: 1m
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "warning") {
+		t.Errorf("unexpected warning with smaller kiro override: %q", buf.String())
+	}
+
+	// kiro 显式 "0"（禁用）不告警
+	buf.Reset()
+	_, err = Load(writeCfg(t, minimalCfg+`
+first_token_timeout: 10m
+kiro:
+  first_token_timeout: "0"
+  streaming_read_timeout: 1m
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "warning") {
+		t.Errorf("unexpected warning with disabled kiro timeout: %q", buf.String())
 	}
 }

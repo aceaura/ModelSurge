@@ -179,15 +179,15 @@ func TestProbeEndpointAuthFailedAdopted(t *testing.T) {
 }
 
 func TestProbeEndpointNoMatch(t *testing.T) {
-	// 双候选均 401（密钥无效无法区分路径）-> 不采纳
+	// 双候选均 401（上游可达但鉴权墙挡住探测，无法区分路径）-> auth_gated
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(401)
 	}))
 	defer up.Close()
 
 	rep := ProbeEndpoint(context.Background(), up.Client(), "openai-chat", up.URL, "bad")
-	if rep.OK || rep.Verdict != "no_match" || rep.ResolvedBaseURL != "" {
-		t.Fatalf("verdict = %s ok = %v resolved = %q, want no_match", rep.Verdict, rep.OK, rep.ResolvedBaseURL)
+	if rep.OK || rep.Verdict != "auth_gated" || rep.ResolvedBaseURL != "" {
+		t.Fatalf("verdict = %s ok = %v resolved = %q, want auth_gated", rep.Verdict, rep.OK, rep.ResolvedBaseURL)
 	}
 
 	// 全部 404 -> no_match

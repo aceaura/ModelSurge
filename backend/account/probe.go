@@ -230,6 +230,10 @@ func ProbeEndpoint(ctx context.Context, client *http.Client, protocol, baseURL, 
 	case len(authIdx) == 1:
 		rep.Verdict = VerdictAuthFailed
 		rep.ResolvedBaseURL = roots[authIdx[0]]
+	case len(authIdx) > 1:
+		// 上游可达，但鉴权墙挡住探测（对不存在路径也回 401），无法区分路径；
+		// 不采纳任何候选，保留规范化输入。
+		rep.Verdict = "auth_gated"
 	case allUnreachable:
 		rep.Verdict = VerdictUnreachable
 	default:

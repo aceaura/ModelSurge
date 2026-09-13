@@ -1,7 +1,10 @@
 // Package openaichat 实现 OpenAI Chat Completions 协议（/v1/chat/completions）的 codec。
 package openaichat
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Name 协议标识。
 const Name = "openai-chat"
@@ -63,6 +66,42 @@ type functionCall struct {
 type tool struct {
 	Type     string   `json:"type"` // "function"
 	Function toolFunc `json:"function"`
+}
+
+// UnmarshalJSON 兼容 Cursor 扁平工具形态 {name, description, input_schema}
+// （无 type/function 包装，KiroaaS converters_openai.py:261-302 同款）：
+// 常规解析失败且能解出 name 时按扁平 DTO 解析，映射为 Type:"function"。
+func (t *tool) UnmarshalJSON(data []byte) error {
+	type plain tool
+	var p plain
+	if err := json.Unmarshal(data, &p); err == nil && p.Function.Name != "" {
+		*t = tool(p)
+		return nil
+	}
+	var flat struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		InputSchema json.RawMessage `json:"input_schema"`
+		Parameters  json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(data, &flat); err != nil || flat.Name == "" {
+		return fmt.Errorf("tool: neither standard {type,function} nor flat {name,...} form: %s", truncateJSON(data))
+	}
+	*t = tool{Type: "function", Function: toolFunc{
+		Name:        flat.Name,
+		Description: flat.Description,
+		Parameters:  flat.InputSchema,
+	}}
+	return nil
+}
+
+// truncateJSON 截断原始 JSON 用于错误信息（与 codec 错误口径一致，防超长）。
+func truncateJSON(data []byte) string {
+	const max = 120
+	if len(data) > max {
+		data = data[:max]
+	}
+	return string(data)
 }
 
 type toolFunc struct {

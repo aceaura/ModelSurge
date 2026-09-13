@@ -146,7 +146,7 @@ func BuildPayload(req *ir.Request, modelID string) (map[string]any, error) {
 	if opt.TruncationRecovery {
 		fullSystem = joinPrompt(fullSystem, truncationSystemAddition)
 	}
-	if directive := toolChoiceDirective(req.ToolChoice); directive != "" {
+	if directive := ToolChoiceDirective(req.ToolChoice); directive != "" {
 		fullSystem = joinPrompt(fullSystem, directive)
 	}
 
@@ -774,8 +774,9 @@ func injectThinkingTags(content string, tc *ir.ThinkingConfig) string {
 		"\n<thinking_instruction>" + instruction + "</thinking_instruction>\n\n" + content
 }
 
-// toolChoiceDirective Kiro 无 tool_choice 字段，以提示指令模拟。
-func toolChoiceDirective(tc *ir.ToolChoice) string {
+// ToolChoiceDirective Kiro 无 tool_choice 字段，以提示指令模拟。
+// 导出供 relay 严格工具策略的恢复指令复用。
+func ToolChoiceDirective(tc *ir.ToolChoice) string {
 	if tc == nil {
 		return ""
 	}

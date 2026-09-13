@@ -582,22 +582,22 @@ func joinedSystem(t *testing.T, p map[string]any) string {
 
 // toolChoice 指令注入系统提示。
 func TestToolChoiceDirective(t *testing.T) {
-	if toolChoiceDirective(nil) != "" {
+	if ToolChoiceDirective(nil) != "" {
 		t.Errorf("nil toolChoice should be empty")
 	}
-	any := toolChoiceDirective(&ir.ToolChoice{Mode: ir.ChoiceAny})
+	any := ToolChoiceDirective(&ir.ToolChoice{Mode: ir.ChoiceAny})
 	if !strings.Contains(any, "MUST call") {
 		t.Errorf("any directive = %q", any)
 	}
-	none := toolChoiceDirective(&ir.ToolChoice{Mode: ir.ChoiceNone})
+	none := ToolChoiceDirective(&ir.ToolChoice{Mode: ir.ChoiceNone})
 	if !strings.Contains(none, "NOT call any tool") {
 		t.Errorf("none directive = %q", none)
 	}
-	named := toolChoiceDirective(&ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: "read_file"})
+	named := ToolChoiceDirective(&ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: "read_file"})
 	if !strings.Contains(named, "'read_file'") {
 		t.Errorf("named directive = %q", named)
 	}
-	if toolChoiceDirective(&ir.ToolChoice{Mode: ir.ChoiceAuto}) != "" {
+	if ToolChoiceDirective(&ir.ToolChoice{Mode: ir.ChoiceAuto}) != "" {
 		t.Errorf("auto directive should be empty")
 	}
 }

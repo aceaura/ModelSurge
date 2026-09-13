@@ -287,6 +287,62 @@ func (f *Forwarder) quotaCooldownUntil(ctx context.Context, acc *account.Account
 	return time.Now().Add(quotaFallbackCooldown)
 }
 
+// openUpstream 对单候选发起一次上游请求：编码、解析端点、POST、
+// 非 2xx 分类与 kiro 读超时看门狗包装。调用方负责 resp.Body.Close() 与 cancel。
+// 供普通 attempt 与严格工具策略的恢复重发共用。
+func (f *Forwarder) openUpstream(ctx context.Context, cand candidate, upReq *ir.Request) (*http.Response, context.CancelFunc, *ir.Error) {
+	body, encErr := cand.codec.EncodeRequest(upReq)
+	if encErr != nil {
+		return nil, nil, ir.NewHTTPError(400, "encode upstream request: "+encErr.Error())
+	}
+
+	url, headers, rerr := cand.resolve(ctx)
+	if rerr != nil {
+		return nil, nil, rerr
+	}
+	actx, cancel := context.WithCancel(ctx)
+	httpReq, reqErr := http.NewRequestWithContext(actx, http.MethodPost, url, bytes.NewReader(body))
+	if reqErr != nil {
+		cancel()
+		return nil, nil, ir.NewHTTPError(500, reqErr.Error())
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	for k, v := range headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, doErr := f.client.Do(httpReq)
+	if doErr != nil {
+		cancel()
+		if ctx.Err() != nil {
+			return nil, nil, &ir.Error{StatusCode: 499, Type: ir.ErrTypeUpstream, Message: "client disconnected"} // 特殊值：attempt 识别
+		}
+		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream unreachable: " + doErr.Error(), Retryable: true}
+	}
+	// kiro 候选的 chunk 间读超时看门狗（须在 defer Close 前装上，
+	// 使 defer 关闭的是看门狗 body——停表并关底层连接）。
+	if f.kiroStreamingReadTimeout > 0 && cand.acc != nil && cand.acc.Type == account.TypeKiro {
+		resp.Body = newIdleTimeoutBody(resp.Body, f.kiroStreamingReadTimeout)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+		resp.Body.Close()
+		cancel()
+		e := ir.NewHTTPError(resp.StatusCode, excerpt(string(errBody)))
+		if cand.acc != nil && cand.acc.Type == account.TypeKiro {
+			e.Reason, _ = account.ParseKiroErrorReason(errBody) // 调度分类用（INVALID_MODEL_ID 等）
+		}
+		if resp.StatusCode == http.StatusNotFound && cand.acc != nil {
+			log.Printf("relay: upstream %s returned 404 — endpoint mismatch? re-probe via POST /admin/accounts/%s/test",
+				cand.name, cand.acc.Name)
+		}
+		return nil, nil, e
+	}
+	return resp, cancel, nil
+}
+
 // attempt 对单个上游做一次转发尝试。wrote 表示是否已向客户端写出字节。
 // onUsage 非空时上报响应中的真实 usage（调度模式记账用；估算值不调）。
 func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, onUsage func(*ir.Usage)) (wrote bool, err *ir.Error) {
@@ -302,53 +358,21 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	if f.paramLog {
 		log.Printf("relay: upstream request %s: %s", cand.name, requestParams(cand.codec.Name(), upReq))
 	}
-	body, encErr := cand.codec.EncodeRequest(upReq)
-	if encErr != nil {
-		return false, ir.NewHTTPError(400, "encode upstream request: "+encErr.Error())
+
+	// kiro + 严格 tool_choice：缓冲-校验-恢复重发（其余协议上游原生执行策略）
+	if pol := strictToolChoice(upReq); pol != nil && cand.acc != nil && cand.acc.Type == account.TypeKiro {
+		return f.attemptStrict(ctx, w, clientCodec, cand, req, upReq, pol, onUsage)
 	}
 
-	url, headers, rerr := cand.resolve(ctx)
-	if rerr != nil {
-		return false, rerr
-	}
-	actx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	httpReq, reqErr := http.NewRequestWithContext(actx, http.MethodPost, url, bytes.NewReader(body))
-	if reqErr != nil {
-		return false, ir.NewHTTPError(500, reqErr.Error())
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	for k, v := range headers {
-		httpReq.Header.Set(k, v)
-	}
-
-	resp, doErr := f.client.Do(httpReq)
-	if doErr != nil {
-		if ctx.Err() != nil {
+	resp, cancel, uerr := f.openUpstream(ctx, cand, upReq)
+	if uerr != nil {
+		if uerr.StatusCode == 499 && ctx.Err() != nil {
 			return true, nil // 客户端断开
 		}
-		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream unreachable: " + doErr.Error(), Retryable: true}
-	}
-	// kiro 候选的 chunk 间读超时看门狗（须在 defer Close 前装上，
-	// 使 defer 关闭的是看门狗 body——停表并关底层连接）。
-	if f.kiroStreamingReadTimeout > 0 && cand.acc != nil && cand.acc.Type == account.TypeKiro {
-		resp.Body = newIdleTimeoutBody(resp.Body, f.kiroStreamingReadTimeout)
+		return false, uerr
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
-		e := ir.NewHTTPError(resp.StatusCode, excerpt(string(errBody)))
-		if cand.acc != nil && cand.acc.Type == account.TypeKiro {
-			e.Reason, _ = account.ParseKiroErrorReason(errBody) // 调度分类用（INVALID_MODEL_ID 等）
-		}
-		if resp.StatusCode == http.StatusNotFound && cand.acc != nil {
-			log.Printf("relay: upstream %s returned 404 — endpoint mismatch? re-probe via POST /admin/accounts/%s/test",
-				cand.name, cand.acc.Name)
-		}
-		return false, e
-	}
+	defer cancel()
 
 	// 已锁定该上游：落有损转换诊断（日志 + 响应头，须在 WriteHeader 前设置）
 	if notes := Diagnose(req, cand.codec.Name(), cand.codec.Caps()); len(notes) > 0 {
@@ -591,13 +615,36 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 // 聚合期间不向客户端写任何字节，因此聚合失败仍可换上游重试
 // （代价是失败上游可能已计费——pre-write 重试的固有取舍）。
 func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
+	resp, aerr := f.aggregateUpstream(ctx, cand, req, dec, body, cancel)
+	if aerr != nil {
+		return false, aerr
+	}
+	f.estimateUsageOnResponse(req, resp, cand.name)
+	if onUsage != nil {
+		onUsage(&resp.Usage)
+	}
+	sum := newRespSummarizer(f.paramLog, cand.name, "sse")
+	sum.fill(resp)
+	sum.log()
+	csum := newClientSummarizer(f.paramLog, clientCodec.Name(), false)
+	csum.fill(resp)
+	csum.wrote(writeResponse(w, clientCodec, resp, false))
+	csum.log()
+	return true, nil
+}
+
+// aggregateUpstream 消费上游流并聚合为完整 IR 响应：首事件超时、
+// web_search 拦截（先于调用方可能紧跟的严格工具校验）、截断上报。
+// 不向客户端写任何字节。聚合失败强制可重试（未写字节可换上游重发）。
+// cancel 供首事件超时杀掉阻塞中的 body 读取（openUpstream 返回的）。
+func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, cancel context.CancelFunc) (*ir.Response, *ir.Error) {
 	er := NewEventReader(body)
 	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand, req))
 	if firstErr != nil {
-		return false, firstErr
+		return nil, firstErr
 	}
 	if !ok {
-		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream closed stream without any event", Retryable: true}
+		return nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream closed stream without any event", Retryable: true}
 	}
 
 	agg := ir.NewAggregator()
@@ -630,20 +677,63 @@ func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.
 	if aggErr != nil {
 		// 未写任何字节：强制可重试，换上游重发
 		aggErr.Retryable = true
-		return false, aggErr
+		return nil, aggErr
 	}
-	f.estimateUsageOnResponse(req, resp, cand.name)
-	if onUsage != nil {
-		onUsage(&resp.Usage)
+	return resp, nil
+}
+
+// attemptStrict kiro + 严格 tool_choice 的缓冲-校验-恢复重发路径：
+// 聚合整个上游响应（不写客户端），先 web_search 拦截再按策略校验；
+// 违规克隆请求向最后 user 消息追加恢复指令、同候选重发一次；
+// 再违规 502 tool_choice_not_satisfied。校验通过才向客户端写出
+// （流式客户端经 EventsFromResponse 重放，REPLAY 前禁止 WriteHeader）；
+// usage 只记最终 attempt。
+func (f *Forwarder) attemptStrict(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, upReq *ir.Request, policy *ir.ToolChoice, onUsage func(*ir.Usage)) (bool, *ir.Error) {
+	var viol *toolViolation
+	for attempt := 0; ; attempt++ {
+		if viol != nil {
+			upReq = appendRecoveryDirective(upReq, viol, policy)
+		}
+		resp, cancel, uerr := f.openUpstream(ctx, cand, upReq)
+		if uerr != nil {
+			if uerr.StatusCode == 499 && ctx.Err() != nil {
+				return true, nil // 客户端断开
+			}
+			return false, uerr
+		}
+		var upBody io.Reader = resp.Body
+		if bw, ok := cand.codec.(interface{ WrapResponseBody(io.Reader) io.Reader }); ok {
+			upBody = bw.WrapResponseBody(resp.Body)
+		}
+		dec := f.newDecoder(cand, req)
+		irResp, aerr := f.aggregateUpstream(ctx, cand, req, dec, upBody, cancel)
+		resp.Body.Close()
+		cancel()
+		if aerr != nil {
+			return false, aerr
+		}
+		if v := validateToolChoice(irResp, policy); v != nil {
+			if attempt == 1 {
+				log.Printf("relay: account %s strict tool_choice failed twice: %s", cand.name, v.msg)
+				return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "tool_choice_not_satisfied: " + v.msg}
+			}
+			log.Printf("relay: account %s strict tool_choice violated, retrying once with recovery directive: %s", cand.name, v.msg)
+			viol = v
+			continue
+		}
+		if f.paramLog {
+			log.Printf("relay: upstream request %s: %s", cand.name, requestParams(cand.codec.Name(), upReq))
+		}
+		f.estimateUsageOnResponse(req, irResp, cand.name)
+		if onUsage != nil {
+			onUsage(&irResp.Usage)
+		}
+		csum := newClientSummarizer(f.paramLog, clientCodec.Name(), req.Stream)
+		csum.fill(irResp)
+		csum.wrote(writeResponse(w, clientCodec, irResp, req.Stream))
+		csum.log()
+		return true, nil
 	}
-	sum := newRespSummarizer(f.paramLog, cand.name, "sse")
-	sum.fill(resp)
-	sum.log()
-	csum := newClientSummarizer(f.paramLog, clientCodec.Name(), false)
-	csum.fill(resp)
-	csum.wrote(writeResponse(w, clientCodec, resp, false))
-	csum.log()
-	return true, nil
 }
 
 // CountTokens 处理 Anthropic count_tokens 请求：优先转发给 anthropic 账号

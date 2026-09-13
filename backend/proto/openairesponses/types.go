@@ -11,7 +11,7 @@ const Name = "openai-responses"
 type request struct {
 	Model              string          `json:"model"`
 	Instructions       string          `json:"instructions,omitempty"`
-	Input              json.RawMessage `json:"input,omitempty"` // []inputItem（string 形态不支持，网关恒用数组）
+	Input              json.RawMessage `json:"input,omitempty"` // string 或 []inputItem（官方两种形态均支持）
 	MaxOutputTokens    int             `json:"max_output_tokens,omitempty"`
 	Temperature        *float64        `json:"temperature,omitempty"`
 	TopP               *float64        `json:"top_p,omitempty"`

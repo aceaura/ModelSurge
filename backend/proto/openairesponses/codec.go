@@ -43,7 +43,13 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	}
 	var items []inputItem
 	if len(req.Input) > 0 {
-		if err := json.Unmarshal(req.Input, &items); err != nil {
+		var s string
+		if err := json.Unmarshal(req.Input, &s); err == nil {
+			// 官方 API 允许 input 为纯字符串（最简形态），等价单条 user message
+			if strings.TrimSpace(s) != "" {
+				items = append(items, inputItem{Type: "message", Role: "user", Content: json.RawMessage(marshal(s))})
+			}
+		} else if err := json.Unmarshal(req.Input, &items); err != nil {
 			return nil, fmt.Errorf("openai-responses: decode input items: %w", err)
 		}
 	}
@@ -65,6 +71,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 }
 
 func decodeItem(req *ir.Request, it inputItem) {
+	if it.Type == "" && it.Role != "" {
+		it.Type = "message" // 官方 API 允许 message item 省略 type
+	}
 	switch it.Type {
 	case "message":
 		switch it.Role {

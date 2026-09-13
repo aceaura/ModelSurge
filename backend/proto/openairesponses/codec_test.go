@@ -42,3 +42,45 @@ func TestEncodeRequest_ReasoningItem(t *testing.T) {
 		}
 	}
 }
+
+// DecodeRequest 官方 Responses input 形态全兼容：
+// 纯字符串、省略 type 的 message item（role 推断）、带 type 的标准形态。
+func TestDecodeRequest_InputShapes(t *testing.T) {
+	mustUser := func(t *testing.T, body string) *ir.Request {
+		t.Helper()
+		req, err := New().DecodeRequest([]byte(body))
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(req.Messages) != 1 || req.Messages[0].Role != ir.RoleUser {
+			t.Fatalf("messages = %+v, want single user message", req.Messages)
+		}
+		if len(req.Messages[0].Content) != 1 || req.Messages[0].Content[0].Text != "hi" {
+			t.Fatalf("content = %+v, want text hi", req.Messages[0].Content)
+		}
+		return req
+	}
+
+	// 纯字符串 input（最简形态）
+	mustUser(t, `{"model":"m","input":"hi"}`)
+	// 字符串 input + instructions 进 system
+	req := mustUser(t, `{"model":"m","instructions":"be nice","input":"hi"}`)
+	if len(req.System) != 1 {
+		t.Fatalf("system = %+v, want instructions", req.System)
+	}
+	// 数组 item 省略 type（role 推断为 message）
+	mustUser(t, `{"model":"m","input":[{"role":"user","content":"hi"}]}`)
+	// 数组 item 带 type + content 纯字符串
+	mustUser(t, `{"model":"m","input":[{"type":"message","role":"user","content":"hi"}]}`)
+	// 数组 item 带 type + content parts
+	mustUser(t, `{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`)
+
+	// 无 role 无 type 的未知 item 不产生消息（也不报错）
+	req, err := New().DecodeRequest([]byte(`{"model":"m","input":[{"id":"it_1"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) != 0 {
+		t.Fatalf("unknown items must be skipped, got %+v", req.Messages)
+	}
+}

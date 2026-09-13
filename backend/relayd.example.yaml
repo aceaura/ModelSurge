@@ -20,6 +20,14 @@
 #          "base_url":"https://api.anthropic.com","api_key":"sk-ant-xxx",
 #          "models":{"claude-sonnet-4":"claude-sonnet-4-20250514"}}'
 # kiro 型账号传 "type":"kiro" 与凭据（refresh_token / creds_file / cli_db 三选一）。
+#
+# api-key 账号的 base_url 支持自适应探测（GET 模型列表，零 token 消耗）：
+#   裸域名 "api.anthropic.com"（自动补 https）；
+#   SDK 风格 "https://host/v1" 或完整端点 "https://host/v1/chat/completions"
+#     （自动剥版本段/端点尾段，不双拼）；
+#   网关路径 "/api/v1"（自动试出正确根地址）。
+# 建号/更新时探测并把解析出的根地址写回 base_url（响应带 probe 报告：
+# 逐候选证据 + 上游模型列表）；POST /admin/accounts/{name}/test 可重探测修正。
 
 listen: "127.0.0.1:8080"
 api_key: "sk-replace-me" # 客户端鉴权 key（Bearer 或 x-api-key 均可）

@@ -72,6 +72,8 @@ curl -X POST http://127.0.0.1:8080/admin/accounts \
 
 账号按声明顺序粘性调度，支持限流冷却（429 重置时间入库）、401 禁用、瞬时错误原地重试与熔断切号；逐笔 usage 记账。`GET /v1/models` 返回全部启用账号的模型并集。
 
+api-key 账号的 `base_url` 支持自适应探测（GET 模型列表，零 token 消耗）：裸域名自动补 scheme；带 `/v1` 或完整端点的 SDK 风格写法自动剥版本段/端点尾段；`/api/v1` 等网关路径自动试出正确根地址。建号/更新时探测并把解析出的根地址写回 `base_url`（响应带 `probe` 报告：逐候选证据 + 上游模型列表）；`POST /admin/accounts/{name}/test` 可随时重探测修正。
+
 ## 运行与测试
 
 ```bash

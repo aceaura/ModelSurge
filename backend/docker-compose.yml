@@ -6,8 +6,8 @@ services:
     ports:
       - "127.0.0.1:18099:18099"
     volumes:
-      # 服务器侧把凭据配置与数据目录放在本 compose 文件同目录（backend/ 下）。
-      # 若保留在仓库根，可改为 ../relayd-ark.yaml 与 ../data。
-      - ./relayd-ark.yaml:/app/relayd.yaml:ro
-      - ./data:/data
+      # 凭据配置与数据目录在仓库根（relayd-ark.yaml 与 data/ 均已 gitignore）；
+      # 运行容器一直以仓库根路径挂载，compose 与之对齐。
+      - ../relayd-ark.yaml:/app/relayd.yaml:ro
+      - ../data:/data
     restart: unless-stopped

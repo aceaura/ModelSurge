@@ -2,8 +2,10 @@ package server_test
 
 import (
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -151,6 +153,33 @@ func TestNoRetryAfterBytesWritten(t *testing.T) {
 	_, _ = io.ReadAll(resp.Body)
 	if calls2.Load() != 0 {
 		t.Errorf("second upstream called %d times after bytes were written, want 0", calls2.Load())
+	}
+}
+
+// TestUpstream404ReprobeHint 上游 404 时日志输出"经管理面 test 重探测"提示。
+func TestUpstream404ReprobeHint(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"error":"no such endpoint"}`))
+	}))
+	defer up.Close()
+
+	var logBuf strings.Builder
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	gw := newGateway(t, &config.Config{}, apiKeyAcc("solo", "anthropic", up.URL, "m", "m"))
+	resp, err := http.Post(gw.URL+"/v1/messages", "application/json", strings.NewReader(anthropicChatBody()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != 404 {
+		t.Fatalf("status = %d, want 404 passthrough", resp.StatusCode)
+	}
+	if !strings.Contains(logBuf.String(), "re-probe via POST /admin/accounts/solo/test") {
+		t.Errorf("log missing re-probe hint:\n%s", logBuf.String())
 	}
 }
 

@@ -73,6 +73,7 @@ type accountDTO struct {
 	BaseURL          string            `json:"base_url"`
 	APIKey           string            `json:"api_key"`
 	Models           map[string]string `json:"models"`
+	Headers          map[string]string `json:"headers"`
 	ModelsAllowlist  []string          `json:"models_allowlist"`
 	RequestOverrides *ir.Overrides     `json:"request_overrides"`
 	Kiro             *account.KiroAccount `json:"kiro"`
@@ -93,8 +94,10 @@ func (d *accountDTO) validate() error {
 		if !validProtocols[d.Protocol] {
 			return errors.New("protocol: must be one of anthropic/openai-chat/openai-responses/gemini")
 		}
-		if !strings.HasPrefix(d.BaseURL, "http://") && !strings.HasPrefix(d.BaseURL, "https://") {
-			return errors.New("base_url: must start with http:// or https://")
+		// base_url 宽容输入（裸域名/带 /v1/带网关前缀均可），能否解析出
+		// 协议根地址交由 NormalizeBaseURL 裁决；探测在 handler 内做。
+		if _, err := account.NormalizeBaseURL(d.BaseURL); err != nil {
+			return fmt.Errorf("base_url: %v", err)
 		}
 		if d.APIKey == "" {
 			return errors.New("api_key: required for api-key accounts")
@@ -125,6 +128,11 @@ func (d *accountDTO) validate() error {
 			return errors.New("models: keys and values must be non-empty")
 		}
 	}
+	for k := range d.Headers {
+		if k == "" {
+			return errors.New("headers: keys must be non-empty")
+		}
+	}
 	return nil
 }
 
@@ -138,6 +146,7 @@ func (d *accountDTO) toAccount() *account.Account {
 		BaseURL:          d.BaseURL,
 		APIKey:           d.APIKey,
 		Models:           d.Models,
+		Headers:          d.Headers,
 		ModelsAllowlist:  d.ModelsAllowlist,
 		Overrides:        d.RequestOverrides,
 		Kiro:             d.Kiro,
@@ -187,6 +196,27 @@ func mergeKiroSecrets(in, existing *account.KiroAccount) *account.KiroAccount {
 	return in
 }
 
+// adminAccountResponse 账号响应 + 可选探测报告（probe 仅 api-key 探测时出现）。
+type adminAccountResponse struct {
+	account.Account
+	Probe *account.ProbeReport `json:"probe,omitempty"`
+}
+
+// probeAndResolve api-key 账号探测：规范化 base_url 作为兜底值 -> 并发探测
+// 候选端点（接收原始输入，内部处理 scheme 补全与本地 http 变体）-> 胜出根
+// 地址（resolved / 恰一 auth_failed）返回。探测失败不阻断；kiro 账号不探测。
+func (s *Server) probeAndResolve(ctx context.Context, acc *account.Account) (string, *account.ProbeReport) {
+	fallback, err := account.NormalizeBaseURL(acc.BaseURL)
+	if err != nil {
+		return acc.BaseURL, nil
+	}
+	probe := account.ProbeEndpoint(ctx, s.probeCl, acc.Protocol, acc.BaseURL, acc.APIKey)
+	if probe.ResolvedBaseURL != "" {
+		return probe.ResolvedBaseURL, probe
+	}
+	return fallback, probe
+}
+
 // GET /admin/accounts 列表（脱敏）。
 func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 	accs := s.sched.Status()
@@ -213,6 +243,12 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	acc := d.toAccount()
+	var probe *account.ProbeReport
+	if acc.Type == account.TypeAPIKey {
+		base, pr := s.probeAndResolve(r.Context(), acc)
+		acc.BaseURL = base
+		probe = pr
+	}
 	if err := s.store.InsertAccount(acc); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			adminError(w, 409, "name", "account already exists")
@@ -227,7 +263,7 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sched.Reconfigure(fresh)
-	writeAdminJSON(w, 201, fresh.Masked())
+	writeAdminJSON(w, 201, adminAccountResponse{Account: fresh.Masked(), Probe: probe})
 }
 
 // GET /admin/accounts/{name} 详情（脱敏）。
@@ -263,6 +299,9 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Name = name // 路径为准
+	// 探测触发判定（merge 前取值）：请求提供了 base_url，或协议发生变化。
+	baseURLProvided := d.BaseURL != ""
+	protocolProvided := d.Protocol != ""
 	if d.Type == "" {
 		d.Type = existing.Type // 缺省沿用
 	}
@@ -287,6 +326,9 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	if d.Models == nil {
 		d.Models = existing.Models
 	}
+	if d.Headers == nil {
+		d.Headers = existing.Headers
+	}
 	if d.ModelsAllowlist == nil {
 		d.ModelsAllowlist = existing.ModelsAllowlist
 	}
@@ -298,6 +340,12 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	acc := d.toAccount()
+	var probe *account.ProbeReport
+	if acc.Type == account.TypeAPIKey && (baseURLProvided || (protocolProvided && acc.Protocol != existing.Protocol)) {
+		base, pr := s.probeAndResolve(r.Context(), acc)
+		acc.BaseURL = base
+		probe = pr
+	}
 	if err := s.store.UpdateAccount(acc); err != nil {
 		adminError(w, 500, "", err.Error())
 		return
@@ -308,7 +356,7 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sched.Reconfigure(fresh)
-	writeAdminJSON(w, 200, fresh.Masked())
+	writeAdminJSON(w, 200, adminAccountResponse{Account: fresh.Masked(), Probe: probe})
 }
 
 // DELETE /admin/accounts/{name} 删除（移出调度；usage 历史保留）。
@@ -351,7 +399,8 @@ func (s *Server) adminRefreshAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /admin/accounts/{name}/test 连通性：kiro 拉模型列表；
-// api-key 对 base_url 发探测请求（任何 HTTP 应答即视为可达）。
+// api-key 全量端点探测（GET 模型列表，零 token 消耗），胜出根地址
+// 写回 base_url 并热生效。
 func (s *Server) adminTestAccount(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	acc, err := s.store.GetAccount(name)
@@ -381,21 +430,23 @@ func (s *Server) adminTestAccount(w http.ResponseWriter, r *http.Request) {
 		writeAdminJSON(w, 200, map[string]any{"ok": true, "models": len(models)})
 		return
 	}
-	// api-key：探测 base_url 可达性（不消耗 tokens）
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, acc.BaseURL, nil)
-	if err != nil {
-		adminError(w, 400, "base_url", err.Error())
+	// api-key：全量探测候选端点（不消耗 tokens），胜出则修正根地址
+	base, probe := s.probeAndResolve(ctx, acc)
+	if probe == nil {
+		adminError(w, 400, "base_url", "unparseable base_url: "+acc.BaseURL)
 		return
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		writeAdminJSON(w, 502, map[string]any{
-			"error": map[string]any{"type": "upstream_error", "message": "unreachable: " + err.Error()},
-		})
-		return
+	if base != acc.BaseURL {
+		acc.BaseURL = base
+		if err := s.store.UpdateAccount(acc); err != nil {
+			adminError(w, 500, "", err.Error())
+			return
+		}
+		if fresh, ferr := s.store.GetAccount(name); ferr == nil {
+			s.sched.Reconfigure(fresh)
+		}
 	}
-	defer resp.Body.Close()
-	writeAdminJSON(w, 200, map[string]any{"ok": true, "status": resp.StatusCode})
+	writeAdminJSON(w, 200, map[string]any{"ok": probe.OK, "probe": probe})
 }
 
 // GET /admin/accounts/{name}/usage 代理 kiro GetUsageLimits（配额画像）。

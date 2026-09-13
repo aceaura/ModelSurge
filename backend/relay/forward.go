@@ -80,9 +80,20 @@ type candidate struct {
 // kiro 账号每次请求现取 token（含预刷新）与 host 分流。
 type endpointResolver func(ctx context.Context) (url string, headers map[string]string, err *ir.Error)
 
-// staticEndpoint api-key 账号：URL 与鉴权头固定。
-func staticEndpoint(protocol, baseURL, apiKey, nativeModel string) endpointResolver {
+// staticEndpoint api-key 账号：URL 与鉴权头固定；extra 为账号级自定义头
+// （如网关要求的会话头），同名键覆盖协议默认头。
+func staticEndpoint(protocol, baseURL, apiKey, nativeModel string, extra map[string]string) endpointResolver {
 	url, headers := endpoint(protocol, baseURL, apiKey, nativeModel)
+	if len(extra) > 0 {
+		merged := make(map[string]string, len(headers)+len(extra))
+		for k, v := range headers {
+			merged[k] = v
+		}
+		for k, v := range extra {
+			merged[k] = v
+		}
+		headers = merged
+	}
 	return func(context.Context) (string, map[string]string, *ir.Error) {
 		return url, headers, nil
 	}
@@ -160,7 +171,7 @@ func (f *Forwarder) accountCandidate(a *account.Account, model string) (candidat
 		}
 		cand.resolve = kiroEndpoint(rt)
 	} else {
-		cand.resolve = staticEndpoint(protocol, a.BaseURL, a.APIKey, native)
+		cand.resolve = staticEndpoint(protocol, a.BaseURL, a.APIKey, native, a.Headers)
 	}
 	return cand, nil
 }
@@ -330,6 +341,10 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		e := ir.NewHTTPError(resp.StatusCode, excerpt(string(errBody)))
 		if cand.acc != nil && cand.acc.Type == account.TypeKiro {
 			e.Reason, _ = account.ParseKiroErrorReason(errBody) // 调度分类用（INVALID_MODEL_ID 等）
+		}
+		if resp.StatusCode == http.StatusNotFound && cand.acc != nil {
+			log.Printf("relay: upstream %s returned 404 — endpoint mismatch? re-probe via POST /admin/accounts/%s/test",
+				cand.name, cand.acc.Name)
 		}
 		return false, e
 	}

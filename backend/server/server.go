@@ -35,6 +35,7 @@ type Server struct {
 	store    *account.Store   // 管理面 CRUD 落库
 	adminKey string           // X-Admin-Key；空则不挂载管理面
 	adminMux *http.ServeMux   // /admin 管理路由
+	probeCl  *http.Client     // 管理面端点探测用（默认 http.DefaultClient；测试可注入）
 }
 
 // New 按配置构造服务。sched 非空时启用账号池动态调度（限流冷却 + 粘性取号）。
@@ -44,6 +45,7 @@ func New(cfg *config.Config, sched *account.Manager) *Server {
 		apiKey:    cfg.APIKey,
 		mux:       http.NewServeMux(),
 		accessLog: cfg.AccessLogEnabled,
+		probeCl:   http.DefaultClient,
 	}
 	s.mux.HandleFunc("POST /v1/messages", s.handleChat("anthropic"))
 	s.mux.HandleFunc("POST /v1/messages/count_tokens", s.handleCountTokens)
@@ -72,6 +74,10 @@ func New(cfg *config.Config, sched *account.Manager) *Server {
 	}
 	return s
 }
+
+// SetProbeClient 替换管理面端点探测用 HTTP client（测试注入替身；
+// 生产保持 New 设置的 http.DefaultClient）。
+func (s *Server) SetProbeClient(c *http.Client) { s.probeCl = c }
 
 // Handler 返回根 handler（访问日志 -> 客户端鉴权与管理面分流 -> 路由）。
 // /admin 前缀走 X-Admin-Key 鉴权（独立于客户端 api_key，避免客户端鉴权拦截管理请求）。

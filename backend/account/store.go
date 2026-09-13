@@ -35,6 +35,9 @@ type Account struct {
 	BaseURL  string            `json:"base_url,omitempty"`
 	APIKey   string            `json:"api_key,omitempty"`
 	Models   map[string]string `json:"models,omitempty"` // canonical -> native
+	// Headers api-key 型账号追加到上游请求的自定义头（如网关要求的
+	// 会话/UA 头）；键为标准 MIME 键。值按凭据口径脱敏回显。
+	Headers map[string]string `json:"headers,omitempty"`
 	// Overrides 转发前请求参数覆盖（两种账号类型通用；nil = 透传客户端值）。
 	// ir.Overrides 是 config/account/relay 共享的 IR 层类型，ir 为叶包无环。
 	Overrides *ir.Overrides `json:"request_overrides,omitempty"`
@@ -124,6 +127,12 @@ func (a *Account) Serving(model string) (native string, ok bool) {
 func (a *Account) Masked() Account {
 	m := *a
 	m.APIKey = maskSecret(a.APIKey)
+	for k, v := range a.Headers {
+		if m.Headers == nil {
+			m.Headers = map[string]string{}
+		}
+		m.Headers[k] = maskSecret(v)
+	}
 	if a.Kiro != nil {
 		k := *a.Kiro
 		k.RefreshToken = maskSecret(k.RefreshToken)
@@ -164,6 +173,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 	base_url         TEXT NOT NULL DEFAULT '',
 	api_key          TEXT NOT NULL DEFAULT '',
 	models           TEXT NOT NULL DEFAULT '{}',
+	headers          TEXT NOT NULL DEFAULT '',
 	models_allowlist TEXT NOT NULL DEFAULT '',
 	kiro             TEXT NOT NULL DEFAULT '',
 	token_state      TEXT NOT NULL DEFAULT '',
@@ -201,6 +211,11 @@ var v2Columns = []string{
 	`ALTER TABLE accounts ADD COLUMN stats TEXT NOT NULL DEFAULT '{}'`,
 }
 
+// v3 迁移：账号级自定义请求头（如 OpenCode Go 网关的 x-opencode-session）。
+var v3Columns = []string{
+	`ALTER TABLE accounts ADD COLUMN headers TEXT NOT NULL DEFAULT ''`,
+}
+
 // Open 打开（必要时创建）数据库并建表/迁移到 v2。
 func Open(path string) (*Store, error) {
 	// 不用 WAL：其 shm/mmap 在 Docker Desktop Windows 绑定挂载上会静默丢写；
@@ -215,15 +230,19 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("account: migrate: %w", err)
 	}
-	if err := migrateV2(db); err != nil {
+	if err := migrateColumns(db, "v2", v2Columns); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("account: migrate v2: %w", err)
+	}
+	if err := migrateColumns(db, "v3", v3Columns); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("account: migrate v3: %w", err)
 	}
 	return &Store{db: db}, nil
 }
 
-// migrateV2 检测 v1 库缺列并 ALTER 补齐；v2 库与新库为 no-op。
-func migrateV2(db *sql.DB) error {
+// migrateColumns 检测缺列并 ALTER 补齐；列已存在时为 no-op。
+func migrateColumns(db *sql.DB, ver string, columns []string) error {
 	rows, err := db.Query(`PRAGMA table_info(accounts)`)
 	if err != nil {
 		return err
@@ -245,7 +264,7 @@ func migrateV2(db *sql.DB) error {
 		return err
 	}
 	rows.Close()
-	for _, stmt := range v2Columns {
+	for _, stmt := range columns {
 		col := stmt[len(`ALTER TABLE accounts ADD COLUMN `):]
 		col = strings.Fields(col)[0]
 		if have[col] {
@@ -262,17 +281,17 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // accountSelect 全字段读取（与 scanAccount 对应）。
 const accountSelect = `SELECT name, type, enabled, protocol, base_url, api_key, models,
-	models_allowlist, kiro, token_state, overrides, disabled, limit_kind, cooldown_until,
+	headers, models_allowlist, kiro, token_state, overrides, disabled, limit_kind, cooldown_until,
 	failures, last_failure, stats, updated_at FROM accounts`
 
 // scanAccount 一行 -> Account。
 func scanAccount(s interface{ Scan(...any) error }) (Account, error) {
 	var a Account
-	var typ, protocol, baseURL, apiKey, models, allowlist, kiroJSON, tokenJSON, overridesJSON, statsJSON string
+	var typ, protocol, baseURL, apiKey, models, headers, allowlist, kiroJSON, tokenJSON, overridesJSON, statsJSON string
 	var enabled, disabled, failures int
 	var cooldown, lastFailure, updatedAt int64
 	if err := s.Scan(&a.Name, &typ, &enabled, &protocol, &baseURL, &apiKey, &models,
-		&allowlist, &kiroJSON, &tokenJSON, &overridesJSON, &disabled, &a.LimitKind, &cooldown,
+		&headers, &allowlist, &kiroJSON, &tokenJSON, &overridesJSON, &disabled, &a.LimitKind, &cooldown,
 		&failures, &lastFailure, &statsJSON, &updatedAt); err != nil {
 		return a, err
 	}
@@ -280,6 +299,7 @@ func scanAccount(s interface{ Scan(...any) error }) (Account, error) {
 	a.Enabled = enabled != 0
 	a.Protocol, a.BaseURL, a.APIKey = protocol, baseURL, apiKey
 	_ = json.Unmarshal([]byte(models), &a.Models)
+	_ = json.Unmarshal([]byte(headers), &a.Headers)
 	_ = json.Unmarshal([]byte(allowlist), &a.ModelsAllowlist)
 	_ = json.Unmarshal([]byte(statsJSON), &a.Stats)
 	if overridesJSON != "" {

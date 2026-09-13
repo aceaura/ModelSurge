@@ -4,6 +4,7 @@
 package account_test
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,9 +39,25 @@ func newAdminEnv(t *testing.T, chat func(w http.ResponseWriter, r *http.Request)
 		Scheduler: &config.Scheduler{SameAccountRetries: 2},
 		Admin:     &config.Admin{APIKey: adminKey},
 	}
-	gw := httptest.NewServer(server.New(cfg, m).Handler())
+	gw := httptest.NewServer(newProbedServer(cfg, m).Handler())
 	t.Cleanup(gw.Close)
 	return gw, m, st
+}
+
+// deadTransport 探测替身：所有请求立即失败，避免既有用例的 api-key 建号
+// 触发真实网络探测（DNS 解析拖慢测试）。
+type deadTransport struct{}
+
+func (deadTransport) RoundTrip(*http.Request) (resp *http.Response, err error) {
+	return nil, errors.New("probe transport disabled in tests")
+}
+
+// newProbedServer 构造注入了 deadTransport 探测 client 的入口服务。
+// 需要真实探测的用例（端点自适应 e2e）用 server.New 后自行 SetProbeClient。
+func newProbedServer(cfg *config.Config, m *account.Manager) *server.Server {
+	srv := server.New(cfg, m)
+	srv.SetProbeClient(&http.Client{Transport: deadTransport{}})
+	return srv
 }
 
 // adminDo 管理面请求（key 为空省略鉴权头）。

@@ -52,7 +52,7 @@ type imageURL struct {
 }
 
 type toolCall struct {
-	Index    int          `json:"index,omitempty"`
+	Index    int          `json:"index"` // 不可 omitempty：index=0 是合法值，严格客户端（Qoder）强校验该字段存在
 	ID       string       `json:"id,omitempty"`
 	Type     string       `json:"type"` // "function"
 	Function functionCall `json:"function"`

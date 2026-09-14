@@ -262,7 +262,7 @@ upstream/                      独立 Go module
   contract/upstreamv1/         Replay→Upstream DTO
   upstream.yaml                正式容器配置
 
-cmd/modelsurge/               单二进制组合根（规划：Phase A，见 design/deployment-modes.md 模式一）
+cmd/modelsurge/               模式一启动入口：纯编排壳，核心代码与三进程共用（规划：Phase A，见 design/deployment-modes.md）
 go.mod（根）                   根模块与 replace 指令（规划：Phase A）
 
 surge/                         Flutter 管理前端，功能不变
@@ -294,11 +294,12 @@ upstream healthy → replay healthy → agent 对外
 
 ## 10. 部署模式
 
-ModelSurge 规划两种部署模式，设计细节见 `design/deployment-modes.md`；本文件第 1–9 章描述的模块职责、契约、IR 不变式与库归属在两种模式下全部保持。
+ModelSurge 规划两种部署模式，设计细节见 `design/deployment-modes.md`；本文件第 1–9 章描述的模块职责、契约、IR 不变式与库归属在两种模式下全部保持。两模式**不分叉代码**：共用同一份核心代码，差异只在启动入口（每个入口一个目录，目录内仅装配）与运行配置。
 
 | | 模式一 · 单进程 | 模式二 · 集群 |
 |---|---|---|
-| 形态 | `cmd/modelsurge` 单二进制三合一（规划 Phase A） | 三进程拆分不变，多副本 |
+| 启动入口 | `cmd/modelsurge/`（唯一新增目录，纯编排壳） | `agent/cmd/agent` 等 3 个现有目录，不变 |
+| 形态 | 单二进制三合一（规划 Phase A） | 三进程拆分不变，多副本 |
 | 存储 | 三个 SQLite 文件，单写者 `SetMaxOpenConns(1)` | PostgreSQL 三 database 三 role（Phase B） |
 | Redis | 无 | 必需但纯易失：rr 游标/试探锁/鉴权缓存/读旁路（Phase C） |
 | 进程内通信 | 回环 HTTP，与三进程共用同一契约代码路径 | 网络 HTTP，契约不变 |

@@ -11,6 +11,7 @@
 2. **三库逻辑唯一归属**：agent/replay/upstream 数据各有唯一写者，与物理形态（三 SQLite 文件 / PG 三 database）无关；跨库读取始终禁止。
 3. **幂等与可靠上报**：`ApplyReport` 两段均按 `report_id` 幂等，且幂等记录与状态更新同事务；outbox 可靠上报只依赖主库，不依赖 Redis。
 4. **调度语义不变**：流式首事件前可换目标、写出后锁定；调度策略名两模式同词同义——多副本收敛靠共享状态（PG/Redis），而不是改语义。
+5. **单一核心代码**：两模式**不分叉代码**——共用同一份核心代码（`agent`/`replay`/`upstream` 三模块的共享包，含 PG 方言层与 Redis 热态）；差异只体现在**启动入口**（每个入口一个目录，目录内仅做装配）与运行配置，任何业务逻辑不得复制进入口目录。
 
 ---
 
@@ -41,7 +42,16 @@ flowchart LR
     A -->|数据面 LLM HTTP| LLM["Upstream LLM API"]
 ```
 
-**组合根**：新增 `cmd/modelsurge`（单二进制），import 三个模块。仓库根新增 `go.mod`（module `github.com/aceaura/ModelSurge`，replace 指向 `../agent`、`../replay`、`../upstream`，与子模块既有 replace 指令同构）。现有各服务 Dockerfile 只 COPY 子目录、在子目录内构建，根模块不影响现有镜像构建。
+**组合根**：新增 `cmd/modelsurge/`（单二进制启动入口，**纯编排壳**），import 三个模块——只做统一 YAML 加载、三服务按序拉起、回环地址装配、信号与关闭编排，不含任何业务逻辑；业务逻辑全部来自三模块共享包（「前置下沉改造」正是为了把装配依赖从各 cmd 的 main 导出为共享函数）。仓库根新增 `go.mod`（module `github.com/aceaura/ModelSurge`，replace 指向 `../agent`、`../replay`、`../upstream`，与子模块既有 replace 指令同构）。现有各服务 Dockerfile 只 COPY 子目录、在子目录内构建，根模块不影响现有镜像构建。
+
+**两个启动入口，核心代码共用**：
+
+| 启动入口 | 目录 | 职责 |
+|---|---|---|
+| 模式一 | `cmd/modelsurge/`（唯一新增目录） | 单二进制装配壳：三 section YAML、三服务编排、回环覆写、信号与 outbox flush |
+| 模式二 | `agent/cmd/agent/`、`replay/cmd/replay/`、`upstream/cmd/upstream/`（现有目录，不变） | 各自加载各自 YAML，独立进程部署 |
+
+两个入口 import 同一批共享包（service/schedule/store/codec 等）。驱动切换逻辑在共享的 `Open(driver, dsn)` 方言层内（Phase A 阶段为现有 `Open(path)`，Phase B 统一签名），不在入口里：模式二经 env 切 PG/Redis，模式一固定 SQLite。
 
 **前置下沉改造**（否则根模块无法装配）：
 
@@ -84,7 +94,7 @@ flowchart LR
 ### 1.3 实施分期（Phase A，代码侧，非本次）
 
 1. 导出 `upstream/internal/http` → `adminapi`；`kiroSetup`、replay bootstrap 下沉为导出函数。
-2. 新增 `cmd/modelsurge` + 根 `go.mod`（replace 指令）：统一 YAML 加载器（三 section）、三 `http.Server` 编排、信号与反向关闭、outbox 尽力 drain。
+2. 新增 `cmd/modelsurge/` + 根 `go.mod`（replace 指令）：统一 YAML 加载器（三 section）、三 `http.Server` 编排、信号与反向关闭、outbox 尽力 drain——入口目录只含装配代码，禁止引入业务逻辑。
 3. 验收：单二进制桌面跑通 dispatch → LLM → report 全链路；三进程形态回归不破。
 
 ### 1.4 验证
@@ -101,7 +111,7 @@ flowchart LR
 
 ### 2.1 形态与拓扑
 
-三进程保持现有拆分与 HTTP 契约。Compose 新增 `docker-compose.cluster.yml` override：`postgres:16-alpine` + `redis:7-alpine`，健康依赖链 postgres+redis → upstream → replay → agent。现有 `docker-compose.yml` 保留为「集群拓扑 + SQLite」中间形态（三进程分容器 + named volume，便于渐进迁移）。
+三进程保持现有拆分与 HTTP 契约，**启动入口沿用现有三个 cmd 目录，不新建代码目录**。Compose 新增 `docker-compose.cluster.yml` override：`postgres:16-alpine` + `redis:7-alpine`，健康依赖链 postgres+redis → upstream → replay → agent。现有 `docker-compose.yml` 保留为「集群拓扑 + SQLite」中间形态（三进程分容器 + named volume，便于渐进迁移）。Phase B/C 的方言层与 Redis 热态改造全部落在共享 store/service 包内，模式一与模式二入口同时受益。
 
 **PG 三库三 role**：`agent`/`replay`/`upstream` 各一个 database + 一个 role，role 只授本库权限——从部署层强制三库唯一归属。应用只配单个 DSN 入口；DB 主从/代理层 HA 留部署侧，应用不做读写分离/多数据源（new-api 实证：集群是应用多节点 + 共享单库入口，应用对 DB 拓扑无感知）。
 

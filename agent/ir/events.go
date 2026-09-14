@@ -20,15 +20,23 @@ const (
 
 // Event 一个流式事件。Index 为内容块序号（block 级事件有效）。
 type Event struct {
-	Type       EventType
-	Index      int
-	Block      *Block     // EvBlockStart
-	Text       string     // 各 delta
-	StopReason StopReason // EvMessageDelta
-	Usage      *Usage     // EvMessageStart / EvMessageDelta
-	MessageID  string     // EvMessageStart
-	Model      string     // EvMessageStart
-	Err        *Error     // EvError
+	Type             EventType
+	Index            int
+	Block            *Block     // EvBlockStart
+	Text             string     // 各 delta
+	StopReason       StopReason // EvMessageDelta
+	Usage            *Usage     // EvMessageStart / EvMessageDelta
+	MessageID        string     // EvMessageStart
+	Model            string     // EvMessageStart
+	Err              *Error     // EvError
+	TruncatedTools   []TruncatedTool
+	TruncatedContent string
+}
+
+type TruncatedTool struct {
+	ID     string
+	Name   string
+	Reason string
 }
 
 // StopReason 规范停止原因；codec 在边界处映射协议方言

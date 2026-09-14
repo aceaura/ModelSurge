@@ -94,6 +94,8 @@ type Kiro struct {
 	FakeReasoning bool `yaml:"fake_reasoning"`
 	// FakeReasoningMaxTokens 合成思考默认预算（tokens）；0 = 4000。
 	FakeReasoningMaxTokens int `yaml:"fake_reasoning_max_tokens"`
+	// FakeReasoningBudgetCap 客户端预算上限；0 = 10000。
+	FakeReasoningBudgetCap int `yaml:"fake_reasoning_budget_cap"`
 	// WebSearchInject web_search 工具注入（全局默认，账号级可另开）。
 	WebSearchInject bool       `yaml:"web_search_inject"`
 	Cloud           *KiroCloud `yaml:"cloud"`
@@ -249,6 +251,15 @@ func (k *Kiro) parse() error {
 	}
 	if k.FakeReasoningMaxTokens < 0 {
 		return fmt.Errorf("config: kiro.fake_reasoning_max_tokens: must be >= 0 (0 = default 4000)")
+	}
+	if k.FakeReasoningMaxTokens == 0 {
+		k.FakeReasoningMaxTokens = 4000
+	}
+	if k.FakeReasoningBudgetCap < 0 {
+		return fmt.Errorf("config: kiro.fake_reasoning_budget_cap: must be >= 0 (0 = default 10000)")
+	}
+	if k.FakeReasoningBudgetCap == 0 {
+		k.FakeReasoningBudgetCap = 10000
 	}
 	return nil
 }

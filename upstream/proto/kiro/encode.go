@@ -97,14 +97,12 @@ func (c Codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 }
 
 // BuildPayload 构造完整 Kiro 载荷（导出供 e2e/管理面复用）。
-// profileArn 由 relay 层经 Metadata 注入（"kiro_profile_arn"）。
+// ProfileArn 和 WebSearch 策略由 Upstream 服务根据账号运行态写入 Metadata。
 func BuildPayload(req *ir.Request, modelID string) (map[string]any, error) {
 	msgs, systemPrompt := toUnified(req.Messages, req.System)
 	systemPrompt = billingHeaderRe.ReplaceAllString(systemPrompt, "")
 
 	// 工具：托管工具（web_search）补全 + 名称别名 + 长描述搬运。
-	// web_search 注入（Path B）由 relay 按账号开关经 Metadata["kiro_web_search"]
-	// 注入——kiro 协议只经账号池调度，账号级策略归 relay，codec 只认标志。
 	tools := normalizeHostedTools(req.Tools)
 	if req.Metadata["kiro_web_search"] == "1" && !hasHostedTool(tools, "web_search") {
 		tools = append(tools, webSearchTool())

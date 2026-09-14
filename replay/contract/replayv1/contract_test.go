@@ -2,6 +2,7 @@ package replayv1
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -11,7 +12,6 @@ func TestRequestOverridesJSONRoundTripPreservesNilAndExplicitZero(t *testing.T) 
 	in := TargetLease{
 		RequestID: "req", GroupID: "group", TargetID: "target",
 		Protocol: "openai-chat", NativeModel: "native", BaseURL: "https://example.test",
-		Runtime: RuntimeMetadata{ProfileArn: "arn:aws:codewhisperer:us-east-1:1:profile/test"},
 		RequestOverrides: &RequestOverrides{
 			Temperature: &zeroFloat,
 			TopP:        nil,
@@ -27,9 +27,6 @@ func TestRequestOverridesJSONRoundTripPreservesNilAndExplicitZero(t *testing.T) 
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Runtime.ProfileArn != in.Runtime.ProfileArn {
-		t.Fatalf("profile_arn = %q, want %q", out.Runtime.ProfileArn, in.Runtime.ProfileArn)
-	}
 	if out.RequestOverrides == nil {
 		t.Fatal("request_overrides lost")
 	}
@@ -44,6 +41,23 @@ func TestRequestOverridesJSONRoundTripPreservesNilAndExplicitZero(t *testing.T) 
 	}
 	if out.RequestOverrides.Thinking == nil || out.RequestOverrides.Thinking.Enabled {
 		t.Fatalf("thinking = %+v, want explicit disabled", out.RequestOverrides.Thinking)
+	}
+}
+
+func TestKiroLeaseJSONIsOpaque(t *testing.T) {
+	data, err := json.Marshal(TargetLease{
+		RequestID: "req", GroupID: "group", TargetID: "target", Protocol: "kiro", NativeModel: "native",
+		BaseURL: "https://secret.example", Credential: "secret", Headers: map[string]string{"Authorization": "Bearer secret"},
+		RequestOverrides: &RequestOverrides{}, Runtime: RuntimeMetadata{AccountType: "kiro"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, forbidden := range []string{"profile_arn", "native_model", "base_url", "credential", "headers", "request_overrides", "runtime"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("opaque Kiro lease contains %q: %s", forbidden, text)
+		}
 	}
 }
 

@@ -1,16 +1,23 @@
 package relay
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aceaura/ModelSurge/agent/config"
 	"github.com/aceaura/ModelSurge/agent/ir"
 	"github.com/aceaura/ModelSurge/agent/proto"
+	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
 	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
 )
@@ -100,8 +107,8 @@ func TestCodexEndpoint(t *testing.T) {
 	}
 }
 
-func TestEndpointRejectsGeminiAndUnknownProtocols(t *testing.T) {
-	for _, protocol := range []string{"gemini", "unknown"} {
+func TestEndpointRejectsKiroGeminiAndUnknownProtocols(t *testing.T) {
+	for _, protocol := range []string{"kiro", "gemini", "unknown"} {
 		if _, _, err := endpoint(protocol, "https://provider.test", "key", "model"); err == nil {
 			t.Fatalf("endpoint(%q) unexpectedly succeeded", protocol)
 		}
@@ -127,6 +134,137 @@ func (*rejectingLeaseReplay) Report(context.Context, replayv1.ResultReport) (rep
 }
 func (*rejectingLeaseReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
 	return replayv1.WebSearchResponse{}, nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type kiroExecuteReplay struct {
+	lease        replayv1.TargetLease
+	executeCalls atomic.Int64
+	body         io.ReadCloser
+}
+
+func (r *kiroExecuteReplay) Dispatch(context.Context, replayv1.DispatchRequest) (replayv1.TargetLease, error) {
+	return r.lease, nil
+}
+func (*kiroExecuteReplay) Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error) {
+	return replayv1.ResultResponse{Applied: true}, nil
+}
+func (r *kiroExecuteReplay) ExecuteKiro(context.Context, replayv1.KiroExecuteRequest) (*http.Response, error) {
+	r.executeCalls.Add(1)
+	if r.body != nil {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}, Body: r.body}, nil
+	}
+	events := []ir.Event{
+		{Type: ir.EvMessageStart, MessageID: "msg", Model: "public"},
+		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}},
+		{Type: ir.EvTextDelta, Index: 0, Text: "from replay"},
+		{Type: ir.EvBlockStop, Index: 0},
+		{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn, Usage: &ir.Usage{OutputTokens: 3}},
+		{Type: ir.EvMessageStop},
+	}
+	var body bytes.Buffer
+	for _, event := range events {
+		_ = json.NewEncoder(&body).Encode(event)
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}, Body: io.NopCloser(bytes.NewReader(body.Bytes()))}, nil
+}
+func (*kiroExecuteReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
+	return replayv1.WebSearchResponse{}, nil
+}
+
+func TestKiroLeaseUsesReplayExecuteInsteadOfDirectHTTP(t *testing.T) {
+	replay := &kiroExecuteReplay{lease: replayv1.TargetLease{RequestID: "req", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"}}
+	f := NewForwarder(&config.Config{}, replay, nil)
+	var directCalls atomic.Int64
+	f.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		directCalls.Add(1)
+		return nil, fmt.Errorf("direct HTTP must not be used")
+	})}
+	w := httptest.NewRecorder()
+	f.Forward(t.Context(), w, proto.MustInbound("anthropic"), &ir.Request{Model: "public", Stream: true, Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}}}, "client-key")
+	if replay.executeCalls.Load() != 1 || directCalls.Load() != 0 {
+		t.Fatalf("execute calls=%d direct calls=%d", replay.executeCalls.Load(), directCalls.Load())
+	}
+	if !strings.Contains(w.Body.String(), "from replay") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+func TestKiroStreamFlushesTextBeforeUpstreamCloses(t *testing.T) {
+	reader, writer := io.Pipe()
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	go func() {
+		encoder := json.NewEncoder(writer)
+		for _, event := range []ir.Event{
+			{Type: ir.EvMessageStart, MessageID: "msg", Model: "public"},
+			{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}},
+			{Type: ir.EvTextDelta, Index: 0, Text: "early text"},
+		} {
+			if err := encoder.Encode(event); err != nil {
+				return
+			}
+		}
+		<-release
+		for _, event := range []ir.Event{
+			{Type: ir.EvBlockStop, Index: 0},
+			{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn},
+			{Type: ir.EvMessageStop},
+		} {
+			if err := encoder.Encode(event); err != nil {
+				return
+			}
+		}
+		_ = writer.Close()
+	}()
+
+	replay := &kiroExecuteReplay{
+		lease: replayv1.TargetLease{RequestID: "req", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"},
+		body:  reader,
+	}
+	forwarder := NewForwarder(&config.Config{}, replay, nil)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarder.Forward(r.Context(), w, proto.MustInbound("anthropic"), &ir.Request{
+			Model: "public", Stream: true,
+			Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+		}, "client-key")
+	}))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	found := make(chan bool, 1)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			if strings.Contains(scanner.Text(), "early text") {
+				found <- true
+				return
+			}
+		}
+		found <- false
+	}()
+	select {
+	case ok := <-found:
+		if !ok {
+			t.Fatal("stream ended before the first text delta")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first text delta was buffered until upstream completion")
+	}
+	close(release)
 }
 
 func TestGeminiLeaseRejectedWithoutProviderConnection(t *testing.T) {

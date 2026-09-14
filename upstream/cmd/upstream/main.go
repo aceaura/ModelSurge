@@ -14,6 +14,7 @@ import (
 	"github.com/aceaura/ModelSurge/upstream/account"
 	upstreamhttp "github.com/aceaura/ModelSurge/upstream/internal/http"
 	"github.com/aceaura/ModelSurge/upstream/processconfig"
+	"github.com/aceaura/ModelSurge/upstream/proto/kiro"
 	service "github.com/aceaura/ModelSurge/upstream/service"
 	"github.com/aceaura/ModelSurge/upstream/upstreamstore"
 )
@@ -27,6 +28,7 @@ func kiroSetup(cfg processconfig.Upstream) account.ManagerDeps {
 		account.SetCloudConfig(account.CloudConfig{ForwardURL: k.Cloud.ForwardURL, APIKey: k.Cloud.APIKey})
 	}
 	account.SetKiroDebug(k.Debug, k.DebugDir)
+	kiro.SetOptions(kiro.Options{FakeReasoning: k.FakeReasoning, FakeReasoningMaxTokens: k.FakeReasoningMaxTokens, FakeReasoningBudgetCap: k.FakeReasoningBudgetCap, TruncationRecovery: true})
 	return account.ManagerDeps{BreakerBase: k.RecoveryTimeoutDur, BreakerMax: k.RecoveryTimeoutDur * time.Duration(k.MaxBackoffMultiplier), ProbeRate: k.ProbabilisticRetry, KiroRegion: k.Region, KiroCacheTTL: k.CacheTTLDur}
 }
 
@@ -59,6 +61,15 @@ func main() {
 		log.Fatal(err)
 	}
 	svc := service.NewService(store, mgr)
+	firstTokenTimeout := 30 * time.Second
+	if cfg.Kiro != nil {
+		if cfg.Kiro.FirstTokenTimeout != "" {
+			firstTokenTimeout = cfg.Kiro.FirstTokenTimeoutDur
+		}
+		svc.KiroStreamingReadTimeout = cfg.Kiro.StreamingReadTimeoutDur
+		svc.KiroWebSearchInject = cfg.Kiro.WebSearchInject
+	}
+	svc.KiroFirstTokenTimeout = firstTokenTimeout
 	h := service.NewHTTPServer(svc, cfg.ServiceKey)
 	if cfg.AdminKey != "" {
 		h.AdminHandler = upstreamhttp.NewAccountAdmin(mgr, cfg.AdminKey, store.MaterializeAccounts)

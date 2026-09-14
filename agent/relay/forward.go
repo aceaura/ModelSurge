@@ -3,7 +3,6 @@ package relay
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -15,7 +14,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/config"
 	"github.com/aceaura/ModelSurge/agent/ir"
 	"github.com/aceaura/ModelSurge/agent/proto"
-	"github.com/aceaura/ModelSurge/agent/proto/kiro"
 	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
 
 	"github.com/google/uuid"
@@ -41,11 +39,6 @@ type Forwarder struct {
 	store              *agentstore.Store
 	trunc              *TruncationTracker
 	paramLog           bool // 请求/响应参数日志（与访问日志同开关）
-
-	// kiro 段运行参数（零值 = 不生效）。
-	kiroFirstTokenTimeout    time.Duration // kiro 候选首事件超时；0 = 沿用全局
-	kiroStreamingReadTimeout time.Duration // kiro 流式 chunk 间看门狗；0 = 禁用
-	kiroWebSearchInject      bool          // web_search 注入全局默认（账号级可另开）
 }
 
 // NewForwarder is retained for legacy tests. New production composition uses NewRemoteForwarder.
@@ -64,7 +57,7 @@ func NewForwarder(cfg *config.Config, replay Replay, store *agentstore.Store) *F
 }
 
 func newForwarder(cfg *config.Config) *Forwarder {
-	f := &Forwarder{
+	return &Forwarder{
 		client:             &http.Client{Timeout: 0},
 		firstTokenTimeout:  cfg.FirstTokenTimeoutDur,
 		sameAccountRetries: cfg.SameAccountRetries,
@@ -72,12 +65,6 @@ func newForwarder(cfg *config.Config) *Forwarder {
 		trunc:              NewTruncationTracker(cfg.TruncationRecoveryEnabled),
 		paramLog:           cfg.AccessLogEnabled,
 	}
-	if k := cfg.Kiro; k != nil {
-		f.kiroFirstTokenTimeout = k.FirstTokenTimeoutDur
-		f.kiroStreamingReadTimeout = k.StreamingReadTimeoutDur
-		f.kiroWebSearchInject = k.WebSearchInject
-	}
-	return f
 }
 
 // candidate 一个可服务某 canonical model 的账号候选及其 native 模型名与 codec。
@@ -87,12 +74,10 @@ type candidate struct {
 	native   string
 	codec    proto.OutboundCodec
 	ov       *ir.Overrides
-	runtime  replayv1.RuntimeMetadata
 	resolve  endpointResolver
 }
 
-// endpointResolver 解析一次上游请求的 URL 与请求头。api-key 账号构造时固化；
-// kiro 账号每次请求现取 token（含预刷新）与 host 分流。
+// endpointResolver 解析普通上游请求的 URL 与请求头。
 type endpointResolver func(ctx context.Context) (url string, headers map[string]string, err *ir.Error)
 
 // staticEndpoint api-key 账号：URL 与鉴权头固定；extra 为账号级自定义头
@@ -147,8 +132,6 @@ func endpoint(protocol, baseURL, apiKey, nativeModel string) (url string, header
 			"OpenAI-Beta":   "responses=experimental",
 			"session_id":    uuid.NewString(), // 每请求新会话 id，对齐 sub2api 隔离语义
 		}, nil
-	case "kiro":
-		return baseURL + "/generateAssistantResponse", nil, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported outbound protocol %q", protocol)
 	}
@@ -174,6 +157,9 @@ func resolvedCandidate(t replayv1.TargetLease) (candidate, error) {
 	if !allowedOutboundProtocol(t.Protocol) {
 		return candidate{}, fmt.Errorf("unsupported outbound protocol %q", t.Protocol)
 	}
+	if t.Protocol == "kiro" {
+		return candidate{name: t.TargetID, protocol: t.Protocol}, nil
+	}
 	c, err := proto.GetOutbound(t.Protocol)
 	if err != nil {
 		return candidate{}, err
@@ -189,7 +175,7 @@ func resolvedCandidate(t replayv1.TargetLease) (candidate, error) {
 			ov.Thinking = &ir.ThinkingOverride{Enabled: x.Enabled, BudgetTokens: x.BudgetTokens, Effort: x.Effort}
 		}
 	}
-	return candidate{name: t.TargetID, protocol: t.Protocol, native: t.NativeModel, codec: c, ov: ov, runtime: t.Runtime,
+	return candidate{name: t.TargetID, protocol: t.Protocol, native: t.NativeModel, codec: c, ov: ov,
 		resolve: func(context.Context) (string, map[string]string, *ir.Error) {
 			headers := make(map[string]string, len(t.Headers)+len(defaultHeaders))
 			for k, v := range t.Headers {
@@ -300,14 +286,7 @@ func localResultAction(cand candidate, err *ir.Error, attempt, sameTargetRetries
 	return replayv1.ActionStop
 }
 
-// quotaFallbackCooldown GetUsageLimits 不可得（免费账号无 profileArn 等）时
-// 402 配额冷却的兜底时长。
-const quotaFallbackCooldown = time.Hour
-
-// quotaCooldownUntil kiro 402 的冷却时刻：resetDate 拉取失败/缺失兜底 1h。
-// openUpstream 对单候选发起一次上游请求：编码、解析端点、POST、
-// 非 2xx 分类与 kiro 读超时看门狗包装。调用方负责 resp.Body.Close() 与 cancel。
-// 供普通 attempt 与严格工具策略的恢复重发共用。
+// openUpstream 对普通协议候选发起一次上游请求。
 func (f *Forwarder) openUpstream(ctx context.Context, cand candidate, upReq *ir.Request) (*http.Response, context.CancelFunc, *ir.Error) {
 	body, encErr := cand.codec.EncodeRequest(upReq)
 	if encErr != nil {
@@ -338,20 +317,11 @@ func (f *Forwarder) openUpstream(ctx context.Context, cand candidate, upReq *ir.
 		}
 		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream unreachable: " + doErr.Error(), Retryable: true}
 	}
-	// kiro 候选的 chunk 间读超时看门狗（须在 defer Close 前装上，
-	// 使 defer 关闭的是看门狗 body——停表并关底层连接）。
-	if f.kiroStreamingReadTimeout > 0 && cand.protocol == "kiro" {
-		resp.Body = newIdleTimeoutBody(resp.Body, f.kiroStreamingReadTimeout)
-	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
 		resp.Body.Close()
 		cancel()
 		e := ir.NewHTTPError(resp.StatusCode, excerpt(string(errBody)))
-		if cand.protocol == "kiro" {
-			e.Reason, _ = parseKiroErrorReason(errBody) // 调度分类用（INVALID_MODEL_ID 等）
-		}
 		if resp.StatusCode == http.StatusNotFound {
 			log.Printf("agent: target %s returned 404 (endpoint mismatch)", cand.name)
 		}
@@ -363,6 +333,9 @@ func (f *Forwarder) openUpstream(ctx context.Context, cand candidate, upReq *ir.
 // attempt 对单个上游做一次转发尝试。wrote 表示是否已向客户端写出字节。
 // onUsage 非空时上报响应中的真实 usage（调度模式记账用；估算值不调）。
 func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, onUsage func(*ir.Usage)) (wrote bool, err *ir.Error) {
+	if cand.protocol == "kiro" {
+		return f.attemptKiro(ctx, w, clientCodec, cand, req, onUsage)
+	}
 	// 上游永远流式
 	upReq := req.Clone()
 	upReq.Model = cand.native
@@ -371,14 +344,8 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	if cl, ok := cand.codec.(interface{ ClampThinking(*ir.Request) }); ok {
 		cl.ClampThinking(upReq) // 协议级预算归一/夹紧，日志反映实发值
 	}
-	f.prepareKiroMetadata(cand, upReq) // profileArn 载荷必带 + web_search 注入标志
 	if f.paramLog {
 		log.Printf("relay: upstream request %s: %s", cand.name, requestParams(cand.codec.Name(), upReq))
-	}
-
-	// kiro + 严格 tool_choice：缓冲-校验-恢复重发（其余协议上游原生执行策略）
-	if pol := strictToolChoice(upReq); pol != nil && cand.protocol == "kiro" {
-		return f.attemptStrict(ctx, w, clientCodec, cand, req, upReq, pol, onUsage)
 	}
 
 	resp, cancel, uerr := f.openUpstream(ctx, cand, upReq)
@@ -438,41 +405,8 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	return f.collectUpstreamToClient(ctx, cancel, w, clientCodec, cand, req, dec, upBody, onUsage)
 }
 
-// newDecoder 构造上游流解码器；kiro 解码器注入模型名（message_start 回显）、
-// 输入上限（context_usage -> input 换算）与账号级 fake_reasoning。
-// 注入走可选接口，relay 不依赖具体类型。
-func (f *Forwarder) newDecoder(cand candidate, req *ir.Request) proto.StreamDecoder {
-	dec := cand.codec.NewStreamDecoder()
-	f.configureDecoder(dec, cand, req)
-	return dec
-}
-
-// ApplyResolvedRuntimeForTest exercises production decoder metadata injection.
-func (f *Forwarder) ApplyResolvedRuntimeForTest(dec proto.StreamDecoder, target replayv1.TargetLease, req *ir.Request) {
-	cand, err := resolvedCandidate(target)
-	if err != nil {
-		return
-	}
-	f.configureDecoder(dec, cand, req)
-}
-
-func (f *Forwarder) configureDecoder(dec proto.StreamDecoder, cand candidate, req *ir.Request) {
-	if cand.protocol != "kiro" {
-		return
-	}
-	if sd, ok := dec.(interface{ SetModel(string) }); ok {
-		sd.SetModel(req.Model)
-	}
-	if cand.runtime.FakeReasoning {
-		if sd, ok := dec.(interface{ SetFakeReasoning(bool) }); ok {
-			sd.SetFakeReasoning(true)
-		}
-	}
-	if cand.runtime.MaxInputTokens > 0 {
-		if sd, ok := dec.(interface{ SetMaxInputTokens(int) }); ok {
-			sd.SetMaxInputTokens(cand.runtime.MaxInputTokens)
-		}
-	}
+func (f *Forwarder) newDecoder(cand candidate, _ *ir.Request) proto.StreamDecoder {
+	return cand.codec.NewStreamDecoder()
 }
 
 // recordTruncation 流结束后探测解码器的截断上报缝并记录（kiro 实现）。
@@ -484,19 +418,8 @@ func (f *Forwarder) recordTruncation(dec proto.StreamDecoder, upName string) {
 	f.trunc.Record(upName, tr.TruncatedTools(), tr.ContentTruncated(), tr.TruncatedContent())
 }
 
-// candidateFirstTokenTimeout 某候选等上游首事件的有效超时：
-// kiro 候选配置了专用值则覆盖基数；再按请求 effort 档位放大
-// （高档位推理推迟首字节，避免昂贵推理请求被提前判卡重试）。
-func (f *Forwarder) candidateFirstTokenTimeout(cand candidate, req *ir.Request) time.Duration {
-	base := f.firstTokenTimeout
-	if f.kiroFirstTokenTimeout > 0 && cand.protocol == "kiro" {
-		base = f.kiroFirstTokenTimeout
-	}
-	effort := ""
-	if req != nil && req.Thinking != nil {
-		effort = req.Thinking.Effort
-	}
-	return kiro.EffortFirstTokenTimeout(base, cand.native, effort)
+func (f *Forwarder) candidateFirstTokenTimeout(candidate, *ir.Request) time.Duration {
+	return f.firstTokenTimeout
 }
 
 // awaitFirstEvent 等上游的第一个 SSE 事件；超时则取消本次请求并返回可重试错误。
@@ -727,60 +650,6 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 	return resp, nil
 }
 
-// attemptStrict kiro + 严格 tool_choice 的缓冲-校验-恢复重发路径：
-// 聚合整个上游响应（不写客户端），先 web_search 拦截再按策略校验；
-// 违规克隆请求向最后 user 消息追加恢复指令、同候选重发一次；
-// 再违规 502 tool_choice_not_satisfied。校验通过才向客户端写出
-// （流式客户端经 EventsFromResponse 重放，REPLAY 前禁止 WriteHeader）；
-// usage 只记最终 attempt。
-func (f *Forwarder) attemptStrict(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, upReq *ir.Request, policy *ir.ToolChoice, onUsage func(*ir.Usage)) (bool, *ir.Error) {
-	var viol *toolViolation
-	for attempt := 0; ; attempt++ {
-		if viol != nil {
-			upReq = appendRecoveryDirective(upReq, viol, policy)
-		}
-		resp, cancel, uerr := f.openUpstream(ctx, cand, upReq)
-		if uerr != nil {
-			if uerr.StatusCode == 499 && ctx.Err() != nil {
-				return true, nil // 客户端断开
-			}
-			return false, uerr
-		}
-		var upBody io.Reader = resp.Body
-		if bw, ok := cand.codec.(interface{ WrapResponseBody(io.Reader) io.Reader }); ok {
-			upBody = bw.WrapResponseBody(resp.Body)
-		}
-		dec := f.newDecoder(cand, req)
-		irResp, aerr := f.aggregateUpstream(ctx, cand, req, dec, upBody, cancel)
-		resp.Body.Close()
-		cancel()
-		if aerr != nil {
-			return false, aerr
-		}
-		if v := validateToolChoice(irResp, policy); v != nil {
-			if attempt == 1 {
-				log.Printf("relay: account %s strict tool_choice failed twice: %s", cand.name, v.msg)
-				return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "tool_choice_not_satisfied: " + v.msg}
-			}
-			log.Printf("relay: account %s strict tool_choice violated, retrying once with recovery directive: %s", cand.name, v.msg)
-			viol = v
-			continue
-		}
-		if f.paramLog {
-			log.Printf("relay: upstream request %s: %s", cand.name, requestParams(cand.codec.Name(), upReq))
-		}
-		f.estimateUsageOnResponse(req, irResp, cand.name)
-		if onUsage != nil {
-			onUsage(&irResp.Usage)
-		}
-		csum := newClientSummarizer(f.paramLog, clientCodec.Name(), req.Stream)
-		csum.fill(irResp)
-		csum.wrote(writeResponse(w, clientCodec, irResp, req.Stream))
-		csum.log()
-		return true, nil
-	}
-}
-
 // CountTokens 处理 Anthropic count_tokens 请求：优先转发给 anthropic 账号
 // 原生计数；无可用账号时本地粗估并记日志。粗估按首个候选的协议语义
 // （kiro 账号 → kiro tokenizer；其余 → IR 通用估算）。
@@ -963,12 +832,4 @@ func replayDispatchError(err error) *ir.Error {
 		}
 	}
 	return &ir.Error{StatusCode: http.StatusServiceUnavailable, Type: ir.ErrTypeUpstream, Message: "replay unavailable", Retryable: true}
-}
-func parseKiroErrorReason(body []byte) (string, string) {
-	var v struct {
-		Reason  string `json:"reason"`
-		Message string `json:"message"`
-	}
-	_ = json.Unmarshal(body, &v)
-	return v.Reason, v.Message
 }

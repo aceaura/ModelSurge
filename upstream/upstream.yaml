@@ -8,3 +8,5 @@ cooldowns:
   default: 5h
   window_7h: 7h
   monthly: 24h
+kiro:
+  streaming_read_timeout: 60s

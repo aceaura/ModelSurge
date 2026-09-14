@@ -55,23 +55,6 @@ func TestLoadNegativeSameAccountRetriesFails(t *testing.T) {
 	}
 }
 
-func TestLoadKiroEncodingAndTimeoutFields(t *testing.T) {
-	cfg := loadTestConfig(t, `replay_url: http://replay
-service_key: key
-kiro:
-  first_token_timeout: 45s
-  streaming_read_timeout: 2m
-  web_search_inject: true
-  fake_reasoning: true
-`)
-	if cfg.Kiro == nil || cfg.Kiro.FirstTokenTimeoutDur != 45*time.Second || cfg.Kiro.StreamingReadTimeoutDur != 2*time.Minute {
-		t.Fatalf("kiro=%+v", cfg.Kiro)
-	}
-	if !cfg.Kiro.WebSearchInject || !cfg.Kiro.FakeReasoning || cfg.Kiro.FakeReasoningMaxTokens != 4000 || cfg.Kiro.FakeReasoningBudgetCap != 10000 {
-		t.Fatalf("kiro encoding fields=%+v", cfg.Kiro)
-	}
-}
-
 func loadTestConfig(t *testing.T, body string) *Config {
 	t.Helper()
 	cfg, err := Load(writeTestConfig(t, body))

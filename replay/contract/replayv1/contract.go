@@ -1,7 +1,10 @@
 // Package replayv1 defines the agent-to-replay HTTP JSON contract.
 package replayv1
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const BasePath = "/internal/v1"
 
@@ -53,7 +56,6 @@ type RequestOverrides struct {
 
 type RuntimeMetadata struct {
 	AccountType      string            `json:"account_type,omitempty"`
-	ProfileArn       string            `json:"profile_arn,omitempty"`
 	MaxInputTokens   int               `json:"max_input_tokens,omitempty"`
 	FakeReasoning    bool              `json:"fake_reasoning,omitempty"`
 	WebSearch        bool              `json:"web_search,omitempty"`
@@ -64,6 +66,11 @@ type RuntimeMetadata struct {
 type WebSearchRuntime struct {
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers,omitempty"`
+}
+
+type KiroExecuteRequest struct {
+	TargetID string          `json:"target_id"`
+	Request  json.RawMessage `json:"request"`
 }
 
 type WebSearchRequest struct {
@@ -90,11 +97,30 @@ type TargetLease struct {
 	TargetID         string            `json:"target_id"`
 	Protocol         string            `json:"protocol"`
 	NativeModel      string            `json:"native_model"`
-	BaseURL          string            `json:"base_url"`
+	BaseURL          string            `json:"base_url,omitempty"`
 	Credential       string            `json:"credential,omitempty"`
 	Headers          map[string]string `json:"headers,omitempty"`
 	RequestOverrides *RequestOverrides `json:"request_overrides,omitempty"`
 	Runtime          RuntimeMetadata   `json:"runtime,omitempty"`
+}
+
+func (l TargetLease) MarshalJSON() ([]byte, error) {
+	if l.Protocol == "kiro" {
+		return json.Marshal(struct {
+			RequestID string `json:"request_id"`
+			GroupID   string `json:"group_id"`
+			TargetID  string `json:"target_id"`
+			Protocol  string `json:"protocol"`
+		}{RequestID: l.RequestID, GroupID: l.GroupID, TargetID: l.TargetID, Protocol: l.Protocol})
+	}
+	type alias TargetLease
+	if l.Runtime == (RuntimeMetadata{}) {
+		return json.Marshal(struct {
+			alias
+			Runtime *RuntimeMetadata `json:"runtime,omitempty"`
+		}{alias: alias(l)})
+	}
+	return json.Marshal(alias(l))
 }
 
 type Usage struct {
@@ -134,6 +160,8 @@ type Error struct {
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
 	Field     string `json:"field,omitempty"`
+	Status    int    `json:"status,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 func (e Error) Error() string { return e.Code + ": " + e.Message }

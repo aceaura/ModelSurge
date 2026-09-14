@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
+	"github.com/aceaura/ModelSurge/upstream/contract/upstreamv1"
 )
 
 type HTTPServer struct {
@@ -24,6 +25,7 @@ func NewHTTPServer(service *Service, serviceKey, adminKey string) *HTTPServer {
 	s.mux.HandleFunc("GET "+replayv1.BasePath+"/models", s.withServiceAuth(s.models))
 	s.mux.HandleFunc("POST "+replayv1.BasePath+"/dispatch", s.withServiceAuth(s.dispatch))
 	s.mux.HandleFunc("POST "+replayv1.BasePath+"/results", s.withServiceAuth(s.results))
+	s.mux.HandleFunc("POST "+replayv1.BasePath+"/kiro/execute", s.withServiceAuth(s.executeKiro))
 	s.mux.HandleFunc("POST "+replayv1.BasePath+"/kiro/web-search", s.withServiceAuth(s.webSearch))
 	s.mountAdmin()
 	return s
@@ -97,6 +99,50 @@ func (s *HTTPServer) results(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *HTTPServer) executeKiro(w http.ResponseWriter, r *http.Request) {
+	var req replayv1.KiroExecuteRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, replayv1.Error{Code: replayv1.CodeInvalidRequest, Message: "invalid json", Status: http.StatusBadRequest})
+		return
+	}
+	executor, ok := s.service.Upstream.(interface {
+		ExecuteKiro(context.Context, upstreamv1.KiroExecuteRequest) (*http.Response, error)
+	})
+	if !ok {
+		writeError(w, http.StatusBadGateway, replayv1.Error{Code: replayv1.CodeInternal, Message: "upstream execute unavailable", Retryable: true, Status: http.StatusBadGateway})
+		return
+	}
+	resp, err := executor.ExecuteKiro(r.Context(), upstreamv1.KiroExecuteRequest{TargetID: req.TargetID, Request: req.Request})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, replayv1.Error{Code: replayv1.CodeInternal, Message: err.Error(), Retryable: true, Status: http.StatusBadGateway})
+		return
+	}
+	defer resp.Body.Close()
+	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	if cacheControl := resp.Header.Get("Cache-Control"); cacheControl != "" {
+		w.Header().Set("Cache-Control", cacheControl)
+	}
+	w.WriteHeader(resp.StatusCode)
+	flusher, _ := w.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
 }
 
 func (s *HTTPServer) webSearch(w http.ResponseWriter, r *http.Request) {

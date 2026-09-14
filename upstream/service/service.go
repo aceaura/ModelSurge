@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/aceaura/ModelSurge/upstream/account"
@@ -13,8 +14,12 @@ import (
 )
 
 type Service struct {
-	Store   *upstreamstore.Store
-	Manager *account.Manager
+	Store                    *upstreamstore.Store
+	Manager                  *account.Manager
+	KiroHTTPClient           *http.Client
+	KiroFirstTokenTimeout    time.Duration
+	KiroStreamingReadTimeout time.Duration
+	KiroWebSearchInject      bool
 }
 
 func NewService(store *upstreamstore.Store, manager *account.Manager) *Service {
@@ -63,43 +68,18 @@ func (s *Service) Resolve(ctx context.Context, id string) (upstreamv1.ResolvedTa
 		return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeTargetUnavailable, Message: "target unavailable", Retryable: true}
 	}
 	native := m.NativeModel
-	baseURL := m.BaseURL
-	headers := cloneHeaders(m.Headers)
-	apiKey := acc.APIKey
-	runtime := upstreamv1.RuntimeMetadata{AccountType: acc.Type}
 	if acc.Type == account.TypeKiro {
-		rt := s.Manager.KiroRuntimeOf(acc.Name)
-		if rt == nil {
-			return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeCredentialRefresh, Message: "credential runtime unavailable", Retryable: true}
+		t := upstreamv1.ResolvedTarget{ID: m.ID, Protocol: m.Protocol}
+		if err := upstreamv1.ValidateResolvedTarget(t); err != nil {
+			return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeInternal, Message: "invalid target configuration"}
 		}
-		if m.DisplayName != "*" {
-			native, _ = rt.Resolve(m.DisplayName)
-		}
-		token, state, err := rt.Auth.GetAccessToken(ctx)
-		if err != nil {
-			return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeCredentialRefresh, Message: "credential refresh failed", Retryable: true}
-		}
-		baseURL = rt.Auth.ChatHost()
-		headers = account.KiroHeaders(rt.Auth.Fingerprint(), token, account.TargetGenerateAssistantResponse)
-		headers["Connection"] = "close"
-		apiKey = ""
-		runtime.ProfileArn = state.ProfileArn
-		runtime.FakeReasoning = acc.Kiro != nil && acc.Kiro.FakeReasoning
-		runtime.WebSearch = acc.Kiro != nil && acc.Kiro.WebSearch
-		runtime.MaxInputTokens = int(rt.Models.MaxInputTokens(native))
-		runtime.WebSearchRuntime = &upstreamv1.WebSearchRuntime{
-			URL: rt.Auth.ControlPlaneHost() + "/mcp",
-			Headers: map[string]string{
-				"Authorization":               "Bearer " + token,
-				"x-amzn-codewhisperer-optout": "false",
-			},
-		}
+		return t, nil
 	}
 	var ov *ir.Overrides
 	if len(m.RequestOverrides) > 0 && string(m.RequestOverrides) != "null" {
 		_ = json.Unmarshal(m.RequestOverrides, &ov)
 	}
-	t := upstreamv1.ResolvedTarget{ID: m.ID, Account: m.Account, Protocol: m.Protocol, NativeModel: native, BaseURL: baseURL, APIKey: apiKey, Headers: headers, RequestOverrides: ov, Runtime: runtime}
+	t := upstreamv1.ResolvedTarget{ID: m.ID, Account: m.Account, Protocol: m.Protocol, NativeModel: native, BaseURL: m.BaseURL, APIKey: acc.APIKey, Headers: cloneHeaders(m.Headers), RequestOverrides: ov, Runtime: upstreamv1.RuntimeMetadata{AccountType: acc.Type}}
 	if err := upstreamv1.ValidateResolvedTarget(t); err != nil {
 		return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeInternal, Message: "invalid target configuration"}
 	}

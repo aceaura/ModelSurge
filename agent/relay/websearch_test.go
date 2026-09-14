@@ -4,13 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
-	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
 )
 
 // fakeSearchCaller webSearchCaller 的测试替身：返回固定结果或错误，
@@ -220,47 +217,6 @@ func TestRewriteWebSearchEvents_Degrade(t *testing.T) {
 	out2 := rewriteWebSearchEvents(context.Background(), client2, events2)
 	if len(out2) != len(events2) || len(client2.calls) != 0 {
 		t.Errorf("no-query events=%d calls=%v", len(out2), client2.calls)
-	}
-}
-
-func TestPrepareKiroMetadataInjectsProfileArn(t *testing.T) {
-	f := &Forwarder{}
-	req := &ir.Request{}
-	want := "arn:aws:codewhisperer:us-east-1:1:profile/test"
-	f.prepareKiroMetadata(candidate{protocol: "kiro", runtime: replayv1.RuntimeMetadata{ProfileArn: want}}, req)
-	if got := req.Metadata[metaProfileArn]; got != want {
-		t.Fatalf("profile ARN metadata=%q, want %q", got, want)
-	}
-}
-
-func TestInterceptWebSearchUsesLeaseRuntime(t *testing.T) {
-	var gotMethod, gotQuery string
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		var req struct {
-			Method string `json:"method"`
-			Params struct {
-				Arguments struct {
-					Query string `json:"query"`
-				} `json:"arguments"`
-			} `json:"params"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		gotQuery = req.Params.Arguments.Query
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":{"content":[{"text":"{\"results\":[{\"title\":\"Go\",\"url\":\"https://go.dev\",\"snippet\":\"fast\"}]}"}]}}`))
-	}))
-	defer mcp.Close()
-
-	f := &Forwarder{client: mcp.Client()}
-	cand := candidate{protocol: "kiro", runtime: replayv1.RuntimeMetadata{WebSearch: true, WebSearchRuntime: &replayv1.WebSearchRuntime{URL: mcp.URL}}}
-	events := kiroFinishLike(0, [3]string{"toolu_1", "web_search", `{"query":"go"}`})
-	out := f.interceptWebSearch(context.Background(), cand, &ir.Request{}, events)
-	if gotMethod != http.MethodPost || gotQuery != "go" {
-		t.Fatalf("method=%q query=%q", gotMethod, gotQuery)
-	}
-	if !hasBlockType(out, ir.BlockServerToolUse) || !hasBlockType(out, ir.BlockWebSearchToolResult) {
-		t.Fatalf("web_search was not executed/re-written: %+v", out)
 	}
 }
 

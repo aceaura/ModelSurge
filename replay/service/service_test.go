@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
@@ -17,10 +19,11 @@ import (
 )
 
 type fakeUpstream struct {
-	evaluates int
-	resolves  int
-	reports   int
-	target    upstreamv1.ResolvedTarget
+	evaluates   int
+	resolves    int
+	reports     int
+	target      upstreamv1.ResolvedTarget
+	executeResp *http.Response
 }
 
 func (f *fakeUpstream) Health(context.Context) error { return nil }
@@ -43,6 +46,9 @@ func (f *fakeUpstream) Evaluate(_ context.Context, ids []string) ([]upstreamv1.C
 func (f *fakeUpstream) Report(context.Context, upstreamv1.ResultReport) (upstreamv1.ResultResponse, error) {
 	f.reports++
 	return upstreamv1.ResultResponse{Applied: true}, nil
+}
+func (f *fakeUpstream) ExecuteKiro(context.Context, upstreamv1.KiroExecuteRequest) (*http.Response, error) {
+	return f.executeResp, nil
 }
 func (f *fakeUpstream) WebSearch(context.Context, upstreamv1.WebSearchRequest) (upstreamv1.WebSearchResponse, error) {
 	return upstreamv1.WebSearchResponse{ID: "srvtoolu_test"}, nil
@@ -141,12 +147,25 @@ func TestResultsAreIdempotentInReplayAndForwardedUpstream(t *testing.T) {
 	}
 }
 
+func TestLeaseFromKiroTargetReturnsOpaqueHandle(t *testing.T) {
+	lease := leaseFromTarget("request", "group", upstreamv1.ResolvedTarget{
+		ID: "kiro-2/gpt-5.6-sol", Protocol: "kiro", NativeModel: "secret-native",
+		BaseURL: "https://secret.example", APIKey: "secret", Headers: map[string]string{"Authorization": "Bearer secret"},
+		RequestOverrides: &upstreamir.Overrides{}, Runtime: upstreamv1.RuntimeMetadata{AccountType: "kiro"},
+	})
+	if lease.RequestID != "request" || lease.GroupID != "group" || lease.TargetID != "kiro-2/gpt-5.6-sol" || lease.Protocol != "kiro" {
+		t.Fatalf("lease identity = %+v", lease)
+	}
+	if lease.NativeModel != "" || lease.BaseURL != "" || lease.Credential != "" || lease.Headers != nil || lease.RequestOverrides != nil || lease.Runtime != (replayv1.RuntimeMetadata{}) {
+		t.Fatalf("Kiro lease exposed runtime details: %+v", lease)
+	}
+}
+
 func TestLeaseFromTargetPreservesOverrideTriState(t *testing.T) {
 	zeroFloat := 0.0
 	zeroInt := 0
 	target := upstreamv1.ResolvedTarget{
 		ID: "target", Protocol: "openai-chat", NativeModel: "native", BaseURL: "https://example.test",
-		Runtime: upstreamv1.RuntimeMetadata{ProfileArn: "arn:aws:codewhisperer:us-east-1:1:profile/test"},
 		RequestOverrides: &upstreamir.Overrides{
 			Temperature: &zeroFloat,
 			TopP:        nil,
@@ -155,9 +174,6 @@ func TestLeaseFromTargetPreservesOverrideTriState(t *testing.T) {
 		},
 	}
 	lease := leaseFromTarget("request", "group", target)
-	if lease.Runtime.ProfileArn != target.Runtime.ProfileArn {
-		t.Fatalf("profile_arn=%q, want %q", lease.Runtime.ProfileArn, target.Runtime.ProfileArn)
-	}
 	if lease.RequestOverrides == nil {
 		t.Fatal("request overrides lost")
 	}
@@ -172,6 +188,27 @@ func TestLeaseFromTargetPreservesOverrideTriState(t *testing.T) {
 	}
 	if lease.RequestOverrides.Thinking == nil || lease.RequestOverrides.Thinking.Enabled {
 		t.Fatalf("thinking=%+v", lease.RequestOverrides.Thinking)
+	}
+}
+
+func TestKiroExecuteProxiesStatusContentTypeAndBody(t *testing.T) {
+	server, _, upstream := newTestServer(t)
+	const body = `{"error":{"code":"target_unavailable","message":"limited","retryable":true,"status":429}}`
+	upstream.executeResp = &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	reqBody, _ := json.Marshal(replayv1.KiroExecuteRequest{TargetID: "a/model", Request: json.RawMessage(`{"Model":"m"}`)})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+replayv1.BasePath+"/kiro/execute", bytes.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer agent-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Content-Type") != "application/json" || string(got) != body {
+		t.Fatalf("status=%d content-type=%q body=%s", resp.StatusCode, resp.Header.Get("Content-Type"), got)
 	}
 }
 

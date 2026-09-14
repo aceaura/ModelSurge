@@ -13,7 +13,6 @@ import (
 
 	"github.com/aceaura/ModelSurge/agent/agentstore"
 	"github.com/aceaura/ModelSurge/agent/config"
-	"github.com/aceaura/ModelSurge/agent/proto/kiro"
 	"github.com/aceaura/ModelSurge/agent/relay"
 	"github.com/aceaura/ModelSurge/agent/replayclient"
 	"github.com/aceaura/ModelSurge/agent/server"
@@ -25,12 +24,6 @@ func main() {
 	cfg, err := config.Load(*path)
 	if err != nil {
 		log.Fatal(err)
-	}
-	if k := cfg.Kiro; k != nil {
-		kiro.SetOptions(kiro.Options{
-			FakeReasoning: k.FakeReasoning, FakeReasoningMaxTokens: k.FakeReasoningMaxTokens,
-			FakeReasoningBudgetCap: k.FakeReasoningBudgetCap, TruncationRecovery: cfg.TruncationRecoveryEnabled,
-		})
 	}
 	store, err := agentstore.Open(cfg.DBPath)
 	if err != nil {

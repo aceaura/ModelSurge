@@ -18,6 +18,7 @@ import (
 type Client struct {
 	BaseURL, ServiceKey string
 	HTTP                *http.Client
+	StreamHTTP          *http.Client
 	MaxResponse         int64
 }
 
@@ -25,7 +26,7 @@ func New(base, key string, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &Client{BaseURL: strings.TrimRight(base, "/"), ServiceKey: key, HTTP: &http.Client{Timeout: timeout}, MaxResponse: 2 << 20}
+	return &Client{BaseURL: strings.TrimRight(base, "/"), ServiceKey: key, HTTP: &http.Client{Timeout: timeout}, StreamHTTP: &http.Client{}, MaxResponse: 2 << 20}
 }
 func (c *Client) Health(ctx context.Context) error {
 	var out upstreamv1.HealthResponse
@@ -56,6 +57,24 @@ func (c *Client) Report(ctx context.Context, r upstreamv1.ResultReport) (upstrea
 func (c *Client) WebSearch(ctx context.Context, r upstreamv1.WebSearchRequest) (upstreamv1.WebSearchResponse, error) {
 	var out upstreamv1.WebSearchResponse
 	return out, c.do(ctx, "POST", "/kiro/web-search", r, &out)
+}
+func (c *Client) ExecuteKiro(ctx context.Context, r upstreamv1.KiroExecuteRequest) (*http.Response, error) {
+	body, err := json.Marshal(r)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+upstreamv1.BasePath+"/kiro/execute", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.ServiceKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson, application/json")
+	client := c.StreamHTTP
+	if client == nil {
+		client = &http.Client{}
+	}
+	return client.Do(req)
 }
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader

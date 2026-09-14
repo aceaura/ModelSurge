@@ -110,6 +110,20 @@ func TestModelsFilterAndResolveRejectsStaleGeminiRow(t *testing.T) {
 	}
 }
 
+func TestResolveKiroReturnsOpaqueTarget(t *testing.T) {
+	svc, _ := testKiroService(t)
+	target, err := svc.Resolve(context.Background(), "kiro/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.ID != "kiro/*" || target.Protocol != "kiro" {
+		t.Fatalf("target identity = %+v", target)
+	}
+	if target.NativeModel != "" || target.Account != "" || target.BaseURL != "" || target.APIKey != "" || target.Headers != nil || target.RequestOverrides != nil || target.Runtime != (upstreamv1.RuntimeMetadata{}) {
+		t.Fatalf("Kiro target exposed runtime details: %+v", target)
+	}
+}
+
 func TestKiroInvalidModelSwitchesWithoutPenalty(t *testing.T) {
 	svc, store := testKiroService(t)
 	result, err := svc.Report(context.Background(), upstreamv1.ResultReport{

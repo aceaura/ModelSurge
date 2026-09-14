@@ -19,24 +19,11 @@ type Config struct {
 	EstimateUsage      bool   `yaml:"estimate_usage"`
 	AccessLog          *bool  `yaml:"access_log"`
 	TruncationRecovery *bool  `yaml:"truncation_recovery"`
-	Kiro               *Kiro  `yaml:"kiro"`
 
 	ControlTimeoutDur         time.Duration `yaml:"-"`
 	FirstTokenTimeoutDur      time.Duration `yaml:"-"`
 	AccessLogEnabled          bool          `yaml:"-"`
 	TruncationRecoveryEnabled bool          `yaml:"-"`
-}
-
-type Kiro struct {
-	FirstTokenTimeout      string `yaml:"first_token_timeout"`
-	StreamingReadTimeout   string `yaml:"streaming_read_timeout"`
-	WebSearchInject        bool   `yaml:"web_search_inject"`
-	FakeReasoning          bool   `yaml:"fake_reasoning"`
-	FakeReasoningMaxTokens int    `yaml:"fake_reasoning_max_tokens"`
-	FakeReasoningBudgetCap int    `yaml:"fake_reasoning_budget_cap"`
-
-	FirstTokenTimeoutDur    time.Duration `yaml:"-"`
-	StreamingReadTimeoutDur time.Duration `yaml:"-"`
 }
 
 func Load(path string) (*Config, error) {
@@ -73,30 +60,6 @@ func Load(path string) (*Config, error) {
 	}
 	c.AccessLogEnabled = c.AccessLog == nil || *c.AccessLog
 	c.TruncationRecoveryEnabled = c.TruncationRecovery == nil || *c.TruncationRecovery
-	if c.Kiro != nil {
-		var err error
-		if c.Kiro.FirstTokenTimeout != "" {
-			c.Kiro.FirstTokenTimeoutDur, err = time.ParseDuration(c.Kiro.FirstTokenTimeout)
-			if err != nil {
-				return nil, fmt.Errorf("config: kiro.first_token_timeout: %w", err)
-			}
-		}
-		if c.Kiro.StreamingReadTimeout != "" {
-			c.Kiro.StreamingReadTimeoutDur, err = time.ParseDuration(c.Kiro.StreamingReadTimeout)
-			if err != nil {
-				return nil, fmt.Errorf("config: kiro.streaming_read_timeout: %w", err)
-			}
-		}
-		if c.Kiro.FakeReasoningMaxTokens < 0 || c.Kiro.FakeReasoningBudgetCap < 0 {
-			return nil, fmt.Errorf("config: kiro fake reasoning token limits must be >= 0")
-		}
-		if c.Kiro.FakeReasoningMaxTokens == 0 {
-			c.Kiro.FakeReasoningMaxTokens = 4000
-		}
-		if c.Kiro.FakeReasoningBudgetCap == 0 {
-			c.Kiro.FakeReasoningBudgetCap = 10000
-		}
-	}
 	return &c, nil
 }
 

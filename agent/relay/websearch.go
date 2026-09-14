@@ -1,35 +1,18 @@
 // websearch.go web_search 服务端工具代执行（mcp_tools.py 流式拦截的 relay 侧翻译）。
-// 注入（Path B）：kiro 账号开启 web_search 时经 Metadata["kiro_web_search"]
-// 通知 kiro codec 注入工具声明（codec 侧 BuildPayload 执行）。
-// 拦截：上游 Finish 事件中的 web_search 工具调用 → 调 MCP 代执行 →
-// 合成 server_tool_use + web_search_tool_result + <web_search> 摘要文本块；
-// MCP 失败或无 query 时降级为普通 tool_use 透传（Python 同款语义）。
-// 摘要文本随 assistant 消息回传，模型上下文由该文本承载
-// （kiro toUnified 对两个新块跳过）。
+// Upstream 负责向 Kiro 请求注入工具；Agent 根据规范事件中的 web_search
+// 调用 Replay 执行 MCP，再重写为服务端工具块序列。
 package relay
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
 	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
-	"github.com/google/uuid"
 )
 
-// Metadata 标志键（relay -> kiro codec 的账号级策略通道）。
-const (
-	metaProfileArn    = "kiro_profile_arn"
-	metaWebSearch     = "kiro_web_search"
-	metaFakeReasoning = "kiro_fake_reasoning"
-)
-
-// hasWebSearchTool 请求是否已声明 web_search（具名或 Hosted）。
 func hasWebSearchTool(req *ir.Request) bool {
 	for _, t := range req.Tools {
 		if t.Name == "web_search" || t.Hosted == ir.HostedWebSearch {
@@ -39,101 +22,15 @@ func hasWebSearchTool(req *ir.Request) bool {
 	return false
 }
 
-// prepareKiroMetadata kiro 候选确定后注入 Metadata：profileArn（载荷必带，
-// runtime 端点必需）、web_search 注入标志（全局默认或账号开关，且未声明时）、
-// fake_reasoning 标志（账号开关，codec 侧与全局配置取或）。
-func (f *Forwarder) prepareKiroMetadata(cand candidate, req *ir.Request) {
-	if cand.protocol != "kiro" {
-		return
-	}
-	if req.Metadata == nil {
-		req.Metadata = map[string]string{}
-	}
-	if cand.runtime.ProfileArn != "" {
-		req.Metadata[metaProfileArn] = cand.runtime.ProfileArn
-	}
-	if cand.runtime.WebSearch && !hasWebSearchTool(req) {
-		req.Metadata[metaWebSearch] = "1"
-	}
-	if cand.runtime.FakeReasoning {
-		req.Metadata[metaFakeReasoning] = "1"
-	}
-}
-
-// webSearchCaller web_search MCP 执行通道（*account.KiroClient 实现，
-// 测试注入 fake）。
 type webSearchCaller interface {
 	CallWebSearch(ctx context.Context, query string) (string, []ir.WebSearchResult, error)
 }
 
-// interceptWebSearch 处理 kiro 解码器 Finish 事件中的 web_search 工具调用：
-// 命中则调 MCP 代执行并重写为服务端工具块序列（索引重排）。
-// 拦截条件：kiro 候选 + （全局默认或账号开启）或请求已声明 web_search
-// （原生声明优先于开关）。
 func (f *Forwarder) interceptWebSearch(ctx context.Context, cand candidate, req *ir.Request, events []ir.Event) []ir.Event {
-	if cand.protocol != "kiro" || (!f.kiroWebSearchInject && !cand.runtime.WebSearch && !hasWebSearchTool(req)) || !hasWebSearchToolEvent(events) {
+	if cand.protocol != "kiro" || !hasWebSearchToolEvent(events) || f.replay == nil {
 		return events
 	}
-	var caller webSearchCaller
-	if rt := cand.runtime.WebSearchRuntime; rt != nil && rt.URL != "" {
-		caller = &leaseWebSearchCaller{url: rt.URL, headers: rt.Headers, client: f.client}
-	} else if f.replay != nil {
-		caller = replayWebSearchCaller{replay: f.replay, targetID: cand.name}
-	}
-	if caller == nil {
-		return events
-	}
-	return rewriteWebSearchEvents(ctx, caller, events)
-}
-
-type leaseWebSearchCaller struct {
-	url     string
-	headers map[string]string
-	client  *http.Client
-}
-
-func (c *leaseWebSearchCaller) CallWebSearch(ctx context.Context, query string) (string, []ir.WebSearchResult, error) {
-	body, _ := json.Marshal(map[string]any{
-		"id": uuid.NewString(), "jsonrpc": "2.0", "method": "tools/call",
-		"params": map[string]any{"name": "web_search", "arguments": map[string]string{"query": query}},
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
-	if err != nil {
-		return "", nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range c.headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return "", nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("web search runtime returned %s", resp.Status)
-	}
-	var mcp struct {
-		Error  json.RawMessage `json:"error"`
-		Result *struct {
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"result"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&mcp); err != nil {
-		return "", nil, err
-	}
-	if len(mcp.Error) > 0 || mcp.Result == nil || len(mcp.Result.Content) == 0 {
-		return "", nil, fmt.Errorf("web search runtime returned invalid result")
-	}
-	var payload struct {
-		Results []ir.WebSearchResult `json:"results"`
-	}
-	if err := json.Unmarshal([]byte(mcp.Result.Content[0].Text), &payload); err != nil {
-		return "", nil, err
-	}
-	return "srvtoolu_" + strings.ReplaceAll(uuid.NewString(), "-", ""), payload.Results, nil
+	return rewriteWebSearchEvents(ctx, replayWebSearchCaller{replay: f.replay, targetID: cand.name}, events)
 }
 
 type replayWebSearchCaller struct {

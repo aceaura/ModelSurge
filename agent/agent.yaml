@@ -8,5 +8,3 @@ same_account_retries: 1
 estimate_usage: false
 access_log: true
 truncation_recovery: true
-kiro:
-  streaming_read_timeout: 60s

@@ -44,7 +44,7 @@ type ResolvedTarget struct {
 	Account          string            `json:"account,omitempty"`
 	Protocol         string            `json:"protocol"`
 	NativeModel      string            `json:"native_model"`
-	BaseURL          string            `json:"base_url"`
+	BaseURL          string            `json:"base_url,omitempty"`
 	APIKey           string            `json:"api_key,omitempty"`
 	Headers          map[string]string `json:"headers,omitempty"`
 	RequestOverrides *ir.Overrides     `json:"request_overrides,omitempty"`
@@ -53,7 +53,6 @@ type ResolvedTarget struct {
 
 type RuntimeMetadata struct {
 	AccountType      string            `json:"account_type,omitempty"`
-	ProfileArn       string            `json:"profile_arn,omitempty"`
 	MaxInputTokens   int               `json:"max_input_tokens,omitempty"`
 	FakeReasoning    bool              `json:"fake_reasoning,omitempty"`
 	WebSearch        bool              `json:"web_search,omitempty"`
@@ -64,6 +63,11 @@ type RuntimeMetadata struct {
 type WebSearchRuntime struct {
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers,omitempty"`
+}
+
+type KiroExecuteRequest struct {
+	TargetID string          `json:"target_id"`
+	Request  json.RawMessage `json:"request"`
 }
 
 type WebSearchRequest struct {
@@ -81,6 +85,23 @@ type WebSearchResult struct {
 type WebSearchResponse struct {
 	ID      string            `json:"id"`
 	Results []WebSearchResult `json:"results"`
+}
+
+func (r ResolvedTarget) MarshalJSON() ([]byte, error) {
+	if r.Protocol == "kiro" {
+		return json.Marshal(struct {
+			ID       string `json:"id"`
+			Protocol string `json:"protocol"`
+		}{ID: r.ID, Protocol: r.Protocol})
+	}
+	type alias ResolvedTarget
+	if r.Runtime == (RuntimeMetadata{}) {
+		return json.Marshal(struct {
+			alias
+			Runtime *RuntimeMetadata `json:"runtime,omitempty"`
+		}{alias: alias(r)})
+	}
+	return json.Marshal(alias(r))
 }
 
 func (r ResolvedTarget) String() string {
@@ -141,6 +162,8 @@ type Error struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
+	Status    int    `json:"status,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 type ErrorEnvelope struct {
@@ -159,11 +182,17 @@ func ValidateProtocol(p string) error {
 }
 
 func ValidateResolvedTarget(t ResolvedTarget) error {
-	if t.ID == "" || len(t.ID) > 512 || t.NativeModel == "" || len(t.NativeModel) > 512 {
+	if t.ID == "" || len(t.ID) > 512 {
 		return fmt.Errorf("invalid target identity")
 	}
 	if err := ValidateProtocol(t.Protocol); err != nil {
 		return err
+	}
+	if t.Protocol == "kiro" {
+		return nil
+	}
+	if t.NativeModel == "" || len(t.NativeModel) > 512 {
+		return fmt.Errorf("invalid target identity")
 	}
 	if t.BaseURL == "" || len(t.BaseURL) > 4096 {
 		return fmt.Errorf("invalid base_url")

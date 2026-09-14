@@ -128,12 +128,15 @@ func (s *Service) WebSearch(ctx context.Context, req replayv1.WebSearchRequest) 
 }
 
 func leaseFromTarget(requestID, groupID string, target upstreamv1.ResolvedTarget) replayv1.TargetLease {
+	if target.Protocol == "kiro" {
+		return replayv1.TargetLease{RequestID: requestID, GroupID: groupID, TargetID: target.ID, Protocol: target.Protocol}
+	}
 	lease := replayv1.TargetLease{
 		RequestID: requestID, GroupID: groupID, TargetID: target.ID, Protocol: target.Protocol,
 		NativeModel: target.NativeModel, BaseURL: target.BaseURL, Credential: target.APIKey,
 		Headers: target.Headers,
 		Runtime: replayv1.RuntimeMetadata{
-			AccountType: target.Runtime.AccountType, ProfileArn: target.Runtime.ProfileArn,
+			AccountType:    target.Runtime.AccountType,
 			MaxInputTokens: target.Runtime.MaxInputTokens, FakeReasoning: target.Runtime.FakeReasoning,
 			WebSearch: target.Runtime.WebSearch, StreamingTimeout: target.Runtime.StreamingTimeout,
 		},

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/aceaura/ModelSurge/upstream/contract/upstreamv1"
+	"github.com/aceaura/ModelSurge/upstream/ir"
 )
 
 const maxJSON = 1 << 20
@@ -25,6 +26,7 @@ func NewHTTPServer(service *Service, key string) *HTTPServer {
 	s.mux.HandleFunc("GET "+upstreamv1.BasePath+"/models/", s.resolve)
 	s.mux.HandleFunc("POST "+upstreamv1.BasePath+"/candidates/evaluate", s.evaluate)
 	s.mux.HandleFunc("POST "+upstreamv1.BasePath+"/results", s.results)
+	s.mux.HandleFunc("POST "+upstreamv1.BasePath+"/kiro/execute", s.executeKiro)
 	s.mux.HandleFunc("POST "+upstreamv1.BasePath+"/kiro/web-search", s.webSearch)
 	return s
 }
@@ -101,6 +103,43 @@ func (s *HTTPServer) results(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, result)
 }
+func (s *HTTPServer) executeKiro(w http.ResponseWriter, r *http.Request) {
+	var req upstreamv1.KiroExecuteRequest
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, upstreamv1.Error{Code: upstreamv1.CodeInvalidRequest, Message: "invalid request", Status: http.StatusBadRequest})
+		return
+	}
+	execution, execErr := s.Service.ExecuteKiro(r.Context(), req)
+	if execErr != nil {
+		status := execErr.Status
+		if status < 400 || status > 599 {
+			status = http.StatusBadGateway
+		}
+		writeErr(w, status, *execErr)
+		return
+	}
+	defer execution.Close()
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	emit := func(event ir.Event) error {
+		if err := json.NewEncoder(w).Encode(event); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
+	}
+	for _, event := range execution.First {
+		if emit(event) != nil {
+			return
+		}
+	}
+	_ = execution.Continue(emit)
+}
+
 func (s *HTTPServer) webSearch(w http.ResponseWriter, r *http.Request) {
 	var req upstreamv1.WebSearchRequest
 	if err := decode(r, &req); err != nil {

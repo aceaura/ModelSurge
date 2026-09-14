@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/aceaura/ModelSurge/upstream/ir"
 )
 
 func TestResolvedTargetRedactionAndValidation(t *testing.T) {
@@ -27,21 +29,24 @@ func TestValidateResolvedTargetRejectsUnknownProtocol(t *testing.T) {
 	}
 }
 
-func TestRuntimeMetadataProfileArnJSONRoundTrip(t *testing.T) {
+func TestKiroResolvedTargetIsOpaque(t *testing.T) {
 	in := ResolvedTarget{
-		ID: "kiro-2/gpt-5.6-sol", Protocol: "kiro", NativeModel: "gpt-5.6-sol", BaseURL: "https://example.test",
-		Runtime: RuntimeMetadata{AccountType: "kiro", ProfileArn: "arn:aws:codewhisperer:us-east-1:1:profile/test"},
+		ID: "kiro-2/gpt-5.6-sol", Protocol: "kiro", NativeModel: "gpt-5.6-sol",
+		BaseURL: "https://secret.example", APIKey: "secret", Headers: map[string]string{"Authorization": "Bearer secret"},
+		RequestOverrides: &ir.Overrides{}, Runtime: RuntimeMetadata{AccountType: "kiro"},
+	}
+	if err := ValidateResolvedTarget(ResolvedTarget{ID: in.ID, Protocol: in.Protocol}); err != nil {
+		t.Fatal(err)
 	}
 	data, err := json.Marshal(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out ResolvedTarget
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatal(err)
-	}
-	if out.Runtime.ProfileArn != in.Runtime.ProfileArn {
-		t.Fatalf("profile_arn=%q, want %q", out.Runtime.ProfileArn, in.Runtime.ProfileArn)
+	text := string(data)
+	for _, forbidden := range []string{"profile_arn", "native_model", "base_url", "api_key", "headers", "request_overrides", "runtime"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("opaque Kiro target contains %q: %s", forbidden, text)
+		}
 	}
 }
 

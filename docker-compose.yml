@@ -66,7 +66,7 @@ services:
       - agent-data:/data
       - ./agent/agent.yaml:/app/agent.yaml:ro
     ports:
-      - "${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-18099}:18099"
+      - "${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-12345}:18099"
     healthcheck:
       test:
         - CMD

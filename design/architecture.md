@@ -275,7 +275,7 @@ docker-compose.yml             最终三服务部署
 upstream healthy → replay healthy → agent 对外
 ```
 
-- 只有 Agent 映射宿主端口：`${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-18099}:18099`。
+- 只有 Agent 映射宿主端口：`${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-12345}:18099`。
 - Replay `18101` 和 Upstream `18100` 只在 Compose 网络内可访问。
 - 三份配置分别只读挂载到 `/app/agent.yaml`、`/app/replay.yaml`、`/app/upstream.yaml`。
 - 三个数据库分别写入各自 `/data` named volume。

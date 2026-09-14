@@ -118,7 +118,7 @@ docker compose ps
 Compose 项目名固定为 `modelsurge`，健康依赖顺序为 `upstream → replay → agent`。只有 Agent 映射宿主端口：
 
 ```text
-${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-18099}
+${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-12345}
 ```
 
 数据卷：

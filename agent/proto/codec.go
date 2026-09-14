@@ -18,37 +18,43 @@ type Capabilities struct {
 	HostedTools       bool // 服务端托管工具声明（web_search / code_execution 等）
 }
 
-// Codec 一个协议的双向编解码器。
-type Codec interface {
+// InboundCodec 客户端入口协议编解码器。
+// 它只负责客户端请求解码，以及把 IR 响应/错误渲染回客户端。
+type InboundCodec interface {
 	// Name 协议标识，如 "anthropic"、"openai-chat"。
 	Name() string
 
-	// Caps 返回本协议的能力声明。
-	Caps() Capabilities
-
-	// DecodeRequest 把客户端/上游的请求体解析为 IR 请求。
+	// DecodeRequest 把客户端请求体解析为 IR 请求。
 	DecodeRequest(body []byte) (*ir.Request, error)
-	// EncodeRequest 把 IR 请求编码为本协议请求体。
-	// 实现必须保证产出的请求满足本协议上游的结构约束
-	// （可调用 normalize 包做消息规整）。
-	EncodeRequest(req *ir.Request) ([]byte, error)
-
-	// NewStreamDecoder 本协议 SSE 流 -> IR 事件（上游响应方向）。
-	NewStreamDecoder() StreamDecoder
 	// NewStreamEncoder IR 事件 -> 本协议 SSE 流（客户端下发方向）。
 	NewStreamEncoder() StreamEncoder
-
-	// DecodeResponse 把上游非流式响应体解析为 IR 响应
-	// （兜底路径：上游忽略 stream=true 返回完整 JSON 时）。
-	DecodeResponse(body []byte) (*ir.Response, error)
-	// EncodeResponse 把聚合的 IR 响应编码为本协议非流式响应体
-	// （非流式客户端 = 网关聚合上游流后一次性返回）。
+	// EncodeResponse 把聚合的 IR 响应编码为本协议非流式响应体。
 	EncodeResponse(resp *ir.Response) ([]byte, error)
-
 	// RenderError 按本协议外形渲染错误响应体与状态码。
 	RenderError(e *ir.Error) (status int, body []byte)
 	// RenderStreamError 渲染流内错误事件（SSE 字节）。
 	RenderStreamError(e *ir.Error) []byte
+}
+
+// OutboundCodec 上游出口协议编解码器。
+// 它只负责把 IR 请求编码给上游，并把上游响应解码回 IR。
+type OutboundCodec interface {
+	// Name 协议标识，如 "anthropic"、"openai-chat"。
+	Name() string
+	// Caps 返回本协议的上游能力声明。
+	Caps() Capabilities
+	// EncodeRequest 把 IR 请求编码为本协议请求体。
+	EncodeRequest(req *ir.Request) ([]byte, error)
+	// NewStreamDecoder 本协议 SSE 流 -> IR 事件（上游响应方向）。
+	NewStreamDecoder() StreamDecoder
+	// DecodeResponse 把上游非流式响应体解析为 IR 响应。
+	DecodeResponse(body []byte) (*ir.Response, error)
+}
+
+// Codec 一个协议的双向编解码器。
+type Codec interface {
+	InboundCodec
+	OutboundCodec
 }
 
 // StreamDecoder 上游 SSE -> IR 事件。
@@ -89,36 +95,80 @@ type TruncationReporter interface {
 	TruncatedContent() string
 }
 
-var registry = map[string]Codec{}
+var (
+	inboundRegistry  = map[string]InboundCodec{}
+	outboundRegistry = map[string]OutboundCodec{}
+)
 
-// Register 注册 codec，重名 panic（启动期编程错误）。
+// Register 注册双向 codec，任一方向重名均 panic（启动期编程错误）。
 func Register(c Codec) {
-	if _, dup := registry[c.Name()]; dup {
-		panic("proto: duplicate codec " + c.Name())
-	}
-	registry[c.Name()] = c
+	registerInbound(c)
+	registerOutbound(c)
 }
 
-// Get 按名取 codec。
-func Get(name string) (Codec, error) {
-	c, ok := registry[name]
+// RegisterInbound 仅注册客户端入口 codec。
+func RegisterInbound(c InboundCodec) { registerInbound(c) }
+
+func registerInbound(c InboundCodec) {
+	if _, dup := inboundRegistry[c.Name()]; dup {
+		panic("proto: duplicate inbound codec " + c.Name())
+	}
+	inboundRegistry[c.Name()] = c
+}
+
+func registerOutbound(c OutboundCodec) {
+	if _, dup := outboundRegistry[c.Name()]; dup {
+		panic("proto: duplicate outbound codec " + c.Name())
+	}
+	outboundRegistry[c.Name()] = c
+}
+
+// GetInbound 按名取客户端入口 codec。
+func GetInbound(name string) (InboundCodec, error) {
+	c, ok := inboundRegistry[name]
 	if !ok {
-		return nil, fmt.Errorf("proto: unknown codec %q (have %v)", name, Names())
+		return nil, fmt.Errorf("proto: unknown inbound codec %q (have %v)", name, InboundNames())
 	}
 	return c, nil
 }
 
-// Must 按名取 codec，不存在则 panic（仅用于测试与启动期装配）。
-func Must(name string) Codec {
-	c, err := Get(name)
+// MustInbound 按名取入口 codec，不存在则 panic（仅用于测试与启动期装配）。
+func MustInbound(name string) InboundCodec {
+	c, err := GetInbound(name)
 	if err != nil {
 		panic(err)
 	}
 	return c
 }
 
-// Names 返回已注册协议名（排序，便于日志与错误信息稳定）。
-func Names() []string {
+// GetOutbound 按名取上游出口 codec。
+func GetOutbound(name string) (OutboundCodec, error) {
+	c, ok := outboundRegistry[name]
+	if !ok {
+		return nil, fmt.Errorf("proto: unknown outbound codec %q (have %v)", name, OutboundNames())
+	}
+	return c, nil
+}
+
+// MustOutbound 按名取出口 codec，不存在则 panic（仅用于测试与启动期装配）。
+func MustOutbound(name string) OutboundCodec {
+	c, err := GetOutbound(name)
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
+
+// Names 返回已注册入口协议名。保留该名称用于入口枚举兼容；新代码宜用 InboundNames。
+func Names() []string { return InboundNames() }
+
+// InboundNames 返回已注册入口协议名（排序，便于日志与错误信息稳定）。
+func InboundNames() []string { return sortedNames(inboundRegistry) }
+
+// OutboundNames 返回已注册出口协议名（排序，便于日志与错误信息稳定）。
+func OutboundNames() []string { return sortedNames(outboundRegistry) }
+
+func sortedNames[T any](registry map[string]T) []string {
 	names := make([]string, 0, len(registry))
 	for n := range registry {
 		names = append(names, n)

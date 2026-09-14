@@ -59,7 +59,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			if len(args) == 0 {
 				args = json.RawMessage(`{}`)
 			}
-			return e.chunk([]part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}, ""), nil
+			p := content{Role: "model", Parts: []part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}}
+			ensureThoughtSignature(&p)
+			return e.chunk(p.Parts, ""), nil
 		}
 		return nil, nil
 	case ir.EvMessageDelta:
@@ -106,7 +108,9 @@ func (e *streamEncoder) Finish() [][]byte {
 		if len(args) == 0 {
 			args = json.RawMessage(`{}`)
 		}
-		out = append(out, e.chunk([]part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}, "")...)
+		p := content{Role: "model", Parts: []part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}}
+		ensureThoughtSignature(&p)
+		out = append(out, e.chunk(p.Parts, "")...)
 	}
 	if !e.finished {
 		e.finished = true

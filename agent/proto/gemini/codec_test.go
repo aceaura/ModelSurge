@@ -64,23 +64,15 @@ func TestDecodeRequest_FunctionCallIDPairing(t *testing.T) {
 	}
 }
 
-// IR -> Gemini：functionResponse 的 name 由 tool_use id 反查回填；
-// 含 functionCall 的 model content 无签名时注入占位 thoughtSignature。
-func TestEncodeRequest_ToolRoundTrip(t *testing.T) {
-	req := &ir.Request{
-		Model: "gemini-2.5-pro",
-		Tools: []ir.Tool{{Name: "get_weather"}},
-		Messages: []ir.Message{
-			{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}},
-			{Role: ir.RoleAssistant, Content: []ir.Block{
-				{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "call_1", Name: "get_weather", Input: []byte(`{"city":"Paris"}`)}},
-			}},
-			{Role: ir.RoleUser, Content: []ir.Block{
-				{Type: ir.BlockToolResult, ToolResult: &ir.ToolResult{ToolUseID: "call_1", Content: []ir.Block{{Type: ir.BlockText, Text: "sunny"}}}},
-			}},
-		},
+// Gemini 客户端非流式响应仍可编码 functionCall，并补齐必须的 thoughtSignature。
+func TestEncodeResponse_ToolCall(t *testing.T) {
+	resp := &ir.Response{
+		ID: "resp-1", Model: "gemini-2.5-pro", StopReason: ir.StopToolUse,
+		Content: []ir.Block{{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{
+			ID: "call_1", Name: "get_weather", Input: []byte(`{"city":"Paris"}`),
+		}}},
 	}
-	body, err := New().EncodeRequest(req)
+	body, err := New().EncodeResponse(resp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,57 +80,29 @@ func TestEncodeRequest_ToolRoundTrip(t *testing.T) {
 	if !strings.Contains(out, `"functionCall":{"name":"get_weather"`) {
 		t.Errorf("missing functionCall: %s", out)
 	}
-	if !strings.Contains(out, `"functionResponse":{"name":"get_weather"`) {
-		t.Errorf("functionResponse name not resolved from id: %s", out)
-	}
 	if !strings.Contains(out, dummyThoughtSignature) {
 		t.Errorf("missing dummy thoughtSignature: %s", out)
 	}
 }
 
-// usage 换算：prompt 含 cached 需拆出，thoughts 计入 output。
-func TestDecodeUsage(t *testing.T) {
-	u := decodeUsage(&usageMetadata{
-		PromptTokenCount: 100, CachedContentTokenCount: 30,
-		CandidatesTokenCount: 10, ThoughtsTokenCount: 5,
-	})
-	if u.InputTokens != 70 || u.CacheReadTokens != 30 || u.OutputTokens != 15 {
-		t.Errorf("usage = %+v", u)
-	}
-}
-
-// 请求方向：同族 thoughtSignature 透传；外族形态签名置空防 400，
-// thinking 文本仍作为 thought part 保留。
-func TestEncodeRequest_ForeignSignatureStripped(t *testing.T) {
-	mk := func(from string) *ir.Request {
-		return &ir.Request{
-			Model: "gemini-x",
-			Messages: []ir.Message{
-				{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}},
-				{Role: ir.RoleAssistant, Content: []ir.Block{
-					{Type: ir.BlockThinking, Thinking: &ir.Thinking{Text: "hmm", Signature: "sig", SignatureFrom: from}},
-				}},
-			},
-		}
-	}
-
-	out, err := New().EncodeRequest(mk("gemini"))
+// Gemini 客户端流式响应仍可编码 functionCall，并补齐必须的 thoughtSignature。
+func TestStreamEncoder_ToolCall(t *testing.T) {
+	enc := New().NewStreamEncoder()
+	_, _ = enc.Encode(ir.Event{Type: ir.EvMessageStart, MessageID: "resp-1", Model: "gemini-2.5-pro"})
+	_, _ = enc.Encode(ir.Event{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "call_1", Name: "get_weather"}}})
+	_, _ = enc.Encode(ir.Event{Type: ir.EvToolInput, Index: 0, Text: `{"city":"Paris"}`})
+	frames, err := enc.Encode(ir.Event{Type: ir.EvBlockStop, Index: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), `"thoughtSignature":"sig"`) {
-		t.Errorf("same-protocol signature should pass through: %s", out)
+	if len(frames) != 1 {
+		t.Fatalf("frames = %d, want 1", len(frames))
 	}
-
-	out, err = New().EncodeRequest(mk("anthropic"))
-	if err != nil {
-		t.Fatal(err)
+	out := string(frames[0])
+	if !strings.Contains(out, `"functionCall":{"name":"get_weather"`) {
+		t.Errorf("missing functionCall: %s", out)
 	}
-	s := string(out)
-	if strings.Contains(s, `"thoughtSignature":"sig"`) {
-		t.Errorf("foreign signature should be stripped: %s", s)
-	}
-	if !strings.Contains(s, "hmm") {
-		t.Errorf("thinking text should survive as thought part: %s", s)
+	if !strings.Contains(out, dummyThoughtSignature) {
+		t.Errorf("missing dummy thoughtSignature: %s", out)
 	}
 }

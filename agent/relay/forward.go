@@ -85,7 +85,7 @@ type candidate struct {
 	name     string
 	protocol string
 	native   string
-	codec    proto.Codec
+	codec    proto.OutboundCodec
 	ov       *ir.Overrides
 	runtime  replayv1.RuntimeMetadata
 	resolve  endpointResolver
@@ -97,8 +97,11 @@ type endpointResolver func(ctx context.Context) (url string, headers map[string]
 
 // staticEndpoint api-key 账号：URL 与鉴权头固定；extra 为账号级自定义头
 // （如网关要求的会话头），同名键覆盖协议默认头。
-func staticEndpoint(protocol, baseURL, apiKey, nativeModel string, extra map[string]string) endpointResolver {
-	url, headers := endpoint(protocol, baseURL, apiKey, nativeModel)
+func staticEndpoint(protocol, baseURL, apiKey, nativeModel string, extra map[string]string) (endpointResolver, error) {
+	url, headers, err := endpoint(protocol, baseURL, apiKey, nativeModel)
+	if err != nil {
+		return nil, err
+	}
 	if len(extra) > 0 {
 		merged := make(map[string]string, len(headers)+len(extra))
 		for k, v := range headers {
@@ -111,21 +114,23 @@ func staticEndpoint(protocol, baseURL, apiKey, nativeModel string, extra map[str
 	}
 	return func(context.Context) (string, map[string]string, *ir.Error) {
 		return url, headers, nil
-	}
+	}, nil
 }
 
 // kiroEndpoint kiro 账号：每次请求现取 token（GetAccessToken 含预刷新），
 // host 按 profileArn 分流（runtime/q），头伪造 KiroIDE 指纹。
 // endpoint api-key 账号的上游请求 URL 与鉴权头。
-func endpoint(protocol, baseURL, apiKey, nativeModel string) (url string, headers map[string]string) {
+func endpoint(protocol, baseURL, apiKey, nativeModel string) (url string, headers map[string]string, err error) {
 	switch protocol {
 	case "anthropic":
 		return baseURL + "/v1/messages", map[string]string{
 			"x-api-key":         apiKey,
 			"anthropic-version": "2023-06-01",
-		}
+		}, nil
+	case "openai-chat":
+		return baseURL + "/v1/chat/completions", map[string]string{"Authorization": "Bearer " + apiKey}, nil
 	case "openai-responses":
-		return baseURL + "/v1/responses", map[string]string{"Authorization": "Bearer " + apiKey}
+		return baseURL + "/v1/responses", map[string]string{"Authorization": "Bearer " + apiKey}, nil
 	case "codex":
 		// Codex 订阅端点（ChatGPT OAuth）：路径无 /v1 前缀；身份头必须配套
 		// （originator 与 User-Agent 首段一致、version 不低于上游门槛，
@@ -141,12 +146,11 @@ func endpoint(protocol, baseURL, apiKey, nativeModel string) (url string, header
 			"version":       "0.146.0",
 			"OpenAI-Beta":   "responses=experimental",
 			"session_id":    uuid.NewString(), // 每请求新会话 id，对齐 sub2api 隔离语义
-		}
-	case "gemini":
-		return fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", baseURL, nativeModel),
-			map[string]string{"x-goog-api-key": apiKey}
-	default: // openai-chat
-		return baseURL + "/v1/chat/completions", map[string]string{"Authorization": "Bearer " + apiKey}
+		}, nil
+	case "kiro":
+		return baseURL + "/generateAssistantResponse", nil, nil
+	default:
+		return "", nil, fmt.Errorf("unsupported outbound protocol %q", protocol)
 	}
 }
 
@@ -155,7 +159,7 @@ const maxErrBody = 4 * 1024
 
 // Forward 执行一次转发。clientCodec 为客户端协议 codec（用于错误渲染与响应编码），
 // req.Stream 表示客户端是否要求流式。所有响应直接写入 w。
-func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, req *ir.Request, clientKey string) {
+func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, req *ir.Request, clientKey string) {
 	if f.paramLog {
 		log.Printf("relay: request %s", requestParams(clientCodec.Name(), req))
 	}
@@ -167,7 +171,14 @@ func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCo
 // kiro 走动态端点（每次请求现取 token）并要求运行时就位。
 // forwardScheduled 账号池调度模式：粘性取号 + 错误分类处置。
 func resolvedCandidate(t replayv1.TargetLease) (candidate, error) {
-	c, err := proto.Get(t.Protocol)
+	if !allowedOutboundProtocol(t.Protocol) {
+		return candidate{}, fmt.Errorf("unsupported outbound protocol %q", t.Protocol)
+	}
+	c, err := proto.GetOutbound(t.Protocol)
+	if err != nil {
+		return candidate{}, err
+	}
+	url, defaultHeaders, err := endpoint(t.Protocol, t.BaseURL, t.Credential, t.NativeModel)
 	if err != nil {
 		return candidate{}, err
 	}
@@ -180,29 +191,29 @@ func resolvedCandidate(t replayv1.TargetLease) (candidate, error) {
 	}
 	return candidate{name: t.TargetID, protocol: t.Protocol, native: t.NativeModel, codec: c, ov: ov, runtime: t.Runtime,
 		resolve: func(context.Context) (string, map[string]string, *ir.Error) {
-			url := t.BaseURL
-			if t.Protocol == "kiro" {
-				url += "/generateAssistantResponse"
-			} else {
-				url, _ = endpoint(t.Protocol, t.BaseURL, t.Credential, t.NativeModel)
-			}
-			headers := make(map[string]string, len(t.Headers)+2)
+			headers := make(map[string]string, len(t.Headers)+len(defaultHeaders))
 			for k, v := range t.Headers {
 				headers[k] = v
 			}
-			if t.Credential != "" {
-				_, defs := endpoint(t.Protocol, t.BaseURL, t.Credential, t.NativeModel)
-				for k, v := range defs {
-					if _, ok := headers[k]; !ok {
-						headers[k] = v
-					}
+			for k, v := range defaultHeaders {
+				if _, ok := headers[k]; !ok {
+					headers[k] = v
 				}
 			}
 			return url, headers, nil
 		}}, nil
 }
 
-func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, req *ir.Request, clientKey string) {
+func allowedOutboundProtocol(protocol string) bool {
+	switch protocol {
+	case "anthropic", "openai-chat", "openai-responses", "codex", "kiro":
+		return true
+	default:
+		return false
+	}
+}
+
+func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, req *ir.Request, clientKey string) {
 	requestID := uuid.NewString()
 	tried := map[string]bool{}
 	attempts := map[string]int{}
@@ -351,7 +362,7 @@ func (f *Forwarder) openUpstream(ctx context.Context, cand candidate, upReq *ir.
 
 // attempt 对单个上游做一次转发尝试。wrote 表示是否已向客户端写出字节。
 // onUsage 非空时上报响应中的真实 usage（调度模式记账用；估算值不调）。
-func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, onUsage func(*ir.Usage)) (wrote bool, err *ir.Error) {
+func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, onUsage func(*ir.Usage)) (wrote bool, err *ir.Error) {
 	// 上游永远流式
 	upReq := req.Clone()
 	upReq.Model = cand.native
@@ -530,7 +541,7 @@ func (f *Forwarder) awaitFirstEvent(er *EventReader, cancel context.CancelFunc, 
 }
 
 // streamUpstreamToClient 上游 SSE -> IR 事件 -> 客户端 SSE，逐 chunk 透传转换。
-func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
+func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	er := NewEventReader(body)
 	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand, req))
 	if firstErr != nil {
@@ -639,7 +650,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 // collectUpstreamToClient 聚合上游流，向非流式客户端一次性返回完整 JSON。
 // 聚合期间不向客户端写任何字节，因此聚合失败仍可换上游重试
 // （代价是失败上游可能已计费——pre-write 重试的固有取舍）。
-func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
+func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	resp, aerr := f.aggregateUpstream(ctx, cand, req, dec, body, cancel)
 	if aerr != nil {
 		return false, aerr
@@ -722,7 +733,7 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 // 再违规 502 tool_choice_not_satisfied。校验通过才向客户端写出
 // （流式客户端经 EventsFromResponse 重放，REPLAY 前禁止 WriteHeader）；
 // usage 只记最终 attempt。
-func (f *Forwarder) attemptStrict(ctx context.Context, w http.ResponseWriter, clientCodec proto.Codec, cand candidate, req *ir.Request, upReq *ir.Request, policy *ir.ToolChoice, onUsage func(*ir.Usage)) (bool, *ir.Error) {
+func (f *Forwarder) attemptStrict(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, upReq *ir.Request, policy *ir.ToolChoice, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	var viol *toolViolation
 	for attempt := 0; ; attempt++ {
 		if viol != nil {
@@ -829,7 +840,7 @@ func (f *Forwarder) estimateUsageOnEvent(req *ir.Request, outText *strings.Build
 
 // writeResponse 非流式输出；clientStream 为 true 时（上游返回了非 SSE 的兜底响应
 // 而客户端要流式）把完整响应合成为一次性事件流。返回写出字节数。
-func writeResponse(w http.ResponseWriter, clientCodec proto.Codec, resp *ir.Response, clientStream bool) int {
+func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, resp *ir.Response, clientStream bool) int {
 	if !clientStream {
 		body, err := clientCodec.EncodeResponse(resp)
 		if err != nil {
@@ -903,7 +914,7 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 	return events
 }
 
-func writeError(w http.ResponseWriter, clientCodec proto.Codec, e *ir.Error) {
+func writeError(w http.ResponseWriter, clientCodec proto.InboundCodec, e *ir.Error) {
 	status, body := clientCodec.RenderError(e)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -924,7 +935,7 @@ func excerpt(s string) string {
 
 func (f *Forwarder) CountTokens(req *ir.Request) (int, []byte) {
 	est := ir.EstimateRequestTokens(req)
-	if c, err := proto.Get("kiro"); err == nil {
+	if c, err := proto.GetOutbound("kiro"); err == nil {
 		if te, ok := c.(interface{ EstimateRequestTokens(*ir.Request) int }); ok {
 			est = te.EstimateRequestTokens(req)
 		}

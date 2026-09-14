@@ -94,7 +94,7 @@ func TestCodexCodec(t *testing.T) {
 	if c.Name() != "openai-responses" || cx.Name() != NameCodex {
 		t.Fatalf("codec names = %q / %q", c.Name(), cx.Name())
 	}
-	if _, err := proto.Get(NameCodex); err != nil {
+	if _, err := proto.GetOutbound(NameCodex); err != nil {
 		t.Fatalf("codex codec not registered: %v", err)
 	}
 	out, err := cx.EncodeRequest(&ir.Request{

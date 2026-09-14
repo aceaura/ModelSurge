@@ -58,7 +58,19 @@ func (s *Service) Dispatch(ctx context.Context, req replayv1.DispatchRequest) (r
 		}
 		return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeTargetUnavailable, Message: err.Error(), Retryable: true}
 	}
+	if !allowedOutboundProtocol(selection.Target.Protocol) {
+		return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeTargetUnavailable, Message: fmt.Sprintf("unsupported outbound protocol %q", selection.Target.Protocol)}
+	}
 	return leaseFromTarget(req.RequestID, selection.GroupID, selection.Target), nil
+}
+
+func allowedOutboundProtocol(protocol string) bool {
+	switch protocol {
+	case "anthropic", "openai-chat", "openai-responses", "codex", "kiro":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) Report(ctx context.Context, report replayv1.ResultReport) (replayv1.ResultResponse, error) {

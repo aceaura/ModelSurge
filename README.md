@@ -51,6 +51,19 @@ Agent 默认监听 `127.0.0.1:18099`（Compose 容器内为 `0.0.0.0:18099`）�
 
 无前缀兼容入口（如 `/v1/messages`、`/v1/chat/completions`、`/v1/responses`、`/v1/models`）仍由 Agent 提供。
 
+### 协议支持矩阵
+
+| 协议 | 客户端入站 | 上游出口 |
+|---|---:|---:|
+| Anthropic | 支持 | 支持 |
+| OpenAI Chat Completions | 支持 | 支持 |
+| OpenAI Responses | 支持 | 支持 |
+| Gemini | 支持 | **不支持（inbound-only）** |
+| Codex | 不作为客户端入口 | 支持 |
+| Kiro | 不作为客户端入口 | 支持（独立账号类型） |
+
+Gemini 请求和响应仍由 Agent 的 Gemini codec、流编码器、错误渲染及路由处理，但 `TargetLease` / `UpstreamModel` 不允许使用 Gemini 作为出口协议。出口协议严格限定为 `anthropic`、`openai-chat`、`openai-responses`、`codex`、`kiro`；未知协议不会回落为 OpenAI。
+
 ## 核心行为
 
 - **严格 IR**：客户端请求先解码为 IR，再编码为目标协议；响应反向执行。不存在同协议快捷路径。

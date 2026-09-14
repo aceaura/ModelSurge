@@ -25,3 +25,12 @@ func TestValidateResolvedTargetRejectsUnknownProtocol(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+func TestValidateProtocolRejectsGeminiAndKeepsKiro(t *testing.T) {
+	if ValidateProtocol("gemini") == nil {
+		t.Fatal("gemini must not be a valid upstream protocol")
+	}
+	if err := ValidateProtocol("kiro"); err != nil {
+		t.Fatalf("kiro should remain valid: %v", err)
+	}
+}

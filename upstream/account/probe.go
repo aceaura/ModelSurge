@@ -150,9 +150,6 @@ func ProbeEndpoint(ctx context.Context, client *http.Client, protocol, baseURL, 
 		roots = localHTTPTwins(roots)
 	}
 	version := "v1"
-	if protocol == "gemini" {
-		version = "v1beta"
-	}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
@@ -247,9 +244,7 @@ func probeHeaders(protocol, apiKey string) map[string]string {
 	switch protocol {
 	case "anthropic":
 		return map[string]string{"x-api-key": apiKey, "anthropic-version": "2023-06-01"}
-	case "gemini":
-		return map[string]string{"x-goog-api-key": apiKey}
-	default: // openai-chat / openai-responses
+	default: // openai-chat / openai-responses / codex
 		return map[string]string{"Authorization": "Bearer " + apiKey}
 	}
 }

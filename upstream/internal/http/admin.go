@@ -104,7 +104,7 @@ type accountDTO struct {
 
 // validProtocols api-key 型账号可用的上游协议。
 var validProtocols = map[string]bool{
-	"anthropic": true, "openai-chat": true, "openai-responses": true, "gemini": true, "codex": true,
+	"anthropic": true, "openai-chat": true, "openai-responses": true, "codex": true,
 }
 
 // validate 字段级校验（8.4）。
@@ -115,7 +115,7 @@ func (d *accountDTO) validate() error {
 	switch d.Type {
 	case account.TypeAPIKey:
 		if !validProtocols[d.Protocol] {
-			return errors.New("protocol: must be one of anthropic/openai-chat/openai-responses/gemini/codex")
+			return errors.New("protocol: must be one of anthropic/openai-chat/openai-responses/codex")
 		}
 		// base_url 宽容输入（裸域名/带 /v1/带网关前缀均可），能否解析出
 		// 协议根地址交由 NormalizeBaseURL 裁决；探测在 handler 内做。

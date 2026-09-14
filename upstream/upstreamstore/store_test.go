@@ -59,6 +59,34 @@ func createLegacy(t *testing.T) string {
 	return path
 }
 
+func TestMaterializeGeminiAccountKeepsAccountAndRemovesModels(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "upstream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Accounts.InsertAccount(&account.Account{Name: "legacy-gemini", Type: account.TypeAPIKey, Enabled: true, Protocol: "gemini", BaseURL: "https://example.test", APIKey: "secret", Models: map[string]string{"public": "gemini-pro"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO upstream_models(id,account,display_name,protocol,native_model,base_url,headers,request_overrides,enabled,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"legacy-gemini/public", "legacy-gemini", "public", "gemini", "gemini-pro", "https://example.test", "{}", "null", 1, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MaterializeAccounts(); err != nil {
+		t.Fatal(err)
+	}
+	var accounts, models int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM accounts WHERE name='legacy-gemini'`).Scan(&accounts); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM upstream_models WHERE account='legacy-gemini'`).Scan(&models); err != nil {
+		t.Fatal(err)
+	}
+	if accounts != 1 || models != 0 {
+		t.Fatalf("accounts=%d models=%d, want account preserved and models removed", accounts, models)
+	}
+}
+
 func TestImportLegacyFreshRepeatAndUsage(t *testing.T) {
 	ctx := context.Background()
 	legacy := createLegacy(t)
@@ -106,6 +134,39 @@ func TestImportLegacyFreshRepeatAndUsage(t *testing.T) {
 	_ = ro.QueryRow(`SELECT COUNT(*) FROM usage_log`).Scan(&sourceUsage)
 	if sourceAccounts != 1 || sourceUsage != 1 {
 		t.Fatalf("legacy source changed: accounts=%d usage=%d", sourceAccounts, sourceUsage)
+	}
+}
+
+func TestImportLegacyGeminiAccountDoesNotPublishModels(t *testing.T) {
+	legacyPath := filepath.Join(t.TempDir(), "legacy-gemini.db")
+	legacy, err := account.Open(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.InsertAccount(&account.Account{Name: "legacy-gemini", Type: account.TypeAPIKey, Enabled: true, Protocol: "gemini", BaseURL: "https://example.test", APIKey: "secret", Models: map[string]string{"public": "gemini-pro"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dst, err := Open(filepath.Join(t.TempDir(), "upstream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	if err := dst.ImportLegacy(context.Background(), legacyPath); err != nil {
+		t.Fatal(err)
+	}
+	var accounts, models int
+	if err := dst.DB.QueryRow(`SELECT COUNT(*) FROM accounts WHERE name='legacy-gemini'`).Scan(&accounts); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.DB.QueryRow(`SELECT COUNT(*) FROM upstream_models WHERE account='legacy-gemini'`).Scan(&models); err != nil {
+		t.Fatal(err)
+	}
+	if accounts != 1 || models != 0 {
+		t.Fatalf("accounts=%d models=%d, want imported account without published models", accounts, models)
 	}
 }
 

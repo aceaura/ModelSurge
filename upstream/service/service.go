@@ -29,6 +29,9 @@ func (s *Service) Models(ctx context.Context) ([]upstreamv1.ModelSummary, error)
 	now := time.Now()
 	out := make([]upstreamv1.ModelSummary, 0, len(models))
 	for _, m := range models {
+		if upstreamv1.ValidateProtocol(m.Protocol) != nil {
+			continue
+		}
 		out = append(out, upstreamv1.ModelSummary{ID: m.ID, DisplayName: m.DisplayName, Protocol: m.Protocol, Available: m.Enabled && !m.CooldownUntil.After(now)})
 	}
 	return out, nil
@@ -41,6 +44,9 @@ func (s *Service) Resolve(ctx context.Context, id string) (upstreamv1.ResolvedTa
 	}
 	if m == nil {
 		return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeNotFound, Message: "target not found"}
+	}
+	if err := upstreamv1.ValidateProtocol(m.Protocol); err != nil {
+		return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeTargetUnavailable, Message: "unsupported outbound protocol"}
 	}
 	if !m.Enabled || m.CooldownUntil.After(time.Now()) {
 		return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeTargetUnavailable, Message: "target unavailable", Retryable: true}

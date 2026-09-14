@@ -150,7 +150,7 @@ func (e Error) Error() string { return e.Code + ": " + e.Message }
 
 func ValidateProtocol(p string) error {
 	switch p {
-	case "anthropic", "openai-chat", "openai-responses", "gemini", "kiro", "codex":
+	case "anthropic", "openai-chat", "openai-responses", "kiro", "codex":
 		return nil
 	default:
 		return fmt.Errorf("unknown protocol %q", p)

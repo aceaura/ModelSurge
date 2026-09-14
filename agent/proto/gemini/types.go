@@ -91,7 +91,7 @@ type functionCallingConfig struct {
 
 // ---- 响应 ----
 
-// generateResponse 非流式响应体，同时也是流式（alt=sse）每个 chunk 的外形。
+// generateResponse Gemini 客户端非流式响应体，也是流式响应的 chunk 外形。
 type generateResponse struct {
 	Candidates    []candidate    `json:"candidates,omitempty"`
 	UsageMetadata *usageMetadata `json:"usageMetadata,omitempty"`
@@ -102,14 +102,12 @@ type generateResponse struct {
 type candidate struct {
 	Content      *content `json:"content,omitempty"`
 	FinishReason string   `json:"finishReason,omitempty"`
-	Index        int      `json:"index,omitempty"`
 }
 
 type usageMetadata struct {
 	PromptTokenCount        int `json:"promptTokenCount,omitempty"`
 	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
 	CandidatesTokenCount    int `json:"candidatesTokenCount,omitempty"`
-	ThoughtsTokenCount      int `json:"thoughtsTokenCount,omitempty"`
 	TotalTokenCount         int `json:"totalTokenCount,omitempty"`
 }
 

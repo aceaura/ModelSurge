@@ -40,6 +40,19 @@
 
 **Agent 是实际 LLM HTTP 的唯一发起者。** Replay 只返回 `TargetLease`，Upstream 只提供解析后的目标、凭据和运行状态，不代理模型推理流量。
 
+### 2.1 协议方向支持矩阵
+
+| 协议 | Agent 客户端入站 | TargetLease / UpstreamModel 出口 |
+|---|---:|---:|
+| Anthropic | 支持 | 支持 |
+| OpenAI Chat Completions | 支持 | 支持 |
+| OpenAI Responses | 支持 | 支持 |
+| Gemini | 支持 | **禁止（inbound-only）** |
+| Codex | 禁止 | 支持 |
+| Kiro | 禁止 | 支持（独立账号类型） |
+
+Gemini 的 `DecodeRequest`、`EncodeResponse`、`StreamEncoder`、错误渲染和 Agent 路由属于客户端入口面，必须保留。出口面采用显式 allowlist：`anthropic`、`openai-chat`、`openai-responses`、`codex`、`kiro`。Agent 在 `TargetLease → candidate` 边界拒绝 Gemini/未知协议；Replay 在签发租约前再次拒绝；Upstream 不接受、不探测、不物化、不发布且不解析 Gemini 出口模型。历史 Gemini account 可保留用于管理与迁移记录，但不得生成可调度 `upstream_models`。
+
 ## 3. 核心组件图
 
 ```mermaid

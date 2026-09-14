@@ -120,7 +120,7 @@ func requestAPIKey(r *http.Request) string {
 // handleChat 三个 JSON-body 协议的统一入口。
 func (s *Server) handleChat(codecName string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		codec := proto.Must(codecName)
+		codec := proto.MustInbound(codecName)
 		body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
 		if err != nil {
 			s.renderError(w, codec, ir.NewHTTPError(400, "read body: "+err.Error()))
@@ -138,7 +138,7 @@ func (s *Server) handleChat(codecName string) http.HandlerFunc {
 // handleGemini Gemini 原生入口：[/gemini]/v1beta/models/{model}:generateContent
 // 或 :streamGenerateContent。模型名与流式标志由路径决定（body 内无 stream 字段）。
 func (s *Server) handleGemini(w http.ResponseWriter, r *http.Request) {
-	codec := proto.Must("gemini")
+	codec := proto.MustInbound("gemini")
 	path := strings.TrimPrefix(r.URL.Path, "/gemini")
 	rest := strings.TrimPrefix(path, "/v1beta/models/")
 	model, action, found := strings.Cut(rest, ":")
@@ -164,7 +164,7 @@ func (s *Server) handleGemini(w http.ResponseWriter, r *http.Request) {
 // handleCountTokens Anthropic count_tokens 入口：请求体与 /v1/messages 同形。
 // Claude Code 等客户端会调它做上下文窗口计量。
 func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
-	codec := proto.Must("anthropic")
+	codec := proto.MustInbound("anthropic")
 	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
 	if err != nil {
 		s.renderError(w, codec, ir.NewHTTPError(400, "read body: "+err.Error()))
@@ -216,14 +216,14 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(sb.String()))
 }
 
-func (s *Server) renderError(w http.ResponseWriter, codec proto.Codec, e *ir.Error) {
+func (s *Server) renderError(w http.ResponseWriter, codec proto.InboundCodec, e *ir.Error) {
 	status, body := codec.RenderError(e)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
 }
 
-func (s *Server) renderReplayError(w http.ResponseWriter, codec proto.Codec, err error) {
+func (s *Server) renderReplayError(w http.ResponseWriter, codec proto.InboundCodec, err error) {
 	status := 503
 	typ := ir.ErrTypeUpstream
 	if e, ok := err.(replayv1.Error); ok && e.Code == replayv1.CodeUnauthorized {

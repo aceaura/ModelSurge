@@ -2,11 +2,13 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aceaura/ModelSurge/upstream/account"
 	"github.com/aceaura/ModelSurge/upstream/contract/upstreamv1"
@@ -54,6 +56,57 @@ func TestAccountAdminBelongsToUpstream(t *testing.T) {
 	h.Handler().ServeHTTP(w, r)
 	if w.Code != 200 || w.Body.String() == "" || strings.Contains(w.Body.String(), "secret") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminRejectsGeminiProtocol(t *testing.T) {
+	store, err := upstreamstore.Open(filepath.Join(t.TempDir(), "upstream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mgr, err := account.NewManager(store.Accounts, account.Cooldowns{}, account.ManagerDeps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := upstreamhttp.NewAccountAdmin(mgr, "admin-key")
+	r := httptest.NewRequest(http.MethodPost, "/admin/accounts", strings.NewReader(`{"name":"gemini","type":"api-key","protocol":"gemini","base_url":"https://example.test","api_key":"secret","models":{"public":"gemini-pro"}}`))
+	r.Header.Set("X-Admin-Key", "admin-key")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "protocol") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestModelsFilterAndResolveRejectsStaleGeminiRow(t *testing.T) {
+	store, err := upstreamstore.Open(filepath.Join(t.TempDir(), "upstream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Accounts.InsertAccount(&account.Account{Name: "gemini", Type: account.TypeAPIKey, Enabled: true, Protocol: "gemini", BaseURL: "https://example.test", APIKey: "secret", Models: map[string]string{"public": "gemini-pro"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB.Exec(`INSERT INTO upstream_models(id,account,display_name,protocol,native_model,base_url,headers,request_overrides,enabled,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"gemini/public", "gemini", "public", "gemini", "gemini-pro", "https://example.test", "{}", "null", 1, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := account.NewManager(store.Accounts, account.Cooldowns{}, account.ManagerDeps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, mgr)
+	models, err := svc.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 0 {
+		b, _ := json.Marshal(models)
+		t.Fatalf("Gemini model published: %s", b)
+	}
+	if target, rerr := svc.Resolve(context.Background(), "gemini/public"); rerr == nil || target.ID != "" || rerr.Code != upstreamv1.CodeTargetUnavailable {
+		t.Fatalf("target=%+v err=%+v", target, rerr)
 	}
 }
 

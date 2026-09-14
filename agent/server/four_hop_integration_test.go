@@ -101,6 +101,22 @@ func TestRealFourHopHTTPPipeline(t *testing.T) {
 		}
 	})
 
+	t.Run("gemini non-stream inbound to anthropic outbound", func(t *testing.T) {
+		body := post(t, agentHTTP.URL+"/v1beta/models/chat:generateContent", `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`, "client-secret")
+		if !strings.Contains(body, `"candidates"`) || !strings.Contains(body, "mock hello") {
+			t.Fatalf("gemini response=%s", body)
+		}
+		assertCounts(t, provider, upStore, replayStore, agentStore, 3, 3)
+	})
+
+	t.Run("gemini stream inbound to anthropic outbound", func(t *testing.T) {
+		body := post(t, agentHTTP.URL+"/v1beta/models/chat:streamGenerateContent", `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`, "client-secret")
+		if !strings.Contains(body, "data:") || !strings.Contains(body, `"candidates"`) || !strings.Contains(body, "mock hello") {
+			t.Fatalf("gemini stream=%s", body)
+		}
+		assertCounts(t, provider, upStore, replayStore, agentStore, 4, 4)
+	})
+
 	t.Run("abnormal result invalidates cached target", func(t *testing.T) {
 		provider.failNext(2)
 		body := post(t, agentHTTP.URL+"/v1/chat/completions", `{"model":"chat","messages":[{"role":"user","content":"fail"}]}`, "client-secret")

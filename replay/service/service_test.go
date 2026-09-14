@@ -20,6 +20,7 @@ type fakeUpstream struct {
 	evaluates int
 	resolves  int
 	reports   int
+	target    upstreamv1.ResolvedTarget
 }
 
 func (f *fakeUpstream) Health(context.Context) error { return nil }
@@ -28,6 +29,11 @@ func (f *fakeUpstream) Models(context.Context) ([]upstreamv1.ModelSummary, error
 }
 func (f *fakeUpstream) Resolve(_ context.Context, id string) (upstreamv1.ResolvedTarget, error) {
 	f.resolves++
+	if f.target.Protocol != "" {
+		target := f.target
+		target.ID = id
+		return target, nil
+	}
 	return upstreamv1.ResolvedTarget{ID: id, Protocol: "openai-chat", NativeModel: "native", BaseURL: "https://example.test", APIKey: "secret"}, nil
 }
 func (f *fakeUpstream) Evaluate(_ context.Context, ids []string) ([]upstreamv1.CandidateEvaluation, error) {
@@ -84,6 +90,33 @@ func TestDispatchAuthenticatesUserModelAndUsesCache(t *testing.T) {
 
 	dispatch.ClientKey = "wrong"
 	doJSON(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key", dispatch, http.StatusUnauthorized, nil)
+}
+
+func TestDispatchRejectsGeminiAndUnknownTargetsButAcceptsGeminiInbound(t *testing.T) {
+	for _, outbound := range []string{"gemini", "unknown"} {
+		t.Run(outbound, func(t *testing.T) {
+			server, store, upstream := newTestServer(t)
+			ctx := context.Background()
+			if err := store.PutUserModel(ctx, relaystore.UserModel{Name: "gemini-client", Protocol: "gemini", APIKey: "gemini-key", Enabled: true}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.PutGroup(ctx, relaystore.Group{ID: "gemini-group", UserModel: "gemini-client", PolicyType: "sticky", PolicyConfig: "{}"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.AddMembers(ctx, "gemini-group", []string{"a/model"}); err != nil {
+				t.Fatal(err)
+			}
+			upstream.target = upstreamv1.ResolvedTarget{Protocol: outbound, NativeModel: "native", BaseURL: "https://example.test", APIKey: "secret"}
+
+			ts := httptest.NewServer(server.Handler())
+			defer ts.Close()
+			dispatch := replayv1.DispatchRequest{Model: "gemini-client", InboundProtocol: "gemini", ClientKey: "gemini-key", RequestID: "req-" + outbound}
+			doJSON(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key", dispatch, http.StatusServiceUnavailable, nil)
+			if upstream.resolves != 1 {
+				t.Fatalf("resolve calls=%d, want 1", upstream.resolves)
+			}
+		})
+	}
 }
 
 func TestResultsAreIdempotentInReplayAndForwardedUpstream(t *testing.T) {

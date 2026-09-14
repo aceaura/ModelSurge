@@ -114,6 +114,8 @@ func materializeAccount(tx *sql.Tx, a account.Account) error {
 	protocol := a.Protocol
 	if a.Type == account.TypeKiro {
 		protocol = "kiro"
+	} else if !materializableProtocol(protocol) {
+		return nil
 	}
 	models := a.Models
 	if len(models) == 0 {
@@ -144,6 +146,15 @@ func materializeAccount(tx *sql.Tx, a account.Account) error {
 		}
 	}
 	return nil
+}
+
+func materializableProtocol(protocol string) bool {
+	switch protocol {
+	case "anthropic", "openai-chat", "openai-responses", "codex":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) ListModels(ctx context.Context) ([]Model, error) {

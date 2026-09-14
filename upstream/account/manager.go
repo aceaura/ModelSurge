@@ -401,6 +401,9 @@ func (m *Manager) Models() []string {
 			}
 			continue
 		}
+		if a.Protocol == "gemini" {
+			continue
+		}
 		for id := range a.Models {
 			set[id] = true
 		}

@@ -151,16 +151,31 @@ func TestProbeEndpointAPIPrefix(t *testing.T) {
 	}
 }
 
-func TestProbeEndpointGeminiVersion(t *testing.T) {
-	up := probeSrv(t, nil, "/v1beta/models", 200, `{"models":[{"name":"models/gemini-pro"}]}`)
+func TestProbeEndpointDoesNotGenerateGeminiEndpointOrHeader(t *testing.T) {
+	var sawV1Beta atomic.Bool
+	var sawGoogleKey atomic.Bool
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "v1beta") {
+			sawV1Beta.Store(true)
+		}
+		if r.Header.Get("x-goog-api-key") != "" {
+			sawGoogleKey.Store(true)
+		}
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"legacy"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
 	defer up.Close()
 
 	rep := ProbeEndpoint(context.Background(), up.Client(), "gemini", up.URL, "gk")
 	if !rep.OK || rep.ResolvedBaseURL != up.URL {
 		t.Fatalf("verdict = %s resolved = %q", rep.Verdict, rep.ResolvedBaseURL)
 	}
-	if len(rep.Models) != 1 || rep.Models[0] != "gemini-pro" {
-		t.Errorf("models = %v, want [gemini-pro]", rep.Models)
+	if sawV1Beta.Load() || sawGoogleKey.Load() {
+		t.Fatalf("generated Gemini probe behavior: v1beta=%v x-goog-api-key=%v", sawV1Beta.Load(), sawGoogleKey.Load())
 	}
 }
 

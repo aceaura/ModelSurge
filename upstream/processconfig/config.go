@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aceaura/ModelSurge/upstream/config"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,6 +26,8 @@ type Relay struct {
 type Upstream struct {
 	Listen           string           `yaml:"listen"`
 	DBPath           string           `yaml:"db_path"`
+	DBDriver         string           `yaml:"db_driver"`
+	DBDSN            string           `yaml:"db_dsn"`
 	ServiceKey       string           `yaml:"service_key"`
 	AdminKey         string           `yaml:"admin_key"`
 	LegacyDB         string           `yaml:"legacy_db_import"`
@@ -68,14 +71,31 @@ func LoadUpstream(path string) (Upstream, error) {
 	return c, nil
 }
 
-// Normalize 补默认值并校验；单进程组合根在覆写回环地址后复用。
-func (c Upstream) Normalize() error {
+// Normalize 补默认值并校验（指针接收者：解析出的 db_dsn 要回写调用方）；
+// 单进程组合根在覆写回环地址后复用。
+// 数据源解析：db_driver 缺省 sqlite；sqlite 且 db_dsn 空时回落 db_path。
+func (c *Upstream) Normalize() error {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:18100"
 	}
 	c.AccessLogEnabled = c.AccessLog == nil || *c.AccessLog
-	if c.DBPath == "" || c.ServiceKey == "" {
-		return fmt.Errorf("db_path and service_key are required")
+	if c.DBDriver == "" {
+		c.DBDriver = dialect.SQLite
+	}
+	if !dialect.Valid(c.DBDriver) {
+		return fmt.Errorf("db_driver: unsupported %q", c.DBDriver)
+	}
+	if c.DBDriver == dialect.Postgres && c.DBDSN == "" {
+		return fmt.Errorf("db_dsn is required when db_driver is postgres")
+	}
+	if c.DBDSN == "" {
+		if c.DBPath == "" {
+			return fmt.Errorf("db_path or db_dsn is required")
+		}
+		c.DBDSN = c.DBPath
+	}
+	if c.ServiceKey == "" {
+		return fmt.Errorf("service_key is required")
 	}
 	if c.Kiro != nil {
 		if err := config.ParseKiro(c.Kiro); err != nil {

@@ -12,9 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"github.com/aceaura/ModelSurge/upstream/ir"
-
-	_ "modernc.org/sqlite"
 )
 
 // 账号类型。
@@ -163,13 +162,17 @@ func maskSecret(s string) string {
 	return "****" + s[len(s)-4:]
 }
 
-// Store SQLite 存储。单文件、回滚日志模式（Docker 绑定挂载教训）；时间一律 unix 秒。
+// Store 账号存储。时间一律 unix 秒；driver 决定占位符重写与方言分支。
 type Store struct {
 	db     *sql.DB
+	driver string
 	ownsDB bool
 }
 
-const schema = `
+// schema 建表 DDL：INTEGER→BIGINT 仅影响 postgres（8 字节时间戳），
+// sqlite 的 BIGINT 亲和性与 INTEGER 等价；usage_log.id 经方言选自增子句。
+func schema(driver string) string {
+	return `
 CREATE TABLE IF NOT EXISTS accounts (
 	name             TEXT PRIMARY KEY,
 	type             TEXT NOT NULL DEFAULT 'api-key',
@@ -185,23 +188,24 @@ CREATE TABLE IF NOT EXISTS accounts (
 	overrides        TEXT NOT NULL DEFAULT '',
 	disabled         INTEGER NOT NULL DEFAULT 0,
 	limit_kind       TEXT NOT NULL DEFAULT '',
-	cooldown_until   INTEGER NOT NULL DEFAULT 0,
+	cooldown_until   BIGINT NOT NULL DEFAULT 0,
 	failures         INTEGER NOT NULL DEFAULT 0,
-	last_failure     INTEGER NOT NULL DEFAULT 0,
+	last_failure     BIGINT NOT NULL DEFAULT 0,
 	stats            TEXT NOT NULL DEFAULT '{}',
-	updated_at       INTEGER NOT NULL DEFAULT 0
+	updated_at       BIGINT NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS usage_log (
-	id              INTEGER PRIMARY KEY AUTOINCREMENT,
+	id              ` + dialect.IdentityPK(driver) + `,
 	account         TEXT NOT NULL,
-	ts              INTEGER NOT NULL,
-	input_tokens    INTEGER NOT NULL DEFAULT 0,
-	output_tokens   INTEGER NOT NULL DEFAULT 0,
-	cache_read      INTEGER NOT NULL DEFAULT 0,
-	cache_creation  INTEGER NOT NULL DEFAULT 0
+	ts              BIGINT NOT NULL,
+	input_tokens    BIGINT NOT NULL DEFAULT 0,
+	output_tokens   BIGINT NOT NULL DEFAULT 0,
+	cache_read      BIGINT NOT NULL DEFAULT 0,
+	cache_creation  BIGINT NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_usage_account_ts ON usage_log(account, ts);
 `
+}
 
 // v2 迁移：v1 库缺列时补齐（ALTER 增列带默认值，v1 行自动获得默认值）。
 var v2Columns = []string{
@@ -221,17 +225,17 @@ var v3Columns = []string{
 	`ALTER TABLE accounts ADD COLUMN headers TEXT NOT NULL DEFAULT ''`,
 }
 
-// Open 打开（必要时创建）数据库并建表/迁移到 v2。
-func Open(path string) (*Store, error) {
-	// 不用 WAL：其 shm/mmap 在 Docker Desktop Windows 绑定挂载上会静默丢写；
-	// 单连接下 WAL 的读写并发收益本来也用不到。journal_mode 持久化在库文件里，
-	// 显式 DELETE 确保旧 WAL 库也被切回回滚日志模式。
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(DELETE)&_pragma=foreign_keys(ON)")
-	if err != nil {
-		return nil, fmt.Errorf("account: open %s: %w", path, err)
+// Open 打开（必要时创建）数据库并建表/迁移。driver 见 dialect 包；
+// sqlite 的 dsn 为裸文件路径（自动补 pragma DSN），postgres 为连接串。
+func Open(driver, dsn string) (*Store, error) {
+	if !dialect.Valid(driver) {
+		return nil, fmt.Errorf("account: unsupported driver %q", driver)
 	}
-	db.SetMaxOpenConns(1) // SQLite 写并发弱，串行化最稳
-	store, err := OpenDB(db)
+	db, err := dialect.Open(driver, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("account: open: %w", err)
+	}
+	store, err := OpenDB(db, driver)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -241,43 +245,32 @@ func Open(path string) (*Store, error) {
 }
 
 // OpenDB initializes the account schema on a caller-owned connection pool.
-// The returned Store shares that pool and Close leaves it open.
-func OpenDB(db *sql.DB) (*Store, error) {
-	if _, err := db.Exec(schema); err != nil {
+// 方言随池一并传入（占位符重写与方言分支）；Close 不关池。
+func OpenDB(db *sql.DB, driver string) (*Store, error) {
+	if !dialect.Valid(driver) {
+		return nil, fmt.Errorf("account: unsupported driver %q", driver)
+	}
+	if _, err := db.Exec(schema(driver)); err != nil {
 		return nil, fmt.Errorf("account: migrate: %w", err)
 	}
-	if err := migrateColumns(db, "v2", v2Columns); err != nil {
+	if err := migrateColumns(db, driver, "v2", v2Columns); err != nil {
 		return nil, fmt.Errorf("account: migrate v2: %w", err)
 	}
-	if err := migrateColumns(db, "v3", v3Columns); err != nil {
+	if err := migrateColumns(db, driver, "v3", v3Columns); err != nil {
 		return nil, fmt.Errorf("account: migrate v3: %w", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, driver: driver}, nil
 }
 
+// q 按方言重写占位符（postgres ? → $n）。
+func (s *Store) q(query string) string { return dialect.Rebind(s.driver, query) }
+
 // migrateColumns 检测缺列并 ALTER 补齐；列已存在时为 no-op。
-func migrateColumns(db *sql.DB, ver string, columns []string) error {
-	rows, err := db.Query(`PRAGMA table_info(accounts)`)
+func migrateColumns(db *sql.DB, driver, ver string, columns []string) error {
+	have, err := tableColumns(db, driver, "accounts")
 	if err != nil {
 		return err
 	}
-	have := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notNull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
-			rows.Close()
-			return err
-		}
-		have[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
 	for _, stmt := range columns {
 		col := stmt[len(`ALTER TABLE accounts ADD COLUMN `):]
 		col = strings.Fields(col)[0]
@@ -289,6 +282,36 @@ func migrateColumns(db *sql.DB, ver string, columns []string) error {
 		}
 	}
 	return nil
+}
+
+// tableColumns 列出表已有列：sqlite 走 PRAGMA table_info，postgres 走
+// information_schema（列名小写）。
+func tableColumns(db *sql.DB, driver, table string) (map[string]bool, error) {
+	var query string
+	var args []any
+	if driver == dialect.Postgres {
+		query = `SELECT column_name FROM information_schema.columns WHERE table_name=$1`
+		args = []any{table}
+	} else {
+		query = `PRAGMA table_info(` + table + `)`
+	}
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		have[name] = true
+	}
+	return have, rows.Err()
 }
 
 func (s *Store) Close() error {
@@ -356,9 +379,14 @@ func scanAccount(s interface{ Scan(...any) error }) (Account, error) {
 	return a, nil
 }
 
-// ListAccounts 按插入顺序返回全部账号（rowid 保序）。
+// ListAccounts 返回全部账号：sqlite 按插入顺序（rowid 保序）；
+// postgres 无 rowid，按名排序（顺序仅为展示/遍历便利，无功能依赖）。
 func (s *Store) ListAccounts() ([]Account, error) {
-	rows, err := s.db.Query(accountSelect + ` ORDER BY rowid`)
+	orderBy := ` ORDER BY rowid`
+	if s.driver == dialect.Postgres {
+		orderBy = ` ORDER BY name`
+	}
+	rows, err := s.db.Query(s.q(accountSelect + orderBy))
 	if err != nil {
 		return nil, err
 	}
@@ -377,7 +405,7 @@ func (s *Store) ListAccounts() ([]Account, error) {
 // GetAccount 按名取账号。
 func (s *Store) GetAccount(name string) (*Account, error) {
 	var a Account
-	row := s.db.QueryRow(accountSelect+` WHERE name=?`, name)
+	row := s.db.QueryRow(s.q(accountSelect+` WHERE name=?`), name)
 	acc, err := scanAccount(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -391,7 +419,7 @@ func (s *Store) GetAccount(name string) (*Account, error) {
 
 // SetCooldown 标记账号限流冷却。
 func (s *Store) SetCooldown(name, kind string, until time.Time) error {
-	_, err := s.db.Exec(`UPDATE accounts SET limit_kind=?, cooldown_until=?, updated_at=? WHERE name=?`,
+	_, err := s.db.Exec(s.q(`UPDATE accounts SET limit_kind=?, cooldown_until=?, updated_at=? WHERE name=?`),
 		kind, until.Unix(), time.Now().Unix(), name)
 	return err
 }
@@ -402,12 +430,12 @@ func (s *Store) SetDisabled(name string, disabled bool) error {
 	if disabled {
 		d = 1
 	}
-	if _, err := s.db.Exec(`UPDATE accounts SET disabled=?, updated_at=? WHERE name=?`,
+	if _, err := s.db.Exec(s.q(`UPDATE accounts SET disabled=?, updated_at=? WHERE name=?`),
 		d, time.Now().Unix(), name); err != nil {
 		return err
 	}
 	if !disabled { // 恢复时清掉冷却
-		_, err := s.db.Exec(`UPDATE accounts SET limit_kind='', cooldown_until=0 WHERE name=?`, name)
+		_, err := s.db.Exec(s.q(`UPDATE accounts SET limit_kind='', cooldown_until=0 WHERE name=?`), name)
 		return err
 	}
 	return nil
@@ -423,18 +451,18 @@ type Usage struct {
 
 // InsertUsage 记一笔真实用量（估算值不入库）。
 func (s *Store) InsertUsage(account string, ts time.Time, u Usage) error {
-	_, err := s.db.Exec(`INSERT INTO usage_log (account, ts, input_tokens, output_tokens, cache_read, cache_creation)
-		VALUES (?,?,?,?,?,?)`, account, ts.Unix(), u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheCreation)
+	_, err := s.db.Exec(s.q(`INSERT INTO usage_log (account, ts, input_tokens, output_tokens, cache_read, cache_creation)
+		VALUES (?,?,?,?,?,?)`), account, ts.Unix(), u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheCreation)
 	return err
 }
 
 // WindowUsage 某账号自 since 起的用量合计。
 func (s *Store) WindowUsage(account string, since time.Time) (Usage, error) {
 	var u Usage
-	err := s.db.QueryRow(`SELECT
+	err := s.db.QueryRow(s.q(`SELECT
 		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 		COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_creation),0)
-		FROM usage_log WHERE account=? AND ts>=?`, account, since.Unix()).
+		FROM usage_log WHERE account=? AND ts>=?`), account, since.Unix()).
 		Scan(&u.InputTokens, &u.OutputTokens, &u.CacheRead, &u.CacheCreation)
 	return u, err
 }

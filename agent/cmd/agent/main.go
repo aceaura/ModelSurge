@@ -25,7 +25,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	store, err := agentstore.Open(cfg.DBPath)
+	store, err := agentstore.Open(cfg.DBDriver, cfg.DBDSN)
 	if err != nil {
 		log.Fatal(err)
 	}

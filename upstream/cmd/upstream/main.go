@@ -26,7 +26,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	store, err := upstreamstore.Open(cfg.DBPath)
+	store, err := upstreamstore.Open(cfg.DBDriver, cfg.DBDSN)
 	if err != nil {
 		log.Fatal(err)
 	}

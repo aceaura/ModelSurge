@@ -10,10 +10,13 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 )
 
-type Store struct{ DB *sql.DB }
+type Store struct {
+	DB     *sql.DB
+	driver string
+}
 type UserModel struct {
 	Name     string `json:"name"`
 	Protocol string `json:"protocol"`
@@ -31,26 +34,33 @@ type Group struct {
 	CacheUpdated time.Time `json:"cache_updated,omitempty"`
 }
 
+// schema 时间戳列用 BIGINT（postgres 8 字节；sqlite 亲和性与 INTEGER 等价）。
 const schema = `
-CREATE TABLE IF NOT EXISTS user_models(name TEXT PRIMARY KEY,protocol TEXT NOT NULL,api_key_hash TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,updated_at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS schedule_groups(id TEXT PRIMARY KEY,user_model TEXT NOT NULL UNIQUE REFERENCES user_models(name),policy_type TEXT NOT NULL,policy_config TEXT NOT NULL DEFAULT '{}',updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS user_models(name TEXT PRIMARY KEY,protocol TEXT NOT NULL,api_key_hash TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,updated_at BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS schedule_groups(id TEXT PRIMARY KEY,user_model TEXT NOT NULL UNIQUE REFERENCES user_models(name),policy_type TEXT NOT NULL,policy_config TEXT NOT NULL DEFAULT '{}',updated_at BIGINT NOT NULL);
 CREATE TABLE IF NOT EXISTS schedule_group_members(group_id TEXT NOT NULL REFERENCES schedule_groups(id) ON DELETE CASCADE,upstream_model_id TEXT NOT NULL,position INTEGER NOT NULL,PRIMARY KEY(group_id,upstream_model_id),UNIQUE(group_id,position));
-CREATE TABLE IF NOT EXISTS target_cache(group_id TEXT PRIMARY KEY REFERENCES schedule_groups(id) ON DELETE CASCADE,upstream_model_id TEXT NOT NULL,last_result TEXT NOT NULL,updated_at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS result_reports(report_id TEXT PRIMARY KEY,request_id TEXT NOT NULL DEFAULT '',group_id TEXT NOT NULL,target_id TEXT NOT NULL,outcome TEXT NOT NULL,created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS target_cache(group_id TEXT PRIMARY KEY REFERENCES schedule_groups(id) ON DELETE CASCADE,upstream_model_id TEXT NOT NULL,last_result TEXT NOT NULL,updated_at BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS result_reports(report_id TEXT PRIMARY KEY,request_id TEXT NOT NULL DEFAULT '',group_id TEXT NOT NULL,target_id TEXT NOT NULL,outcome TEXT NOT NULL,created_at BIGINT NOT NULL);
 `
 
-func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(DELETE)&_pragma=foreign_keys(ON)")
+func Open(driver, dsn string) (*Store, error) {
+	if !dialect.Valid(driver) {
+		return nil, fmt.Errorf("relaystore: unsupported driver %q", driver)
+	}
+	db, err := dialect.Open(driver, dsn)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
 	if _, err = db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("relaystore: migrate: %w", err)
 	}
-	return &Store{DB: db}, nil
+	return &Store{DB: db, driver: driver}, nil
 }
+
+// q 按方言重写占位符（postgres ? → $n）。
+func (s *Store) q(query string) string { return dialect.Rebind(s.driver, query) }
+
 func (s *Store) Close() error { return s.DB.Close() }
 func (s *Store) Bootstrap(ctx context.Context, apiKey string, models []string) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -64,11 +74,11 @@ func (s *Store) Bootstrap(ctx context.Context, apiKey string, models []string) e
 		if m == "" {
 			continue
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO user_models(name,protocol,api_key_hash,enabled,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(name) DO NOTHING`, m, "auto", hash, 1, now); err != nil {
+		if _, err = tx.ExecContext(ctx, s.q(`INSERT INTO user_models(name,protocol,api_key_hash,enabled,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(name) DO NOTHING`), m, "auto", hash, 1, now); err != nil {
 			return err
 		}
 		gid := "compat/" + m
-		if _, err = tx.ExecContext(ctx, `INSERT INTO schedule_groups(id,user_model,policy_type,policy_config,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, gid, m, "preset", "{}", now); err != nil {
+		if _, err = tx.ExecContext(ctx, s.q(`INSERT INTO schedule_groups(id,user_model,policy_type,policy_config,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING`), gid, m, "preset", "{}", now); err != nil {
 			return err
 		}
 	}
@@ -80,11 +90,11 @@ func (s *Store) AddMembers(ctx context.Context, groupID string, ids []string) er
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `DELETE FROM schedule_group_members WHERE group_id=?`, groupID); err != nil {
+	if _, err = tx.ExecContext(ctx, s.q(`DELETE FROM schedule_group_members WHERE group_id=?`), groupID); err != nil {
 		return err
 	}
 	for i, id := range ids {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO schedule_group_members(group_id,upstream_model_id,position)VALUES(?,?,?)`, groupID, id, i); err != nil {
+		if _, err = tx.ExecContext(ctx, s.q(`INSERT INTO schedule_group_members(group_id,upstream_model_id,position)VALUES(?,?,?)`), groupID, id, i); err != nil {
 			return err
 		}
 	}
@@ -93,7 +103,7 @@ func (s *Store) AddMembers(ctx context.Context, groupID string, ids []string) er
 func (s *Store) GroupForModel(ctx context.Context, model string) (*Group, error) {
 	var g Group
 	var cacheUpdated int64
-	err := s.DB.QueryRowContext(ctx, `SELECT g.id,g.user_model,g.policy_type,g.policy_config,COALESCE(c.upstream_model_id,''),COALESCE(c.last_result,''),COALESCE(c.updated_at,0) FROM schedule_groups g LEFT JOIN target_cache c ON c.group_id=g.id JOIN user_models u ON u.name=g.user_model WHERE g.user_model=? AND u.enabled=1`, model).Scan(&g.ID, &g.UserModel, &g.PolicyType, &g.PolicyConfig, &g.CachedTarget, &g.LastResult, &cacheUpdated)
+	err := s.DB.QueryRowContext(ctx, s.q(`SELECT g.id,g.user_model,g.policy_type,g.policy_config,COALESCE(c.upstream_model_id,''),COALESCE(c.last_result,''),COALESCE(c.updated_at,0) FROM schedule_groups g LEFT JOIN target_cache c ON c.group_id=g.id JOIN user_models u ON u.name=g.user_model WHERE g.user_model=? AND u.enabled=1`), model).Scan(&g.ID, &g.UserModel, &g.PolicyType, &g.PolicyConfig, &g.CachedTarget, &g.LastResult, &cacheUpdated)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -103,7 +113,7 @@ func (s *Store) GroupForModel(ctx context.Context, model string) (*Group, error)
 	if cacheUpdated > 0 {
 		g.CacheUpdated = time.Unix(cacheUpdated, 0)
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT upstream_model_id FROM schedule_group_members WHERE group_id=? ORDER BY position`, g.ID)
+	rows, err := s.DB.QueryContext(ctx, s.q(`SELECT upstream_model_id FROM schedule_group_members WHERE group_id=? ORDER BY position`), g.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +128,7 @@ func (s *Store) GroupForModel(ctx context.Context, model string) (*Group, error)
 	return &g, rows.Err()
 }
 func (s *Store) Models(ctx context.Context) ([]string, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT name FROM user_models WHERE enabled=1 ORDER BY name`)
+	rows, err := s.DB.QueryContext(ctx, s.q(`SELECT name FROM user_models WHERE enabled=1 ORDER BY name`))
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +150,7 @@ func HashAPIKey(key string) string {
 
 func (s *Store) Authenticate(ctx context.Context, model, protocol, key string) (configured bool, ok bool, err error) {
 	var want, storedProtocol string
-	err = s.DB.QueryRowContext(ctx, `SELECT protocol,api_key_hash FROM user_models WHERE name=? AND enabled=1`, model).Scan(&storedProtocol, &want)
+	err = s.DB.QueryRowContext(ctx, s.q(`SELECT protocol,api_key_hash FROM user_models WHERE name=? AND enabled=1`), model).Scan(&storedProtocol, &want)
 	if err == sql.ErrNoRows {
 		return false, false, nil
 	}
@@ -157,12 +167,12 @@ func (s *Store) Authenticate(ctx context.Context, model, protocol, key string) (
 	return true, subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1, nil
 }
 func (s *Store) SetCache(ctx context.Context, groupID, targetID, result string) error {
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO target_cache(group_id,upstream_model_id,last_result,updated_at)VALUES(?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET upstream_model_id=excluded.upstream_model_id,last_result=excluded.last_result,updated_at=excluded.updated_at`, groupID, targetID, result, time.Now().Unix())
+	_, err := s.DB.ExecContext(ctx, s.q(`INSERT INTO target_cache(group_id,upstream_model_id,last_result,updated_at)VALUES(?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET upstream_model_id=excluded.upstream_model_id,last_result=excluded.last_result,updated_at=excluded.updated_at`), groupID, targetID, result, time.Now().Unix())
 	return err
 }
 
 func (s *Store) InvalidateCache(ctx context.Context, groupID string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM target_cache WHERE group_id=?`, groupID)
+	_, err := s.DB.ExecContext(ctx, s.q(`DELETE FROM target_cache WHERE group_id=?`), groupID)
 	return err
 }
 
@@ -173,7 +183,7 @@ func (s *Store) ApplyReport(ctx context.Context, reportID, requestID, groupID, t
 		return false, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `INSERT INTO result_reports(report_id,request_id,group_id,target_id,outcome,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(report_id) DO NOTHING`, reportID, requestID, groupID, targetID, outcome, time.Now().Unix())
+	result, err := tx.ExecContext(ctx, s.q(`INSERT INTO result_reports(report_id,request_id,group_id,target_id,outcome,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(report_id) DO NOTHING`), reportID, requestID, groupID, targetID, outcome, time.Now().Unix())
 	if err != nil {
 		return false, err
 	}
@@ -188,7 +198,7 @@ func (s *Store) ApplyReport(ctx context.Context, reportID, requestID, groupID, t
 	if outcome == "normal" {
 		cacheResult = "normal"
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO target_cache(group_id,upstream_model_id,last_result,updated_at)VALUES(?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET upstream_model_id=excluded.upstream_model_id,last_result=excluded.last_result,updated_at=excluded.updated_at`, groupID, targetID, cacheResult, time.Now().Unix()); err != nil {
+	if _, err = tx.ExecContext(ctx, s.q(`INSERT INTO target_cache(group_id,upstream_model_id,last_result,updated_at)VALUES(?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET upstream_model_id=excluded.upstream_model_id,last_result=excluded.last_result,updated_at=excluded.updated_at`), groupID, targetID, cacheResult, time.Now().Unix()); err != nil {
 		return false, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -202,12 +212,12 @@ func (s *Store) PutUserModel(ctx context.Context, m UserModel) error {
 	if m.Enabled {
 		enabled = 1
 	}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO user_models(name,protocol,api_key_hash,enabled,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET protocol=excluded.protocol,api_key_hash=CASE WHEN excluded.api_key_hash='' THEN user_models.api_key_hash ELSE excluded.api_key_hash END,enabled=excluded.enabled,updated_at=excluded.updated_at`, m.Name, m.Protocol, HashAPIKey(m.APIKey), enabled, time.Now().Unix())
+	_, err := s.DB.ExecContext(ctx, s.q(`INSERT INTO user_models(name,protocol,api_key_hash,enabled,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET protocol=excluded.protocol,api_key_hash=CASE WHEN excluded.api_key_hash='' THEN user_models.api_key_hash ELSE excluded.api_key_hash END,enabled=excluded.enabled,updated_at=excluded.updated_at`), m.Name, m.Protocol, HashAPIKey(m.APIKey), enabled, time.Now().Unix())
 	return err
 }
 
 func (s *Store) ListUserModels(ctx context.Context) ([]UserModel, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT name,protocol,enabled FROM user_models ORDER BY name`)
+	rows, err := s.DB.QueryContext(ctx, s.q(`SELECT name,protocol,enabled FROM user_models ORDER BY name`))
 	if err != nil {
 		return nil, err
 	}
@@ -226,17 +236,17 @@ func (s *Store) ListUserModels(ctx context.Context) ([]UserModel, error) {
 }
 
 func (s *Store) DeleteUserModel(ctx context.Context, name string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM user_models WHERE name=?`, name)
+	_, err := s.DB.ExecContext(ctx, s.q(`DELETE FROM user_models WHERE name=?`), name)
 	return err
 }
 
 func (s *Store) PutGroup(ctx context.Context, g Group) error {
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO schedule_groups(id,user_model,policy_type,policy_config,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET user_model=excluded.user_model,policy_type=excluded.policy_type,policy_config=excluded.policy_config,updated_at=excluded.updated_at`, g.ID, g.UserModel, g.PolicyType, g.PolicyConfig, time.Now().Unix())
+	_, err := s.DB.ExecContext(ctx, s.q(`INSERT INTO schedule_groups(id,user_model,policy_type,policy_config,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET user_model=excluded.user_model,policy_type=excluded.policy_type,policy_config=excluded.policy_config,updated_at=excluded.updated_at`), g.ID, g.UserModel, g.PolicyType, g.PolicyConfig, time.Now().Unix())
 	return err
 }
 
 func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,user_model,policy_type,policy_config FROM schedule_groups ORDER BY id`)
+	rows, err := s.DB.QueryContext(ctx, s.q(`SELECT id,user_model,policy_type,policy_config FROM schedule_groups ORDER BY id`))
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +279,6 @@ func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
 }
 
 func (s *Store) DeleteGroup(ctx context.Context, id string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM schedule_groups WHERE id=?`, id)
+	_, err := s.DB.ExecContext(ctx, s.q(`DELETE FROM schedule_groups WHERE id=?`), id)
 	return err
 }

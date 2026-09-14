@@ -3,6 +3,7 @@ package schedule
 import (
 	"context"
 	"errors"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"path/filepath"
 	"testing"
 
@@ -44,7 +45,7 @@ func (f *fakeUpstream) WebSearch(context.Context, upstreamv1.WebSearchRequest) (
 func newScheduler(t *testing.T, policy string, f *fakeUpstream) *Scheduler {
 	t.Helper()
 	ctx := context.Background()
-	st, err := relaystore.Open(filepath.Join(t.TempDir(), "relay.db"))
+	st, err := relaystore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "relay.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

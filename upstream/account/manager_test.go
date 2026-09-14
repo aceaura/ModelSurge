@@ -1,6 +1,7 @@
 package account
 
 import (
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"path/filepath"
 	"testing"
 	"time"
@@ -8,7 +9,7 @@ import (
 
 func newTestManager(t *testing.T, dbPath string) (*Manager, *Store) {
 	t.Helper()
-	store, err := Open(dbPath)
+	store, err := Open(dialect.SQLite, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +71,7 @@ func TestClassifyLimit_Fallback(t *testing.T) {
 // 单账号特例：无视限流/熔断冷却恒返回（account_manager.py 语义）；
 // tried 排除与显式禁用仍生效。
 func TestSingleAccountBypassCooldown(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "single.db"))
+	store, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "single.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +180,7 @@ func TestUsageAccountingAndRestart(t *testing.T) {
 	}
 
 	// 模拟重启：重开同一 DB，冷却状态必须延续
-	store2, err := Open(dbPath)
+	store2, err := Open(dialect.SQLite, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

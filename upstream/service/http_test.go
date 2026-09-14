@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -57,7 +58,7 @@ func TestAccessLogDisabledSilencesUpstreamHTTP(t *testing.T) {
 }
 
 func TestAccountAdminBelongsToUpstream(t *testing.T) {
-	store, err := upstreamstore.Open(filepath.Join(t.TempDir(), "upstream.db"))
+	store, err := upstreamstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestAccountAdminBelongsToUpstream(t *testing.T) {
 }
 
 func TestAdminRejectsGeminiProtocol(t *testing.T) {
-	store, err := upstreamstore.Open(filepath.Join(t.TempDir(), "upstream.db"))
+	store, err := upstreamstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +108,7 @@ func TestAdminRejectsGeminiProtocol(t *testing.T) {
 }
 
 func TestModelsFilterAndResolveRejectsStaleGeminiRow(t *testing.T) {
-	store, err := upstreamstore.Open(filepath.Join(t.TempDir(), "upstream.db"))
+	store, err := upstreamstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +193,7 @@ func TestTransientRetriesThenOpensBreaker(t *testing.T) {
 
 func testKiroService(t *testing.T) (*Service, *upstreamstore.Store) {
 	t.Helper()
-	store, err := upstreamstore.Open(filepath.Join(t.TempDir(), "upstream.db"))
+	store, err := upstreamstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

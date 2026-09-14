@@ -47,7 +47,7 @@ func main() {
 	defer stop()
 
 	// ── upstream（最先启动）────────────────────────────────
-	uStore, err := upstreamstore.Open(cfg.Upstream.DBPath)
+	uStore, err := upstreamstore.Open(cfg.Upstream.DBDriver, cfg.Upstream.DBDSN)
 	if err != nil {
 		log.Fatalf("upstream store: %v", err)
 	}
@@ -93,7 +93,7 @@ func main() {
 	}
 
 	// ── replay ─────────────────────────────────────────────
-	rStore, err := relaystore.Open(cfg.Replay.DBPath)
+	rStore, err := relaystore.Open(cfg.Replay.DBDriver, cfg.Replay.DBDSN)
 	if err != nil {
 		log.Fatalf("replay store: %v", err)
 	}
@@ -112,7 +112,7 @@ func main() {
 	}
 
 	// ── agent（最后启动，对外收流量）───────────────────────
-	aStore, err := agentstore.Open(cfg.Agent.DBPath)
+	aStore, err := agentstore.Open(cfg.Agent.DBDriver, cfg.Agent.DBDSN)
 	if err != nil {
 		log.Fatalf("agent store: %v", err)
 	}

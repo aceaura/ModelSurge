@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"gopkg.in/yaml.v3"
 )
 
@@ -13,6 +14,8 @@ type Config struct {
 	ReplayURL          string `yaml:"replay_url"`
 	ServiceKey         string `yaml:"service_key"`
 	DBPath             string `yaml:"db_path"`
+	DBDriver           string `yaml:"db_driver"`
+	DBDSN              string `yaml:"db_dsn"`
 	ControlTimeout     string `yaml:"control_timeout"`
 	FirstTokenTimeout  string `yaml:"first_token_timeout"`
 	SameAccountRetries int    `yaml:"same_account_retries"`
@@ -42,12 +45,25 @@ func Load(path string) (*Config, error) {
 }
 
 // Normalize 补默认值并校验必填项；单进程组合根在覆写回环地址后复用。
+// 数据源解析：db_driver 缺省 sqlite；sqlite 且 db_dsn 空时回落 db_path。
 func (c *Config) Normalize() error {
 	if c.Listen == "" {
 		c.Listen = "0.0.0.0:18099"
 	}
-	if c.DBPath == "" {
-		c.DBPath = "/data/agent.db"
+	if c.DBDriver == "" {
+		c.DBDriver = dialect.SQLite
+	}
+	if !dialect.Valid(c.DBDriver) {
+		return fmt.Errorf("db_driver: unsupported %q", c.DBDriver)
+	}
+	if c.DBDriver == dialect.Postgres && c.DBDSN == "" {
+		return fmt.Errorf("db_dsn is required when db_driver is postgres")
+	}
+	if c.DBDSN == "" {
+		if c.DBPath == "" {
+			c.DBPath = "/data/agent.db"
+		}
+		c.DBDSN = c.DBPath
 	}
 	if c.ReplayURL == "" || c.ServiceKey == "" {
 		return fmt.Errorf("replay_url and service_key are required")

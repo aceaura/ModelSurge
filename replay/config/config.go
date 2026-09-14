@@ -6,12 +6,15 @@ import (
 	"os"
 	"time"
 
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
 	Listen             string `yaml:"listen"`
 	DBPath             string `yaml:"db_path"`
+	DBDriver           string `yaml:"db_driver"`
+	DBDSN              string `yaml:"db_dsn"`
 	UpstreamURL        string `yaml:"upstream_url"`
 	AgentServiceKey    string `yaml:"agent_service_key"`
 	UpstreamServiceKey string `yaml:"upstream_service_key"`
@@ -42,13 +45,29 @@ func Load(path string) (*Config, error) {
 }
 
 // Normalize 补默认值并校验必填项；单进程组合根在覆写回环地址后复用。
+// 数据源解析：db_driver 缺省 sqlite；sqlite 且 db_dsn 空时回落 db_path。
 func (c *Config) Normalize() error {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8081"
 	}
 	c.AccessLogEnabled = c.AccessLog == nil || *c.AccessLog
-	if c.DBPath == "" || c.UpstreamURL == "" || c.AgentServiceKey == "" || c.UpstreamServiceKey == "" || c.AdminKey == "" {
-		return fmt.Errorf("db_path, upstream_url, agent_service_key, upstream_service_key and admin_key are required")
+	if c.DBDriver == "" {
+		c.DBDriver = dialect.SQLite
+	}
+	if !dialect.Valid(c.DBDriver) {
+		return fmt.Errorf("db_driver: unsupported %q", c.DBDriver)
+	}
+	if c.DBDriver == dialect.Postgres && c.DBDSN == "" {
+		return fmt.Errorf("db_dsn is required when db_driver is postgres")
+	}
+	if c.DBDSN == "" && c.DBPath == "" {
+		return fmt.Errorf("db_path or db_dsn is required")
+	}
+	if c.DBDSN == "" {
+		c.DBDSN = c.DBPath
+	}
+	if c.UpstreamURL == "" || c.AgentServiceKey == "" || c.UpstreamServiceKey == "" || c.AdminKey == "" {
+		return fmt.Errorf("upstream_url, agent_service_key, upstream_service_key and admin_key are required")
 	}
 	c.UpstreamTimeoutDuration = 10 * time.Second
 	if c.UpstreamTimeout != "" {

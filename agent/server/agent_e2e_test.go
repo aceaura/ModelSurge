@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -48,7 +49,7 @@ func TestRemoteTransientFailureRetriesSameTargetBeforeRedispatch(t *testing.T) {
 	}))
 	defer replay.Close()
 
-	store, err := agentstore.Open(filepath.Join(t.TempDir(), "agent.db"))
+	store, err := agentstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "agent.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestRemoteDoesNotRetryAfterFirstClientBytes(t *testing.T) {
 	}))
 	defer replay.Close()
 
-	store, err := agentstore.Open(filepath.Join(t.TempDir(), "agent.db"))
+	store, err := agentstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "agent.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +151,7 @@ func TestRemoteAddsTriedIDOnlyAfterSameTargetRetries(t *testing.T) {
 	}))
 	defer replay.Close()
 
-	store, err := agentstore.Open(filepath.Join(t.TempDir(), "agent.db"))
+	store, err := agentstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "agent.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +210,7 @@ func TestClientAgentReplayProviderCrossProtocol(t *testing.T) {
 	}))
 	defer replay.Close()
 
-	store, err := agentstore.Open(filepath.Join(t.TempDir(), "agent.db"))
+	store, err := agentstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "agent.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

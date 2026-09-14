@@ -14,8 +14,8 @@ import (
 // Config 模式一单份 YAML：agent / replay / upstream 三 section，
 // 字段与三进程各自配置完全一致（共用各自模块的 Config 类型）。
 type Config struct {
-	Agent    agentconfig.Config    `yaml:"agent"`
-	Replay   replayconfig.Config   `yaml:"replay"`
+	Agent    agentconfig.Config     `yaml:"agent"`
+	Replay   replayconfig.Config    `yaml:"replay"`
 	Upstream processconfig.Upstream `yaml:"upstream"`
 }
 
@@ -42,6 +42,26 @@ func LoadConfig(path string) (*Config, error) {
 	c.Replay.Listen = override("replay", "listen", c.Replay.Listen, replayLoopback)
 	c.Replay.UpstreamURL = override("replay", "upstream_url", c.Replay.UpstreamURL, "http://"+upstreamLoopback)
 	c.Agent.ReplayURL = override("agent", "replay_url", c.Agent.ReplayURL, "http://"+replayLoopback)
+
+	// 模式一固定 SQLite：集群数据源（postgres/Redis）属模式二（三进程形态）。
+	for _, s := range []struct {
+		section string
+		driver  *string
+		dsn     *string
+	}{
+		{"agent", &c.Agent.DBDriver, &c.Agent.DBDSN},
+		{"replay", &c.Replay.DBDriver, &c.Replay.DBDSN},
+		{"upstream", &c.Upstream.DBDriver, &c.Upstream.DBDSN},
+	} {
+		if *s.driver != "" && *s.driver != "sqlite" {
+			log.Printf("modelsurge: %s.db_driver=%q ignored, forced to sqlite (single-process mode)", s.section, *s.driver)
+		}
+		if *s.dsn != "" {
+			log.Printf("modelsurge: %s.db_dsn ignored, using db_path (single-process mode)", s.section)
+		}
+		*s.driver = ""
+		*s.dsn = ""
+	}
 
 	if err := c.Upstream.Normalize(); err != nil {
 		return nil, fmt.Errorf("modelsurge: upstream section: %w", err)

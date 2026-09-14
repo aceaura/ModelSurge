@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"errors"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -44,7 +45,7 @@ func (r *outboxReplay) callCount() int {
 }
 
 func TestRunOutboxWorkerReplaysDuringRuntimeAndStops(t *testing.T) {
-	store, err := agentstore.Open(filepath.Join(t.TempDir(), "agent.db"))
+	store, err := agentstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "agent.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

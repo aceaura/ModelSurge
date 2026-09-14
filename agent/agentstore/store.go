@@ -8,10 +8,13 @@ import (
 	"time"
 
 	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
-	_ "modernc.org/sqlite"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 )
 
-type Store struct{ DB *sql.DB }
+type Store struct {
+	DB     *sql.DB
+	driver string
+}
 
 type RequestLog struct {
 	RequestID       string
@@ -29,30 +32,38 @@ type OutboxItem struct {
 	Attempts int
 }
 
-func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+func Open(driver, dsn string) (*Store, error) {
+	if !dialect.Valid(driver) {
+		return nil, fmt.Errorf("agentstore: unsupported driver %q", driver)
+	}
+	db, err := dialect.Open(driver, dsn)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	if _, err = db.Exec(`PRAGMA journal_mode=DELETE; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-CREATE TABLE IF NOT EXISTS request_log (
+	// outbox id 经方言选自增子句（postgres IDENTITY，sqlite AUTOINCREMENT 防 rowid 复用）。
+	if _, err = db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS request_log (
  request_id TEXT PRIMARY KEY, at TEXT NOT NULL, inbound_protocol TEXT NOT NULL,
  user_model TEXT NOT NULL, target_id TEXT NOT NULL, result TEXT NOT NULL, usage_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS report_outbox (
- id INTEGER PRIMARY KEY AUTOINCREMENT, report_id TEXT NOT NULL UNIQUE, report_json TEXT NOT NULL,
+ id %s, report_id TEXT NOT NULL UNIQUE, report_json TEXT NOT NULL,
  attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL, created_at TEXT NOT NULL
-);`); err != nil {
+);`, dialect.IdentityPK(driver))); err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &Store{DB: db}, nil
+	return &Store{DB: db, driver: driver}, nil
 }
+
+// q 按方言重写占位符（postgres ? → $n）。
+func (s *Store) q(query string) string { return dialect.Rebind(s.driver, query) }
+
 func (s *Store) Close() error { return s.DB.Close() }
 func (s *Store) LogRequest(ctx context.Context, v RequestLog) error {
 	u, _ := json.Marshal(v.Usage)
-	_, err := s.DB.ExecContext(ctx, `INSERT OR REPLACE INTO request_log(request_id,at,inbound_protocol,user_model,target_id,result,usage_json) VALUES(?,?,?,?,?,?,?)`, v.RequestID, v.At.UTC().Format(time.RFC3339Nano), v.InboundProtocol, v.UserModel, v.TargetID, v.Result, string(u))
+	_, err := s.DB.ExecContext(ctx, s.q(`INSERT INTO request_log(request_id,at,inbound_protocol,user_model,target_id,result,usage_json) VALUES(?,?,?,?,?,?,?)
+ ON CONFLICT(request_id) DO UPDATE SET at=excluded.at,inbound_protocol=excluded.inbound_protocol,user_model=excluded.user_model,target_id=excluded.target_id,result=excluded.result,usage_json=excluded.usage_json`),
+		v.RequestID, v.At.UTC().Format(time.RFC3339Nano), v.InboundProtocol, v.UserModel, v.TargetID, v.Result, string(u))
 	return err
 }
 func (s *Store) Enqueue(ctx context.Context, r replayv1.ResultReport) error {
@@ -61,11 +72,11 @@ func (s *Store) Enqueue(ctx context.Context, r replayv1.ResultReport) error {
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO report_outbox(report_id,report_json,next_attempt_at,created_at) VALUES(?,?,?,?)`, r.ReportID, string(b), now, now)
+	_, err = s.DB.ExecContext(ctx, s.q(`INSERT INTO report_outbox(report_id,report_json,next_attempt_at,created_at) VALUES(?,?,?,?) ON CONFLICT(report_id) DO NOTHING`), r.ReportID, string(b), now, now)
 	return err
 }
 func (s *Store) Due(ctx context.Context, limit int) ([]OutboxItem, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,report_json,attempts FROM report_outbox WHERE next_attempt_at<=? ORDER BY id LIMIT ?`, time.Now().UTC().Format(time.RFC3339Nano), limit)
+	rows, err := s.DB.QueryContext(ctx, s.q(`SELECT id,report_json,attempts FROM report_outbox WHERE next_attempt_at<=? ORDER BY id LIMIT ?`), time.Now().UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -85,12 +96,12 @@ func (s *Store) Due(ctx context.Context, limit int) ([]OutboxItem, error) {
 	return out, rows.Err()
 }
 func (s *Store) Ack(ctx context.Context, id int64) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM report_outbox WHERE id=?`, id)
+	_, err := s.DB.ExecContext(ctx, s.q(`DELETE FROM report_outbox WHERE id=?`), id)
 	return err
 }
 func (s *Store) Retry(ctx context.Context, id int64, attempts int) error {
 	delay := time.Duration(1<<min(attempts, 6)) * time.Second
-	_, err := s.DB.ExecContext(ctx, `UPDATE report_outbox SET attempts=?,next_attempt_at=? WHERE id=?`, attempts, time.Now().Add(delay).UTC().Format(time.RFC3339Nano), id)
+	_, err := s.DB.ExecContext(ctx, s.q(`UPDATE report_outbox SET attempts=?,next_attempt_at=? WHERE id=?`), attempts, time.Now().Add(delay).UTC().Format(time.RFC3339Nano), id)
 	return err
 }
 func min(a, b int) int {

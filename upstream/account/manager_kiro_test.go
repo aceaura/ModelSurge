@@ -2,6 +2,7 @@
 package account
 
 import (
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,7 +11,7 @@ import (
 // newTestManager2 独立命名的测试构造（避免与 manager_test.go 的辅助重名冲突）。
 func newBreakerManager(t *testing.T) *Manager {
 	t.Helper()
-	store, err := Open(filepath.Join(t.TempDir(), "breaker.db"))
+	store, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "breaker.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +81,7 @@ func TestBreakerTransientFailure(t *testing.T) {
 // 熔断状态重启延续（库内恢复）。
 func TestBreakerPersistAcrossRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "breaker.db")
-	store, err := Open(dbPath)
+	store, err := Open(dialect.SQLite, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestBreakerPersistAcrossRestart(t *testing.T) {
 	m.ReportTransientFailure("a1")
 	store.Close()
 
-	store2, err := Open(dbPath)
+	store2, err := Open(dialect.SQLite, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package account
 
 import (
 	"database/sql"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"path/filepath"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func TestMigrateV1ToV2(t *testing.T) {
 	}
 
 	// 正常 Open：建表 no-op + v2 迁移补列
-	store, err := Open(dbPath)
+	store, err := Open(dialect.SQLite, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestMigrateV1ToV2(t *testing.T) {
 
 // CRUD 全流程：插入、读取、更新、token 状态、统计、熔断、删除。
 func TestAccountCRUD(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "crud.db"))
+	store, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "crud.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

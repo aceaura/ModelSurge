@@ -21,9 +21,9 @@ func (s *Store) InsertAccount(a *Account) error {
 	if a.Disabled {
 		disabled = 1
 	}
-	if _, err := s.db.Exec(`INSERT INTO accounts
+	if _, err := s.db.Exec(s.q(`INSERT INTO accounts
 		(name, type, enabled, protocol, base_url, api_key, models, headers, models_allowlist, kiro, overrides, disabled, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		a.Name, a.Type, enabled, a.Protocol, a.BaseURL, a.APIKey,
 		string(models), marshalHeaders(a.Headers), string(allowlist), kiro, encodeOverrides(a.Overrides), disabled, time.Now().Unix()); err != nil {
 		return fmt.Errorf("account: insert %q: %w", a.Name, err)
@@ -41,9 +41,9 @@ func (s *Store) UpdateAccount(a *Account) error {
 	if a.Enabled {
 		enabled = 1
 	}
-	res, err := s.db.Exec(`UPDATE accounts SET
+	res, err := s.db.Exec(s.q(`UPDATE accounts SET
 		type=?, enabled=?, protocol=?, base_url=?, api_key=?, models=?,
-		headers=?, models_allowlist=?, kiro=?, overrides=?, updated_at=? WHERE name=?`,
+		headers=?, models_allowlist=?, kiro=?, overrides=?, updated_at=? WHERE name=?`),
 		a.Type, enabled, a.Protocol, a.BaseURL, a.APIKey, string(models),
 		marshalHeaders(a.Headers), string(allowlist), kiro, encodeOverrides(a.Overrides), time.Now().Unix(), a.Name)
 	if err != nil {
@@ -57,7 +57,7 @@ func (s *Store) UpdateAccount(a *Account) error {
 
 // DeleteAccount 删除账号行（usage_log 历史保留）。
 func (s *Store) DeleteAccount(name string) error {
-	_, err := s.db.Exec(`DELETE FROM accounts WHERE name=?`, name)
+	_, err := s.db.Exec(s.q(`DELETE FROM accounts WHERE name=?`), name)
 	return err
 }
 
@@ -70,7 +70,7 @@ func (s *Store) SaveTokenState(name string, ts *TokenState) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE accounts SET token_state=?, updated_at=? WHERE name=?`,
+	_, err = s.db.Exec(s.q(`UPDATE accounts SET token_state=?, updated_at=? WHERE name=?`),
 		string(b), time.Now().Unix(), name)
 	return err
 }
@@ -81,14 +81,14 @@ func (s *Store) SaveStats(name string, stats AccountStats) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE accounts SET stats=?, updated_at=? WHERE name=?`,
+	_, err = s.db.Exec(s.q(`UPDATE accounts SET stats=?, updated_at=? WHERE name=?`),
 		string(b), time.Now().Unix(), name)
 	return err
 }
 
 // SetFailures 持久化熔断计数（连续失败数 + 最近失败时刻）。
 func (s *Store) SetFailures(name string, failures int, at time.Time) error {
-	_, err := s.db.Exec(`UPDATE accounts SET failures=?, last_failure=?, updated_at=? WHERE name=?`,
+	_, err := s.db.Exec(s.q(`UPDATE accounts SET failures=?, last_failure=?, updated_at=? WHERE name=?`),
 		failures, at.Unix(), time.Now().Unix(), name)
 	return err
 }

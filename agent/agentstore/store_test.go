@@ -2,6 +2,7 @@ package agentstore
 
 import (
 	"context"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestDeleteJournalAndOutboxReplayData(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "agent.db"))
+	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "agent.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func TestDeleteJournalAndOutboxReplayData(t *testing.T) {
 }
 
 func TestRequestLogContainsNoSecretColumns(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "agent.db"))
+	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "agent.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@
 package account
 
 import (
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"path/filepath"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ func mustInsert(t *testing.T, store *Store, accs ...*Account) {
 // api-key 账号不受影响。
 func TestNewManagerLoadsKiroAccounts(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "kiroseed.db")
-	store, err := Open(dbPath)
+	store, err := Open(dialect.SQLite, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +50,7 @@ func TestNewManagerLoadsKiroAccounts(t *testing.T) {
 
 // TestManagerDepsBreaker 熔断参数覆盖：基数 10s、封顶 30s。
 func TestManagerDepsBreaker(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "deps.db"))
+	store, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "deps.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestManagerDepsBreaker(t *testing.T) {
 
 // TestManagerDepsKiroDefaults kiro 区默认与缓存 TTL 注入。
 func TestManagerDepsKiroDefaults(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "kdeps.db"))
+	store, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "kdeps.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

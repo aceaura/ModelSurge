@@ -23,7 +23,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	store, err := relaystore.Open(cfg.DBPath)
+	store, err := relaystore.Open(cfg.DBDriver, cfg.DBDSN)
 	if err != nil {
 		log.Fatal(err)
 	}

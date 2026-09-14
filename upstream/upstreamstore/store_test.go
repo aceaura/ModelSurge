@@ -3,6 +3,7 @@ package upstreamstore
 import (
 	"context"
 	"database/sql"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ import (
 )
 
 func TestMaterializeAndIdempotentReport(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "upstream.db"))
+	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func TestMaterializeAndIdempotentReport(t *testing.T) {
 func createLegacy(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legacy.db")
-	st, err := account.Open(path)
+	st, err := account.Open(dialect.SQLite, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +61,7 @@ func createLegacy(t *testing.T) string {
 }
 
 func TestMaterializeGeminiAccountKeepsAccountAndRemovesModels(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "upstream.db"))
+	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +91,7 @@ func TestMaterializeGeminiAccountKeepsAccountAndRemovesModels(t *testing.T) {
 func TestImportLegacyFreshRepeatAndUsage(t *testing.T) {
 	ctx := context.Background()
 	legacy := createLegacy(t)
-	dst, err := Open(filepath.Join(t.TempDir(), "upstream.db"))
+	dst, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +140,7 @@ func TestImportLegacyFreshRepeatAndUsage(t *testing.T) {
 
 func TestImportLegacyGeminiAccountDoesNotPublishModels(t *testing.T) {
 	legacyPath := filepath.Join(t.TempDir(), "legacy-gemini.db")
-	legacy, err := account.Open(legacyPath)
+	legacy, err := account.Open(dialect.SQLite, legacyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +151,7 @@ func TestImportLegacyGeminiAccountDoesNotPublishModels(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dst, err := Open(filepath.Join(t.TempDir(), "upstream.db"))
+	dst, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +182,7 @@ func TestImportLegacyFailureRollsBackEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw.Close()
-	dst, err := Open(filepath.Join(t.TempDir(), "upstream.db"))
+	dst, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

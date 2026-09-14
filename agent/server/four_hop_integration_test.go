@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +32,7 @@ func TestRealFourHopHTTPPipeline(t *testing.T) {
 	provider := newMockProvider(t)
 	defer provider.Close()
 
-	upStore, err := upstreamstore.Open(filepath.Join(t.TempDir(), "upstream.db"))
+	upStore, err := upstreamstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +53,7 @@ func TestRealFourHopHTTPPipeline(t *testing.T) {
 	upstreamHTTP := httptest.NewServer(upstreamservice.NewHTTPServer(upstreamservice.NewService(upStore, manager), "upstream-secret").Handler())
 	defer upstreamHTTP.Close()
 
-	replayStore, err := relaystore.Open(filepath.Join(t.TempDir(), "replay.db"))
+	replayStore, err := relaystore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "replay.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestRealFourHopHTTPPipeline(t *testing.T) {
 	replayHTTP := httptest.NewServer(replayservice.NewHTTPServer(&replayservice.Service{Store: replayStore, Scheduler: scheduler, Upstream: upClient}, "replay-secret", "admin-secret").Handler())
 	defer replayHTTP.Close()
 
-	agentStore, err := agentstore.Open(filepath.Join(t.TempDir(), "agent.db"))
+	agentStore, err := agentstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "agent.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

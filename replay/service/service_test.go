@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"io"
 	"log"
 	"net/http"
@@ -57,7 +58,7 @@ func (f *fakeUpstream) WebSearch(context.Context, upstreamv1.WebSearchRequest) (
 
 func newTestServer(t *testing.T) (*HTTPServer, *relaystore.Store, *fakeUpstream) {
 	t.Helper()
-	store, err := relaystore.Open(filepath.Join(t.TempDir(), "replay.db"))
+	store, err := relaystore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "replay.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"hash/crc32"
 	"io"
 	"log"
@@ -45,7 +46,7 @@ func TestKiroExecuteUsesUpstreamRuntimeAndEmitsNDJSON(t *testing.T) {
 	}))
 	defer kiroEndpoint.Close()
 
-	store, err := upstreamstore.Open(filepath.Join(t.TempDir(), "upstream.db"))
+	store, err := upstreamstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,13 +2,14 @@ package relaystore
 
 import (
 	"context"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"path/filepath"
 	"testing"
 )
 
 func TestUserModelAuthenticationStoresOnlyHash(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "relay.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +36,7 @@ func TestUserModelAuthenticationStoresOnlyHash(t *testing.T) {
 
 func TestUserModelProtocolBinding(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "relay.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestUserModelProtocolBinding(t *testing.T) {
 
 func TestApplyReportIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "replay.db"))
+	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "replay.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

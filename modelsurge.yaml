@@ -1,7 +1,8 @@
 # 模式一 · 单进程配置（cmd/modelsurge）
 # 单份 YAML 三 section，字段与三进程各自配置完全一致；${ENV} 插值保留。
 # 注意：replay/upstream 的 listen 与 URL 由组合根强制覆写为回环地址，
-# 在此配置中出现即告警忽略。
+# 在此配置中出现即告警忽略。数据源固定 SQLite（db_path），
+# db_driver/db_dsn 属模式二三进程形态，在此出现即告警忽略。
 
 agent:
   listen: 0.0.0.0:18099

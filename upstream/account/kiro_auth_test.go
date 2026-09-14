@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,7 +32,7 @@ func authTestEnv(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 
 func newAuthStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(filepath.Join(t.TempDir(), "auth.db"))
+	store, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "auth.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -284,23 +284,32 @@ func migrateColumns(db *sql.DB, driver, ver string, columns []string) error {
 	return nil
 }
 
-// tableColumns 列出表已有列：sqlite 走 PRAGMA table_info，postgres 走
-// information_schema（列名小写）。
+// tableColumns 列出表已有列：sqlite 走 PRAGMA table_info（6 列），
+// postgres 走 information_schema（列名小写，仅 1 列）。
 func tableColumns(db *sql.DB, driver, table string) (map[string]bool, error) {
-	var query string
-	var args []any
+	var rows *sql.Rows
+	var err error
+	have := map[string]bool{}
 	if driver == dialect.Postgres {
-		query = `SELECT column_name FROM information_schema.columns WHERE table_name=$1`
-		args = []any{table}
-	} else {
-		query = `PRAGMA table_info(` + table + `)`
+		rows, err = db.Query(`SELECT column_name FROM information_schema.columns WHERE table_name=$1`, table)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return nil, err
+			}
+			have[strings.ToLower(name)] = true
+		}
+		return have, rows.Err()
 	}
-	rows, err := db.Query(query, args...)
+	rows, err = db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	have := map[string]bool{}
 	for rows.Next() {
 		var cid int
 		var name, ctype string

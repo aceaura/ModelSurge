@@ -1,5 +1,8 @@
 listen: 0.0.0.0:18100
 db_path: /data/upstream.db
+# 模式二数据源（未设 env 时为空 -> Normalize 回落 sqlite + db_path）
+db_driver: ${MODELSURGE_DB_DRIVER}
+db_dsn: ${MODELSURGE_UPSTREAM_DB_DSN}
 service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}
 admin_key: ${MODELSURGE_UPSTREAM_ADMIN_KEY}
 # Optional, read-only and idempotent compatibility import:

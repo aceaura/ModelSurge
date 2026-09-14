@@ -14,6 +14,58 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// 再物化保运行态：存续模型的熔断/冷却计数不被重置（启动/热更语义），
+// 配置中移除的模型行（连同其 state）被清掉。
+func TestMaterializeKeepsModelState(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Accounts.InsertAccount(&account.Account{Name: "a", Type: account.TypeAPIKey, Enabled: true, Protocol: "openai-chat", BaseURL: "https://example.test", APIKey: "secret", Models: map[string]string{"m1": "n1", "m2": "n2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MaterializeAccounts(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyReport(ctx, upstreamv1.ResultReport{ReportID: "r1", TargetID: "a/m1", Outcome: "auth_error", Status: 401}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyReport(ctx, upstreamv1.ResultReport{ReportID: "r2", TargetID: "a/m1", Outcome: "auth_error", Status: 401}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 账号配置收缩为只剩 m1：m2 行应被清，m1 计数应保
+	if err := s.Accounts.UpdateAccount(&account.Account{Name: "a", Type: account.TypeAPIKey, Enabled: true, Protocol: "openai-chat", BaseURL: "https://example.test", APIKey: "secret", Models: map[string]string{"m1": "n1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MaterializeAccounts(); err != nil {
+		t.Fatal(err)
+	}
+	var failures int
+	if err := s.DB.QueryRow(`SELECT failures FROM model_state WHERE upstream_model_id='a/m1'`).Scan(&failures); err != nil {
+		t.Fatal(err)
+	}
+	if failures != 2 {
+		t.Fatalf("re-materialize reset model_state: failures=%d, want 2", failures)
+	}
+	var cooldown int64
+	if err := s.DB.QueryRow(`SELECT cooldown_until FROM model_state WHERE upstream_model_id='a/m1'`).Scan(&cooldown); err != nil {
+		t.Fatal(err)
+	}
+	if cooldown <= 0 {
+		t.Fatalf("re-materialize reset cooldown: %d", cooldown)
+	}
+	var staleRows int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM model_state WHERE upstream_model_id='a/m2'`).Scan(&staleRows); err != nil {
+		t.Fatal(err)
+	}
+	if staleRows != 0 {
+		t.Fatalf("removed model's state survived: %d", staleRows)
+	}
+}
+
 func TestMaterializeAndIdempotentReport(t *testing.T) {
 	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
 	if err != nil {

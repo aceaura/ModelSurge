@@ -520,8 +520,19 @@ func (s *AuthService) loadCliDBAt(path string) {
 }
 
 // refreshLocked 执行一次刷新（路由到对应端点），成功后持久化 + 回写。
+// postgres 多副本：先取账号级 advisory lock，锁内重读库内轮转结果——
+// 他副本刚刷新过则整份采纳跳过（旧 refresh token 已轮转必 400）。
 func (s *AuthService) refreshLocked(ctx context.Context) error {
-	var err error
+	unlock, err := s.lockAccount(ctx)
+	if err != nil {
+		return fmt.Errorf("kiro auth %s: account lock: %w", s.name, err)
+	}
+	defer unlock()
+
+	if s.adoptPersistedToken() {
+		return nil
+	}
+
 	if s.token.AuthType == AuthTypeAWSSSOOIDC {
 		err = s.refreshOIDC(ctx)
 		// OIDC 400：kiro-cli 重新登录轮转了 token，重载凭据源重试一次
@@ -540,6 +551,42 @@ func (s *AuthService) refreshLocked(ctx context.Context) error {
 	s.persistLocked()
 	s.writeBack()
 	return nil
+}
+
+// lockAccount 获取账号级跨副本互斥（postgres advisory lock；sqlite 单
+// 进程或无 store 时为 no-op），返回解锁函数。持锁等待期间本账号请求
+// 阻塞是预期行为：等待刚轮转的 token 好过各自打必败的刷新。
+func (s *AuthService) lockAccount(ctx context.Context) (func(), error) {
+	if s.store == nil || s.name == "" {
+		return func() {}, nil
+	}
+	l, err := s.store.LockAccount(ctx, s.name)
+	if err != nil {
+		return nil, err
+	}
+	return l.Unlock, nil
+}
+
+// adoptPersistedToken 锁内重读库内 token state：他副本刚轮转过且未
+// 临期则整份采纳（轮转后的 refresh token 只在库里），本次跳过刷新。
+func (s *AuthService) adoptPersistedToken() bool {
+	if s.store == nil || s.name == "" {
+		return false
+	}
+	ts, err := s.store.GetTokenState(s.name)
+	if err != nil || ts == nil || ts.AccessToken == "" {
+		return false
+	}
+	if ts.ExpiresAt.IsZero() || !ts.ExpiresAt.After(s.now().Add(tokenRefreshThreshold)) {
+		return false
+	}
+	if !ts.ExpiresAt.After(s.token.ExpiresAt) {
+		return false
+	}
+	s.token = *ts
+	log.Printf("kiro auth %s: adopted token state refreshed elsewhere, expires %s",
+		s.name, s.token.ExpiresAt.Format(time.RFC3339))
+	return true
 }
 
 // refreshDesktop KIRO_DESKTOP：POST prod.{sso}.auth.desktop.kiro.dev/refreshToken。

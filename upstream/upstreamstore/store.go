@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -85,13 +84,7 @@ func Open(driver, dsn string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("upstreamstore: migrate: %w", err)
 	}
-	var path string
-	if driver == dialect.SQLite {
-		path = strings.TrimPrefix(dsn, "file:")
-		if i := strings.IndexByte(path, '?'); i >= 0 {
-			path = path[:i]
-		}
-	}
+	path := dialect.SQLitePath(driver, dsn)
 	return &Store{DB: db, Accounts: accounts, driver: driver, path: path}, nil
 }
 
@@ -114,9 +107,6 @@ func (s *Store) MaterializeAccounts() error {
 		return err
 	}
 	for _, a := range accs {
-		if _, err := tx.Exec(s.q(`DELETE FROM upstream_models WHERE account=?`), a.Name); err != nil {
-			return err
-		}
 		if err := materializeAccount(s, tx, a); err != nil {
 			return err
 		}
@@ -129,7 +119,9 @@ func materializeAccount(s *Store, tx *sql.Tx, a account.Account) error {
 	if a.Type == account.TypeKiro {
 		protocol = "kiro"
 	} else if !materializableProtocol(protocol) {
-		return nil
+		// 非物化协议：清掉该账号全部模型行（物化不了的行不该留）
+		_, err := tx.Exec(s.q(`DELETE FROM upstream_models WHERE account=?`), a.Name)
+		return err
 	}
 	models := a.Models
 	if len(models) == 0 {
@@ -141,11 +133,13 @@ func materializeAccount(s *Store, tx *sql.Tx, a account.Account) error {
 	if a.Enabled {
 		enabled = 1
 	}
+	keep := make([]string, 0, len(models))
 	for display, native := range models {
 		id := a.Name + "/" + display
 		if native == "" {
 			native = display
 		}
+		keep = append(keep, id)
 		if _, err := tx.Exec(s.q(`INSERT INTO upstream_models
 			(id,account,display_name,protocol,native_model,base_url,headers,request_overrides,enabled,updated_at)
 			VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
@@ -156,6 +150,30 @@ func materializeAccount(s *Store, tx *sql.Tx, a account.Account) error {
 			return fmt.Errorf("materialize %s: %w", id, err)
 		}
 		if _, err := tx.Exec(s.q(`INSERT INTO model_state(upstream_model_id,updated_at) VALUES(?,?) ON CONFLICT(upstream_model_id) DO NOTHING`), id, time.Now().Unix()); err != nil {
+			return err
+		}
+	}
+	// 只删配置中已不存在的模型行；存续行走 upsert——model_state/quota_state
+	// 经 FK 级联随行删除，若整账号先删后插会把熔断/冷却计数清零（启动即丢，
+	// 集群下任何副本重启都会清共享库）。
+	return deleteStaleModels(s, tx, a.Name, keep)
+}
+
+// deleteStaleModels 删除账号配置中已不存在的模型行（keep 分块防超占位符上限）。
+func deleteStaleModels(s *Store, tx *sql.Tx, accountName string, keep []string) error {
+	if len(keep) == 0 {
+		_, err := tx.Exec(s.q(`DELETE FROM upstream_models WHERE account=?`), accountName)
+		return err
+	}
+	for i := 0; i < len(keep); i += 100 {
+		end := min(i+100, len(keep))
+		marks := strings.TrimSuffix(strings.Repeat("?,", end-i), ",")
+		args := make([]any, 0, end-i+1)
+		args = append(args, accountName)
+		for _, id := range keep[i:end] {
+			args = append(args, id)
+		}
+		if _, err := tx.Exec(s.q(`DELETE FROM upstream_models WHERE account=? AND id NOT IN (`+marks+`)`), args...); err != nil {
 			return err
 		}
 	}
@@ -225,14 +243,22 @@ func (s *Store) ApplyReport(ctx context.Context, r upstreamv1.ResultReport) (boo
 	if n == 0 {
 		return false, tx.Commit()
 	}
+	// FOR UPDATE：postgres 下锁行串行化并发退避读数（多副本失败计数不丢更新）；
+	// sqlite 单连接本就串行，且不支持该语法。
+	lockSuffix := ""
+	if s.driver == dialect.Postgres {
+		lockSuffix = " FOR UPDATE"
+	}
 	failures := 0
 	cooldown := int64(0)
 	class := ""
-	if r.Outcome != "normal" && r.Outcome != "retrying" && r.Outcome != "invalid_model" {
+	isFailure := r.Outcome != "normal" && r.Outcome != "retrying" && r.Outcome != "invalid_model"
+	if isFailure {
 		class = r.Outcome
-		if err := tx.QueryRowContext(ctx, s.q(`SELECT COALESCE(failures,0)+1 FROM model_state WHERE upstream_model_id=?`), r.TargetID).Scan(&failures); err != nil && err != sql.ErrNoRows {
+		if err := tx.QueryRowContext(ctx, s.q(`SELECT COALESCE(failures,0) FROM model_state WHERE upstream_model_id=?`+lockSuffix), r.TargetID).Scan(&failures); err != nil && err != sql.ErrNoRows {
 			return false, err
 		}
+		failures++
 		switch {
 		case !r.CooldownUntil.IsZero():
 			cooldown = r.CooldownUntil.Unix()
@@ -248,15 +274,22 @@ func (s *Store) ApplyReport(ctx context.Context, r upstreamv1.ResultReport) (boo
 		failures = 0
 	} else {
 		var currentCooldown int64
-		if err := tx.QueryRowContext(ctx, s.q(`SELECT COALESCE(cooldown_until,0),COALESCE(failures,0) FROM model_state WHERE upstream_model_id=?`), r.TargetID).Scan(&currentCooldown, &failures); err != nil && err != sql.ErrNoRows {
+		if err := tx.QueryRowContext(ctx, s.q(`SELECT COALESCE(cooldown_until,0),COALESCE(failures,0) FROM model_state WHERE upstream_model_id=?`+lockSuffix), r.TargetID).Scan(&currentCooldown, &failures); err != nil && err != sql.ErrNoRows {
 			return false, err
 		}
 		cooldown = currentCooldown
 		class = r.Outcome
 	}
-	_, err = tx.ExecContext(ctx, s.q(`INSERT INTO model_state(upstream_model_id,cooldown_until,failures,last_error_class,updated_at) VALUES(?,?,?,?,?)
-		ON CONFLICT(upstream_model_id) DO UPDATE SET cooldown_until=excluded.cooldown_until,failures=excluded.failures,last_error_class=excluded.last_error_class,updated_at=excluded.updated_at`),
-		r.TargetID, cooldown, failures, class, time.Now().Unix())
+	// 失败计数走原子自增（failures=failures+1）：行锁缺席时（如目标行尚不存在
+	// 的并发插入竞争）也不丢更新；其余路径整行覆盖语义不变。
+	upsert := `INSERT INTO model_state(upstream_model_id,cooldown_until,failures,last_error_class,updated_at) VALUES(?,?,?,?,?)
+		ON CONFLICT(upstream_model_id) DO UPDATE SET cooldown_until=excluded.cooldown_until,last_error_class=excluded.last_error_class,updated_at=excluded.updated_at`
+	if isFailure {
+		upsert += `,failures=model_state.failures+1`
+	} else {
+		upsert += `,failures=excluded.failures`
+	}
+	_, err = tx.ExecContext(ctx, s.q(upsert), r.TargetID, cooldown, failures, class, time.Now().Unix())
 	if err != nil {
 		return false, err
 	}
@@ -282,17 +315,11 @@ func (s *Store) ImportLegacy(ctx context.Context, source string) error {
 	if done > 0 {
 		return nil
 	}
-	uriPath := filepath.ToSlash(abs)
-	if len(uriPath) >= 2 && uriPath[1] == ':' {
-		uriPath = "/" + uriPath
-	}
-	u := &url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=ro&_pragma=query_only(1)"}
-	src, err := sql.Open("sqlite", u.String())
+	src, err := dialect.OpenSQLiteReadOnly(abs)
 	if err != nil {
-		return fmt.Errorf("open legacy read-only: %w", err)
+		return err
 	}
 	defer src.Close()
-	src.SetMaxOpenConns(1)
 
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {

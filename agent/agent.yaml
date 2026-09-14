@@ -2,6 +2,9 @@ listen: 0.0.0.0:18099
 replay_url: http://replay:18101
 service_key: ${MODELSURGE_AGENT_REPLAY_KEY}
 db_path: /data/agent.db
+# 模式二数据源（未设 env 时为空 -> Normalize 回落 sqlite + db_path）
+db_driver: ${MODELSURGE_DB_DRIVER}
+db_dsn: ${MODELSURGE_AGENT_DB_DSN}
 control_timeout: 10s
 first_token_timeout: 30s
 same_account_retries: 1

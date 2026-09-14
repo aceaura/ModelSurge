@@ -153,14 +153,15 @@ account 收编：`upstreamstore.Open` 打开连接后已调 `account.OpenDB(db)`
 | DSN | `file:path?_pragma=busy_timeout(5000)&_pragma=journal_mode(DELETE)&_pragma=foreign_keys(ON)` | 无 `_pragma`，池参数走 DSN/配置 |
 | 连接池 | 恒 `SetMaxOpenConns(1)` | 按服务配置（默认 10） |
 
-**迁移（SQLite → PG 单向）**：upstream 侧复用 `ImportLegacy` 的只读幂等模式（`mode=ro&_pragma=query_only(1)`，见 upstreamstore/store.go:272）读源库、按唯一约束幂等写目标库；replay 侧提供导出/导入管理命令（user_models/groups/members/缓存可重建可不迁）；agent 侧先排空 outbox 再切换（排空后 agent.db 无需迁移）。
+**迁移（SQLite → PG 单向）**：upstream 侧复用 `ImportLegacy` 的只读幂等模式（`mode=ro&_pragma=query_only(1)`，收敛为 `dialect.OpenSQLiteReadOnly`）读源库、按唯一约束幂等写目标库——已实施为 `upstreamstore.Migrate`（accounts 物化 → model_state/quota_state 覆盖 → result_reports 账本 → usage_log rowid 防重，整体经 `legacy_imports` 标记一次性）与 `upstream/cmd/migrate` CLI；replay 侧已实施 `relaystore.Migrate` + `replay/cmd/migrate` CLI（user_models/groups/members/result_reports，target_cache 可重建不迁）；agent 侧先排空 outbox 再切换（排空后 agent.db 无需迁移）。
 
 ### 2.3 取消单写者假设后的并发重设计
 
 1. **upstreamstore.ApplyReport 失败计数**：现状 upsert `failures=excluded.failures`（整行覆盖，store.go:244）在并发下丢更新；改为原子表达式 `failures=failures+1`，退避计算配 `SELECT ... FOR UPDATE`。`result_reports` 唯一约束幂等兜底不变。
 2. **relaystore.ApplyReport**：`ON CONFLICT(report_id) DO NOTHING` + `RowsAffected==0` 短路（store.go:176）天然并发安全，唯一约束即互斥，回归测试背书即可。
-3. **Kiro token 轮换**：加分布式互斥——PG advisory lock（`pg_advisory_xact_lock`，锁粒度 = 账号名 hash）。Redis 保持纯易失层，不参与凭据互斥。
+3. **Kiro token 轮换**：加分布式互斥——PG advisory lock（session 级 `pg_advisory_lock`，pinned 连接；刷新含跨 HTTP 长调用，不能持事务等网络，故不用 xact 级；锁粒度 = 账号名 hash），锁内重读库内 token state，他副本刚轮转过且未临期则整份采纳跳过。Redis 保持纯易失层，不参与凭据互斥。
 4. **target_cache 并发写**：last-writer-wins，PG 行锁串行化单行更新；错误状态会被下一次 dispatch 的 evaluate 自愈，不破坏正确性。
+5. **物化与运行态（实施修正）**：`MaterializeAccounts` 原先整账号先删后插——`model_state`/`quota_state` 的 FK `ON DELETE CASCADE` 会把熔断/冷却计数清零（单进程每次启动即丢；集群下任何副本重启清共享库）。已改为存续模型行 upsert、只删配置中已不存在的行；账号级冷却/禁用（accounts 列）不受影响，从未被物化触碰。
 
 ### 2.4 Redis 逐项归属（必需但纯易失，DB 权威）
 

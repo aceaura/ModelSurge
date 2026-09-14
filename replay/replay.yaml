@@ -1,5 +1,8 @@
 listen: 0.0.0.0:18101
 db_path: /data/replay.db
+# 模式二数据源（未设 env 时为空 -> Normalize 回落 sqlite + db_path）
+db_driver: ${MODELSURGE_DB_DRIVER}
+db_dsn: ${MODELSURGE_REPLAY_DB_DSN}
 upstream_url: http://upstream:18100
 agent_service_key: ${MODELSURGE_AGENT_REPLAY_KEY}
 upstream_service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}

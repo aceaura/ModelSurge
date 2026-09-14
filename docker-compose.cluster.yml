@@ -1,0 +1,98 @@
+# 模式二集群栈（override）：
+#   docker compose -f docker-compose.yml -f docker-compose.cluster.yml up
+# 形态：postgres:16（三库三 role，deploy/pg-init/01-roles.sh 初始化）
+# + redis:7（纯易失，Phase C 接入）+ 三进程切 postgres DSN。
+# 验证栈默认弱密码（role 名），正式部署经 .env 设 MODELSURGE_PG_*_PASSWORD
+# 或直接设 MODELSURGE_*_DB_DSN 全量 DSN。
+# config-check 一次性服务在拓扑上强制：driver=postgres、三 DSN 非空且互不
+# 相同（设计 2.1「三份 DSN 分开配置、拒绝共享」）。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${MODELSURGE_PG_ADMIN_PASSWORD:-postgres}
+      POSTGRES_AGENT_PASSWORD: ${MODELSURGE_PG_AGENT_PASSWORD:-agent}
+      POSTGRES_REPLAY_PASSWORD: ${MODELSURGE_PG_REPLAY_PASSWORD:-replay}
+      POSTGRES_UPSTREAM_PASSWORD: ${MODELSURGE_PG_UPSTREAM_PASSWORD:-upstream}
+      POSTGRES_DB: postgres
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./deploy/pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    restart: unless-stopped
+
+  config-check:
+    image: alpine:3.20
+    restart: "no"
+    environment:
+      MODELSURGE_DB_DRIVER: ${MODELSURGE_DB_DRIVER:-postgres}
+      MODELSURGE_AGENT_DB_DSN: ${MODELSURGE_AGENT_DB_DSN:-postgres://agent:agent@postgres:5432/agent}
+      MODELSURGE_REPLAY_DB_DSN: ${MODELSURGE_REPLAY_DB_DSN:-postgres://replay:replay@postgres:5432/replay}
+      MODELSURGE_UPSTREAM_DB_DSN: ${MODELSURGE_UPSTREAM_DB_DSN:-postgres://upstream:upstream@postgres:5432/upstream}
+    command:
+      - sh
+      - -c
+      - |
+        if [ "$$MODELSURGE_DB_DRIVER" != "postgres" ]; then
+          echo "config-check: db driver must be postgres in cluster stack (got $$MODELSURGE_DB_DRIVER)"; exit 1
+        fi
+        if [ -z "$$MODELSURGE_AGENT_DB_DSN" ] || [ -z "$$MODELSURGE_REPLAY_DB_DSN" ] || [ -z "$$MODELSURGE_UPSTREAM_DB_DSN" ]; then
+          echo "config-check: all three DSNs must be set"; exit 1
+        fi
+        if [ "$$MODELSURGE_AGENT_DB_DSN" = "$$MODELSURGE_REPLAY_DB_DSN" ] \
+           || [ "$$MODELSURGE_AGENT_DB_DSN" = "$$MODELSURGE_UPSTREAM_DB_DSN" ] \
+           || [ "$$MODELSURGE_REPLAY_DB_DSN" = "$$MODELSURGE_UPSTREAM_DB_DSN" ]; then
+          echo "config-check: agent/replay/upstream DSNs must differ"; exit 1
+        fi
+        echo "config-check: ok (driver=postgres, DSNs distinct)"
+
+  upstream:
+    depends_on:
+      config-check:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      MODELSURGE_DB_DRIVER: postgres
+      MODELSURGE_UPSTREAM_DB_DSN: ${MODELSURGE_UPSTREAM_DB_DSN:-postgres://upstream:upstream@postgres:5432/upstream}
+
+  replay:
+    depends_on:
+      upstream:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      MODELSURGE_DB_DRIVER: postgres
+      MODELSURGE_REPLAY_DB_DSN: ${MODELSURGE_REPLAY_DB_DSN:-postgres://replay:replay@postgres:5432/replay}
+
+  agent:
+    depends_on:
+      replay:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      MODELSURGE_DB_DRIVER: postgres
+      MODELSURGE_AGENT_DB_DSN: ${MODELSURGE_AGENT_DB_DSN:-postgres://agent:agent@postgres:5432/agent}
+
+volumes:
+  pg-data:

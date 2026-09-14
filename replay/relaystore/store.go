@@ -16,6 +16,8 @@ import (
 type Store struct {
 	DB     *sql.DB
 	driver string
+	// path sqlite 模式下的库路径（Migrate 源路径防混用）；postgres 为空。
+	path string
 }
 type UserModel struct {
 	Name     string `json:"name"`
@@ -55,7 +57,7 @@ func Open(driver, dsn string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("relaystore: migrate: %w", err)
 	}
-	return &Store{DB: db, driver: driver}, nil
+	return &Store{DB: db, driver: driver, path: dialect.SQLitePath(driver, dsn)}, nil
 }
 
 // q 按方言重写占位符（postgres ? → $n）。

@@ -143,8 +143,10 @@ const maxErrBody = 4 * 1024
 // Forward 执行一次转发。clientCodec 为客户端协议 codec（用于错误渲染与响应编码），
 // req.Stream 表示客户端是否要求流式。所有响应直接写入 w。
 func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, req *ir.Request, clientKey string) {
+	requestID := uuid.NewString()
+	ctx = withRequestLog(ctx, requestID, time.Now())
 	if f.paramLog {
-		log.Printf("relay: request %s", requestParams(clientCodec.Name(), req))
+		log.Printf("agent phase=request_in request_id=%s %s", requestID, requestParams(clientCodec.Name(), req))
 	}
 	f.trunc.InjectNotices(req) // 上次截断的恢复提示（命中才修改）
 	f.forwardRemote(ctx, w, clientCodec, req, clientKey)
@@ -200,7 +202,7 @@ func allowedOutboundProtocol(protocol string) bool {
 }
 
 func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, req *ir.Request, clientKey string) {
-	requestID := uuid.NewString()
+	requestID := requestIDFrom(ctx)
 	tried := map[string]bool{}
 	attempts := map[string]int{}
 	var lastErr *ir.Error
@@ -208,13 +210,20 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 		if ctx.Err() != nil {
 			return
 		}
+		if f.paramLog {
+			log.Printf("agent phase=dispatch_out request_id=%s model=%s proto=%s tried=%d", requestID, req.Model, clientCodec.Name(), len(tried))
+		}
 		lease, err := f.replay.Dispatch(ctx, replayv1.DispatchRequest{Model: req.Model, InboundProtocol: clientCodec.Name(), ClientKey: clientKey, RequestID: requestID, TriedIDs: triedIDs(tried)})
 		if err != nil {
 			if lastErr == nil {
 				lastErr = replayDispatchError(err)
 			}
-			writeError(w, clientCodec, lastErr)
+			f.writeClientError(ctx, w, clientCodec, req.Stream, lastErr)
 			return
+		}
+		if f.paramLog {
+			o := lease.RequestOverrides
+			log.Printf("agent phase=dispatch_in request_id=%s target=%s group=%s protocol=%s native_model=%s headers=%d override_temperature=%t override_top_p=%t override_max_tokens=%t override_thinking=%t", requestID, lease.TargetID, lease.GroupID, lease.Protocol, lease.NativeModel, len(lease.Headers), o != nil && o.Temperature != nil, o != nil && o.TopP != nil, o != nil && o.MaxTokens != nil, o != nil && o.Thinking != nil)
 		}
 		cand, err := resolvedCandidate(lease)
 		if err != nil {
@@ -254,7 +263,7 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 			case replayv1.ActionSwitchTarget:
 				tried[lease.TargetID] = true
 			default:
-				writeError(w, clientCodec, aerr)
+				f.writeClientError(ctx, w, clientCodec, req.Stream, aerr)
 				return
 			}
 			break
@@ -345,10 +354,21 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		cl.ClampThinking(upReq) // 协议级预算归一/夹紧，日志反映实发值
 	}
 	if f.paramLog {
-		log.Printf("relay: upstream request %s: %s", cand.name, requestParams(cand.codec.Name(), upReq))
+		body, _ := cand.codec.EncodeRequest(upReq)
+		log.Printf("agent phase=upstream_out request_id=%s target=%s proto=%s %s body_bytes=%d", requestIDFrom(ctx), cand.name, cand.codec.Name(), requestParams(cand.codec.Name(), upReq), len(body))
 	}
 
+	upstreamStarted := time.Now()
 	resp, cancel, uerr := f.openUpstream(ctx, cand, upReq)
+	if f.paramLog {
+		status := 0
+		contentType := ""
+		if resp != nil {
+			status = resp.StatusCode
+			contentType = resp.Header.Get("Content-Type")
+		}
+		log.Printf("agent phase=upstream_in request_id=%s target=%s proto=%s status=%d content_type=%s latency=%s error=%t", requestIDFrom(ctx), cand.name, cand.codec.Name(), status, contentType, time.Since(upstreamStarted), uerr != nil)
+	}
 	if uerr != nil {
 		if uerr.StatusCode == 499 && ctx.Err() != nil {
 			return true, nil // 客户端断开
@@ -389,12 +409,12 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		if onUsage != nil {
 			onUsage(&irResp.Usage)
 		}
-		sum := newRespSummarizer(f.paramLog, cand.name, "json")
+		sum := newRespSummarizer(f.paramLog, requestIDFrom(ctx), cand.name, "json", requestLogFrom(ctx).started)
 		sum.fill(irResp)
 		sum.log()
-		csum := newClientSummarizer(f.paramLog, clientCodec.Name(), req.Stream)
+		csum := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), req.Stream, requestLogFrom(ctx).started)
 		csum.fill(irResp)
-		csum.wrote(writeResponse(w, clientCodec, irResp, req.Stream))
+		writeResponse(w, clientCodec, irResp, req.Stream, csum)
 		csum.log()
 		return true, nil
 	}
@@ -491,8 +511,8 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	enc := clientCodec.NewStreamEncoder()
 	var outText strings.Builder
 	var startUsage ir.Usage // message_start 携带的 input/cache 用量，记账时与 delta 合并
-	sum := newRespSummarizer(f.paramLog, cand.name, "sse")
-	csum := newClientSummarizer(f.paramLog, clientCodec.Name(), true)
+	sum := newRespSummarizer(f.paramLog, requestIDFrom(ctx), cand.name, "sse", requestLogFrom(ctx).started)
+	csum := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), true, requestLogFrom(ctx).started)
 	emit := func(events []ir.Event) bool {
 		for _, ev := range events {
 			if ev.Type == ir.EvMessageStart && ev.Usage != nil {
@@ -582,12 +602,12 @@ func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.
 	if onUsage != nil {
 		onUsage(&resp.Usage)
 	}
-	sum := newRespSummarizer(f.paramLog, cand.name, "sse")
+	sum := newRespSummarizer(f.paramLog, requestIDFrom(ctx), cand.name, "sse", requestLogFrom(ctx).started)
 	sum.fill(resp)
 	sum.log()
-	csum := newClientSummarizer(f.paramLog, clientCodec.Name(), false)
+	csum := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), false, requestLogFrom(ctx).started)
 	csum.fill(resp)
-	csum.wrote(writeResponse(w, clientCodec, resp, false))
+	writeResponse(w, clientCodec, resp, false, csum)
 	csum.log()
 	return true, nil
 }
@@ -708,38 +728,63 @@ func (f *Forwarder) estimateUsageOnEvent(req *ir.Request, outText *strings.Build
 }
 
 // writeResponse 非流式输出；clientStream 为 true 时（上游返回了非 SSE 的兜底响应
-// 而客户端要流式）把完整响应合成为一次性事件流。返回写出字节数。
-func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, resp *ir.Response, clientStream bool) int {
+// 而客户端要流式）把完整响应合成为一次性事件流。
+func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, resp *ir.Response, clientStream bool, summary ...*clientSummarizer) {
+	var clientSummary *clientSummarizer
+	if len(summary) > 0 {
+		clientSummary = summary[0]
+	}
 	if !clientStream {
 		body, err := clientCodec.EncodeResponse(resp)
 		if err != nil {
+			if clientSummary != nil {
+				clientSummary.encErr()
+			}
 			writeError(w, clientCodec, ir.NewHTTPError(500, "encode response: "+err.Error()))
-			return 0
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		n, _ := w.Write(body)
-		return n
+		if clientSummary != nil {
+			clientSummary.wrote(n)
+		}
+		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(200)
 	enc := clientCodec.NewStreamEncoder()
-	total := 0
 	for _, ev := range EventsFromResponse(resp) {
-		frames, _ := enc.Encode(ev)
+		frames, err := enc.Encode(ev)
+		if err != nil {
+			if clientSummary != nil {
+				clientSummary.encErr()
+			}
+			frames = [][]byte{clientCodec.RenderStreamError(&ir.Error{Type: ir.ErrTypeUpstream, Message: err.Error()})}
+		}
+		if clientSummary != nil {
+			clientSummary.framesAdd(len(frames))
+		}
 		for _, fr := range frames {
 			n, _ := w.Write(fr)
-			total += n
+			if clientSummary != nil {
+				clientSummary.wrote(n)
+			}
 		}
 	}
-	for _, fr := range enc.Finish() {
+	finished := enc.Finish()
+	if clientSummary != nil {
+		clientSummary.framesAdd(len(finished))
+	}
+	for _, fr := range finished {
 		n, _ := w.Write(fr)
-		total += n
+		if clientSummary != nil {
+			clientSummary.wrote(n)
+		}
 	}
 	if flush, ok := w.(http.Flusher); ok {
 		flush.Flush()
 	}
-	return total
 }
 
 // EventsFromResponse 把完整响应合成为一次性 IR 事件序列
@@ -788,6 +833,16 @@ func writeError(w http.ResponseWriter, clientCodec proto.InboundCodec, e *ir.Err
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+func (f *Forwarder) writeClientError(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, stream bool, e *ir.Error) {
+	status, body := clientCodec.RenderError(e)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	written, _ := w.Write(body)
+	if f.paramLog {
+		log.Printf("agent phase=client_out request_id=%s proto=%s stream=%t status=%d bytes=%d error=true latency=%s", requestIDFrom(ctx), clientCodec.Name(), stream, status, written, requestLatencyFrom(ctx))
+	}
 }
 
 // excerpt 截取上游错误文本前 500 字符，避免刷屏与泄露。

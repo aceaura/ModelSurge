@@ -20,10 +20,11 @@ type Service struct {
 	KiroFirstTokenTimeout    time.Duration
 	KiroStreamingReadTimeout time.Duration
 	KiroWebSearchInject      bool
+	AccessLogEnabled         bool
 }
 
 func NewService(store *upstreamstore.Store, manager *account.Manager) *Service {
-	return &Service{Store: store, Manager: manager}
+	return &Service{Store: store, Manager: manager, AccessLogEnabled: true}
 }
 
 func (s *Service) Models(ctx context.Context) ([]upstreamv1.ModelSummary, error) {

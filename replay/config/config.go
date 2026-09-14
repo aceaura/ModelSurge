@@ -19,9 +19,11 @@ type Config struct {
 	UpstreamTimeout    string `yaml:"upstream_timeout"`
 	CacheTTL           string `yaml:"cache_ttl"`
 	BootstrapClientKey string `yaml:"bootstrap_client_key"`
+	AccessLog          *bool  `yaml:"access_log"`
 
 	UpstreamTimeoutDuration time.Duration `yaml:"-"`
 	CacheTTLDuration        time.Duration `yaml:"-"`
+	AccessLogEnabled        bool          `yaml:"-"`
 }
 
 func Load(path string) (*Config, error) {
@@ -36,6 +38,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Listen == "" {
 		cfg.Listen = "127.0.0.1:8081"
 	}
+	cfg.AccessLogEnabled = cfg.AccessLog == nil || *cfg.AccessLog
 	if cfg.DBPath == "" || cfg.UpstreamURL == "" || cfg.AgentServiceKey == "" || cfg.UpstreamServiceKey == "" || cfg.AdminKey == "" {
 		return nil, fmt.Errorf("config: db_path, upstream_url, agent_service_key, upstream_service_key and admin_key are required")
 	}

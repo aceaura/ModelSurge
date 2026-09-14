@@ -1,12 +1,16 @@
 package upstreamclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
 	"github.com/aceaura/ModelSurge/upstream/contract/upstreamv1"
 )
 
@@ -67,6 +71,42 @@ func TestClientUsesAuthenticatedPublicContract(t *testing.T) {
 	}
 	if _, err := client.Report(context.Background(), upstreamv1.ResultReport{ReportID: "r", TargetID: "a/m", Outcome: "normal"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestControlLogsAndPropagatesRequestIDWithoutServiceKey(t *testing.T) {
+	var headerRequestID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headerRequestID = r.Header.Get("X-Request-ID")
+		writeTestJSON(w, upstreamv1.EvaluateResponse{Candidates: []upstreamv1.CandidateEvaluation{{ID: "a/m", Available: true}}})
+	}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+	})
+	client := New(server.URL, "service-secret", 0)
+	ctx := replayv1.WithRequestID(context.Background(), "req-control")
+	if _, err := client.Evaluate(ctx, []string{"a/m"}); err != nil {
+		t.Fatal(err)
+	}
+	got := logs.String()
+	for _, phase := range []string{"phase=control_out request_id=req-control", "phase=control_in request_id=req-control"} {
+		if !strings.Contains(got, phase) {
+			t.Errorf("missing %s: %s", phase, got)
+		}
+	}
+	if headerRequestID != "req-control" {
+		t.Fatalf("X-Request-ID=%q", headerRequestID)
+	}
+	if strings.Contains(got, "service-secret") || strings.Contains(got, "Authorization") {
+		t.Fatalf("upstream client logs leaked credential: %s", got)
 	}
 }
 

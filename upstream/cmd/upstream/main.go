@@ -61,6 +61,7 @@ func main() {
 		log.Fatal(err)
 	}
 	svc := service.NewService(store, mgr)
+	svc.AccessLogEnabled = cfg.AccessLogEnabled
 	firstTokenTimeout := 30 * time.Second
 	if cfg.Kiro != nil {
 		if cfg.Kiro.FirstTokenTimeout != "" {
@@ -71,6 +72,7 @@ func main() {
 	}
 	svc.KiroFirstTokenTimeout = firstTokenTimeout
 	h := service.NewHTTPServer(svc, cfg.ServiceKey)
+	h.AccessLogEnabled = cfg.AccessLogEnabled
 	if cfg.AdminKey != "" {
 		h.AdminHandler = upstreamhttp.NewAccountAdmin(mgr, cfg.AdminKey, store.MaterializeAccounts)
 	}

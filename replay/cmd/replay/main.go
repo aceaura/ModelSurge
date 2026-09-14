@@ -31,6 +31,7 @@ func main() {
 	defer store.Close()
 
 	upstream := upstreamclient.New(cfg.UpstreamURL, cfg.UpstreamServiceKey, cfg.UpstreamTimeoutDuration)
+	upstream.AccessLogEnabled = cfg.AccessLogEnabled
 	if cfg.BootstrapClientKey != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.UpstreamTimeoutDuration)
 		models, bootstrapErr := upstream.Models(ctx)
@@ -53,9 +54,11 @@ func main() {
 		}
 	}
 
-	scheduler := &schedule.Scheduler{Store: store, Upstream: upstream, CacheTTL: cfg.CacheTTLDuration}
-	app := &service.Service{Store: store, Scheduler: scheduler, Upstream: upstream}
-	httpServer := &http.Server{Addr: cfg.Listen, Handler: service.NewHTTPServer(app, cfg.AgentServiceKey, cfg.AdminKey).Handler(), ReadHeaderTimeout: 5 * time.Second}
+	scheduler := &schedule.Scheduler{Store: store, Upstream: upstream, CacheTTL: cfg.CacheTTLDuration, AccessLogEnabled: cfg.AccessLogEnabled, AccessLogConfigured: true}
+	app := &service.Service{Store: store, Scheduler: scheduler, Upstream: upstream, AccessLogEnabled: cfg.AccessLogEnabled, AccessLogConfigured: true}
+	handler := service.NewHTTPServer(app, cfg.AgentServiceKey, cfg.AdminKey)
+	handler.SetAccessLog(cfg.AccessLogEnabled)
+	httpServer := &http.Server{Addr: cfg.Listen, Handler: handler.Handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {
 		log.Printf("replay listening on %s", cfg.Listen)

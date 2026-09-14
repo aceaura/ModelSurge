@@ -23,13 +23,15 @@ type Relay struct {
 	AccessLog         *bool  `yaml:"access_log"`
 }
 type Upstream struct {
-	Listen     string           `yaml:"listen"`
-	DBPath     string           `yaml:"db_path"`
-	ServiceKey string           `yaml:"service_key"`
-	AdminKey   string           `yaml:"admin_key"`
-	LegacyDB   string           `yaml:"legacy_db_import"`
-	Kiro       *config.Kiro     `yaml:"kiro"`
-	Cooldowns  config.Cooldowns `yaml:"cooldowns"`
+	Listen           string           `yaml:"listen"`
+	DBPath           string           `yaml:"db_path"`
+	ServiceKey       string           `yaml:"service_key"`
+	AdminKey         string           `yaml:"admin_key"`
+	LegacyDB         string           `yaml:"legacy_db_import"`
+	AccessLog        *bool            `yaml:"access_log"`
+	AccessLogEnabled bool             `yaml:"-"`
+	Kiro             *config.Kiro     `yaml:"kiro"`
+	Cooldowns        config.Cooldowns `yaml:"cooldowns"`
 }
 
 func load(path string, v any) error {
@@ -63,6 +65,7 @@ func LoadUpstream(path string) (Upstream, error) {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:18100"
 	}
+	c.AccessLogEnabled = c.AccessLog == nil || *c.AccessLog
 	if c.DBPath == "" || c.ServiceKey == "" {
 		return c, fmt.Errorf("db_path and service_key are required")
 	}

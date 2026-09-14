@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
 	"github.com/aceaura/ModelSurge/replay/relaystore"
 	"github.com/aceaura/ModelSurge/upstream/contract/upstreamv1"
 )
@@ -25,9 +27,11 @@ type Upstream interface {
 var ErrUnsupportedPolicy = errors.New("unsupported relay policy")
 
 type Scheduler struct {
-	Store    *relaystore.Store
-	Upstream Upstream
-	CacheTTL time.Duration
+	Store               *relaystore.Store
+	Upstream            Upstream
+	CacheTTL            time.Duration
+	AccessLogEnabled    bool
+	AccessLogConfigured bool
 
 	mu      sync.Mutex
 	cursors map[string]int
@@ -37,7 +41,10 @@ type Selection struct {
 	Target  upstreamv1.ResolvedTarget
 }
 
+func (s *Scheduler) accessLog() bool { return !s.AccessLogConfigured || s.AccessLogEnabled }
+
 func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]bool) (Selection, error) {
+	requestID := replayv1.RequestIDFromContext(ctx)
 	g, err := s.Store.GroupForModel(ctx, model)
 	if err != nil {
 		return Selection{}, err
@@ -46,9 +53,29 @@ func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]b
 		return Selection{}, fmt.Errorf("user model %q not found", model)
 	}
 	cachePolicy := g.PolicyType == "" || g.PolicyType == "preset" || g.PolicyType == "sticky" || g.PolicyType == "failover"
-	if cachePolicy && g.CachedTarget != "" && g.LastResult == "normal" && !tried[g.CachedTarget] && (s.CacheTTL <= 0 || time.Since(g.CacheUpdated) < s.CacheTTL) {
+	cacheFresh := s.CacheTTL <= 0 || time.Since(g.CacheUpdated) < s.CacheTTL
+	if s.accessLog() {
+		state := "miss"
+		if g.CachedTarget != "" && !cacheFresh {
+			state = "stale"
+		} else if cachePolicy && g.CachedTarget != "" && g.LastResult == "normal" && !tried[g.CachedTarget] {
+			state = "hit"
+		}
+		log.Printf("replay phase=cache_%s request_id=%s group=%s target=%s policy=%s", state, requestID, g.ID, g.CachedTarget, g.PolicyType)
+	}
+	if cachePolicy && g.CachedTarget != "" && g.LastResult == "normal" && !tried[g.CachedTarget] && cacheFresh {
+		started := time.Now()
+		if s.accessLog() {
+			log.Printf("replay phase=resolve_out request_id=%s target=%s", requestID, g.CachedTarget)
+		}
 		t, err := s.Upstream.Resolve(ctx, g.CachedTarget)
+		if s.accessLog() {
+			log.Printf("replay phase=resolve_in request_id=%s target=%s protocol=%s native_model=%s latency=%s error=%t", requestID, g.CachedTarget, t.Protocol, t.NativeModel, time.Since(started), err != nil)
+		}
 		if err == nil {
+			if s.accessLog() {
+				log.Printf("replay phase=selected request_id=%s group=%s target=%s policy=%s protocol=%s native_model=%s", requestID, g.ID, t.ID, g.PolicyType, t.Protocol, t.NativeModel)
+			}
 			return Selection{g.ID, t}, nil
 		}
 		if cacheErr := s.Store.SetCache(ctx, g.ID, g.CachedTarget, "abnormal"); cacheErr != nil {
@@ -64,7 +91,20 @@ func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]b
 	if len(ids) == 0 {
 		return Selection{}, fmt.Errorf("no eligible target")
 	}
+	evaluateStarted := time.Now()
+	if s.accessLog() {
+		log.Printf("replay phase=evaluate_out request_id=%s target_ids=%d", requestID, len(ids))
+	}
 	evals, err := s.Upstream.Evaluate(ctx, ids)
+	available := 0
+	for _, evaluation := range evals {
+		if evaluation.Available {
+			available++
+		}
+	}
+	if s.accessLog() {
+		log.Printf("replay phase=evaluate_in request_id=%s target_ids=%d available=%d latency=%s error=%t", requestID, len(ids), available, time.Since(evaluateStarted), err != nil)
+	}
 	if err != nil {
 		return Selection{}, err
 	}
@@ -76,7 +116,14 @@ func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]b
 		if !e.Available || tried[e.ID] {
 			continue
 		}
+		resolveStarted := time.Now()
+		if s.accessLog() {
+			log.Printf("replay phase=resolve_out request_id=%s target=%s", requestID, e.ID)
+		}
 		t, err := s.Upstream.Resolve(ctx, e.ID)
+		if s.accessLog() {
+			log.Printf("replay phase=resolve_in request_id=%s target=%s protocol=%s native_model=%s latency=%s error=%t", requestID, e.ID, t.Protocol, t.NativeModel, time.Since(resolveStarted), err != nil)
+		}
 		if err != nil {
 			if cacheErr := s.Store.SetCache(ctx, g.ID, e.ID, "abnormal"); cacheErr != nil {
 				return Selection{}, fmt.Errorf("resolve %s failed and cache update failed: %v; %w", e.ID, err, cacheErr)
@@ -85,6 +132,9 @@ func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]b
 		}
 		if err := s.Store.SetCache(ctx, g.ID, e.ID, "normal"); err != nil {
 			return Selection{}, fmt.Errorf("cache selected target: %w", err)
+		}
+		if s.accessLog() {
+			log.Printf("replay phase=selected request_id=%s group=%s target=%s policy=%s protocol=%s native_model=%s", requestID, g.ID, t.ID, g.PolicyType, t.Protocol, t.NativeModel)
 		}
 		return Selection{g.ID, t}, nil
 	}

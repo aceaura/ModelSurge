@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -74,6 +75,60 @@ func newTestServer(t *testing.T) (*HTTPServer, *relaystore.Store, *fakeUpstream)
 	upstream := &fakeUpstream{}
 	scheduler := &schedule.Scheduler{Store: store, Upstream: upstream}
 	return NewHTTPServer(&Service{Store: store, Scheduler: scheduler, Upstream: upstream}, "agent-key", "admin-key"), store, upstream
+}
+
+func TestDispatchLogsAuthSelectEvaluateAndRedactsClientKey(t *testing.T) {
+	server, _, _ := newTestServer(t)
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+	})
+
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	dispatch := replayv1.DispatchRequest{Model: "public", InboundProtocol: "openai-chat", ClientKey: "client-key", RequestID: "req-log"}
+	doJSON(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key", dispatch, http.StatusOK, nil)
+	got := logs.String()
+	for _, phase := range []string{"phase=dispatch_validate", "phase=auth_start", "phase=auth_result", "phase=select_start", "phase=evaluate_out", "phase=evaluate_in", "phase=resolve_out", "phase=resolve_in", "phase=selected"} {
+		if !strings.Contains(got, phase+" request_id=req-log") {
+			t.Errorf("missing %s: %s", phase, got)
+		}
+	}
+	if strings.Contains(got, "client-key") {
+		t.Fatalf("Replay logs leaked ClientKey: %s", got)
+	}
+}
+
+func TestAccessLogDisabledSilencesReplayLayers(t *testing.T) {
+	server, _, _ := newTestServer(t)
+	server.SetAccessLog(false)
+	server.service.AccessLogConfigured = true
+	server.service.AccessLogEnabled = false
+	server.service.Scheduler.AccessLogConfigured = true
+	server.service.Scheduler.AccessLogEnabled = false
+
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+	})
+
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	dispatch := replayv1.DispatchRequest{Model: "public", InboundProtocol: "openai-chat", ClientKey: "client-key", RequestID: "req-silent"}
+	doJSON(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key", dispatch, http.StatusOK, nil)
+	if logs.Len() != 0 {
+		t.Fatalf("access_log=false emitted logs: %s", logs.String())
+	}
 }
 
 func TestDispatchAuthenticatesUserModelAndUsesCache(t *testing.T) {

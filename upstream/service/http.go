@@ -3,6 +3,7 @@ package upstream
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -13,14 +14,15 @@ import (
 const maxJSON = 1 << 20
 
 type HTTPServer struct {
-	Service      *Service
-	ServiceKey   string
-	AdminHandler http.Handler
-	mux          *http.ServeMux
+	Service          *Service
+	ServiceKey       string
+	AdminHandler     http.Handler
+	AccessLogEnabled bool
+	mux              *http.ServeMux
 }
 
 func NewHTTPServer(service *Service, key string) *HTTPServer {
-	s := &HTTPServer{Service: service, ServiceKey: key, mux: http.NewServeMux()}
+	s := &HTTPServer{Service: service, ServiceKey: key, AccessLogEnabled: true, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET "+upstreamv1.BasePath+"/health", s.health)
 	s.mux.HandleFunc("GET "+upstreamv1.BasePath+"/models", s.models)
 	s.mux.HandleFunc("GET "+upstreamv1.BasePath+"/models/", s.resolve)
@@ -31,12 +33,13 @@ func NewHTTPServer(service *Service, key string) *HTTPServer {
 	return s
 }
 func (s *HTTPServer) Handler() http.Handler {
+	dataPlane := s.accessLog(s.auth(s.mux))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/admin") && s.AdminHandler != nil {
 			s.AdminHandler.ServeHTTP(w, r)
 			return
 		}
-		s.auth(s.mux).ServeHTTP(w, r)
+		dataPlane.ServeHTTP(w, r)
 	})
 }
 func (s *HTTPServer) auth(next http.Handler) http.Handler {
@@ -66,6 +69,9 @@ func (s *HTTPServer) resolve(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, upstreamv1.Error{Code: upstreamv1.CodeNotFound, Message: "not found"})
 		return
 	}
+	if s.AccessLogEnabled {
+		log.Printf("upstream phase=resolve request_id=%s target=%s", requestIDFrom(r.Context()), id)
+	}
 	t, e := s.Service.Resolve(r.Context(), id)
 	if e != nil {
 		status := 503
@@ -83,6 +89,9 @@ func (s *HTTPServer) evaluate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, upstreamv1.Error{Code: upstreamv1.CodeInvalidRequest, Message: "invalid request"})
 		return
 	}
+	if s.AccessLogEnabled {
+		log.Printf("upstream phase=evaluate request_id=%s target_ids=%d", requestIDFrom(r.Context()), len(req.TargetIDs))
+	}
 	v, err := s.Service.Evaluate(r.Context(), req.TargetIDs)
 	if err != nil {
 		writeErr(w, 500, *internalError())
@@ -96,6 +105,9 @@ func (s *HTTPServer) results(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, upstreamv1.Error{Code: upstreamv1.CodeInvalidRequest, Message: "invalid request"})
 		return
 	}
+	if s.AccessLogEnabled {
+		log.Printf("upstream phase=result request_id=%s target=%s outcome=%s status=%d attempt=%d usage_in=%d usage_out=%d cache_read=%d cache_creation=%d", requestIDFrom(r.Context()), req.TargetID, req.Outcome, req.Status, req.Attempt, req.Usage.InputTokens, req.Usage.OutputTokens, req.Usage.CacheRead, req.Usage.CacheCreation)
+	}
 	result, err := s.Service.Report(r.Context(), req)
 	if err != nil {
 		writeErr(w, 400, upstreamv1.Error{Code: upstreamv1.CodeInvalidRequest, Message: "invalid report"})
@@ -108,6 +120,13 @@ func (s *HTTPServer) executeKiro(w http.ResponseWriter, r *http.Request) {
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, upstreamv1.Error{Code: upstreamv1.CodeInvalidRequest, Message: "invalid request", Status: http.StatusBadRequest})
 		return
+	}
+	if req.RequestID == "" {
+		req.RequestID = requestIDFrom(r.Context())
+	}
+	r = r.WithContext(withRequestID(r.Context(), req.RequestID))
+	if s.AccessLogEnabled {
+		log.Printf("upstream phase=kiro_execute request_id=%s target=%s request_bytes=%d", req.RequestID, req.TargetID, len(req.Request))
 	}
 	execution, execErr := s.Service.ExecuteKiro(r.Context(), req)
 	if execErr != nil {
@@ -145,6 +164,9 @@ func (s *HTTPServer) webSearch(w http.ResponseWriter, r *http.Request) {
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, upstreamv1.Error{Code: upstreamv1.CodeInvalidRequest, Message: "invalid request"})
 		return
+	}
+	if s.AccessLogEnabled {
+		log.Printf("upstream phase=web_search request_id=%s target=%s", requestIDFrom(r.Context()), req.TargetID)
 	}
 	result, err := s.Service.WebSearch(r.Context(), req)
 	if err != nil {

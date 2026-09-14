@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -144,6 +145,7 @@ type kiroExecuteReplay struct {
 	lease        replayv1.TargetLease
 	executeCalls atomic.Int64
 	body         io.ReadCloser
+	executeReq   replayv1.KiroExecuteRequest
 }
 
 func (r *kiroExecuteReplay) Dispatch(context.Context, replayv1.DispatchRequest) (replayv1.TargetLease, error) {
@@ -152,8 +154,9 @@ func (r *kiroExecuteReplay) Dispatch(context.Context, replayv1.DispatchRequest) 
 func (*kiroExecuteReplay) Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error) {
 	return replayv1.ResultResponse{Applied: true}, nil
 }
-func (r *kiroExecuteReplay) ExecuteKiro(context.Context, replayv1.KiroExecuteRequest) (*http.Response, error) {
+func (r *kiroExecuteReplay) ExecuteKiro(_ context.Context, req replayv1.KiroExecuteRequest) (*http.Response, error) {
 	r.executeCalls.Add(1)
+	r.executeReq = req
 	if r.body != nil {
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}, Body: r.body}, nil
 	}
@@ -173,6 +176,71 @@ func (r *kiroExecuteReplay) ExecuteKiro(context.Context, replayv1.KiroExecuteReq
 }
 func (*kiroExecuteReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
 	return replayv1.WebSearchResponse{}, nil
+}
+
+func TestAgentDataPlaneLogsUseSameRequestIDAndRedactSecrets(t *testing.T) {
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+	})
+
+	replay := &kiroExecuteReplay{lease: replayv1.TargetLease{RequestID: "lease-id", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"}}
+	f := NewForwarder(&config.Config{AccessLogEnabled: true}, replay, nil)
+	w := httptest.NewRecorder()
+	f.Forward(t.Context(), w, proto.MustInbound("anthropic"), &ir.Request{Model: "public", Stream: true, Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "private-message"}}}}}, "client-secret-key")
+	if replay.executeReq.RequestID == "" {
+		t.Fatal("Kiro request_id was not propagated")
+	}
+	got := logs.String()
+	for _, phase := range []string{"phase=request_in", "phase=dispatch_out", "phase=dispatch_in", "phase=upstream_out", "phase=upstream_in", "phase=kiro_stream_done", "phase=client_out"} {
+		if !strings.Contains(got, phase+" request_id="+replay.executeReq.RequestID) {
+			t.Errorf("missing correlated %s in logs: %s", phase, got)
+		}
+	}
+	for _, forbidden := range []string{"client-secret-key", "private-message", "Authorization", "access-token"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("logs leaked %q: %s", forbidden, got)
+		}
+	}
+}
+
+func TestKiroStrictPolicyLogsAggregatedUpstreamAndClientFrames(t *testing.T) {
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+	})
+
+	replay := &kiroExecuteReplay{lease: replayv1.TargetLease{GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"}}
+	forwarder := NewForwarder(&config.Config{AccessLogEnabled: true}, replay, nil)
+	forwarder.Forward(t.Context(), httptest.NewRecorder(), proto.MustInbound("anthropic"), &ir.Request{
+		Model: "public", Stream: true, ToolChoice: &ir.ToolChoice{Mode: ir.ChoiceNone},
+		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "private-message"}}}},
+	}, "client-secret-key")
+
+	got := logs.String()
+	for _, phase := range []string{"phase=upstream_stream_done request_id=" + replay.executeReq.RequestID, "phase=client_out request_id=" + replay.executeReq.RequestID} {
+		if !strings.Contains(got, phase) {
+			t.Errorf("missing %s: %s", phase, got)
+		}
+	}
+	if strings.Contains(got, "frames=0") {
+		t.Fatalf("strict streaming response logged zero frames: %s", got)
+	}
+	for _, forbidden := range []string{"client-secret-key", "private-message"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("logs leaked %q: %s", forbidden, got)
+		}
+	}
 }
 
 func TestKiroLeaseUsesReplayExecuteInsteadOfDirectHTTP(t *testing.T) {
@@ -265,6 +333,29 @@ func TestKiroStreamFlushesTextBeforeUpstreamCloses(t *testing.T) {
 		t.Fatal("first text delta was buffered until upstream completion")
 	}
 	close(release)
+}
+
+func TestDispatchFailureLogsClientErrorWithoutSecrets(t *testing.T) {
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+	})
+
+	replay := &rejectingLeaseReplay{}
+	forwarder := NewForwarder(&config.Config{AccessLogEnabled: true}, replay, nil)
+	forwarder.Forward(t.Context(), httptest.NewRecorder(), proto.MustInbound("anthropic"), &ir.Request{Model: "public"}, "client-secret-key")
+	got := logs.String()
+	if !strings.Contains(got, "phase=client_out request_id=") || !strings.Contains(got, "error=true") {
+		t.Fatalf("missing client error summary: %s", got)
+	}
+	if strings.Contains(got, "client-secret-key") {
+		t.Fatalf("logs leaked client key: %s", got)
+	}
 }
 
 func TestGeminiLeaseRejectedWithoutProviderConnection(t *testing.T) {

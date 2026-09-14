@@ -1,8 +1,6 @@
-// paramlog.go 请求/响应参数日志：每次转发打印四行——
-//  1. 请求入口：客户端视角请求参数摘要（relay: request）
-//  2. 请求出口：转化后（模型映射/账号覆盖/协议夹紧已应用）的上游视角请求参数摘要（relay: upstream request）
-//  3. 响应入口：上游响应摘要（块类型/长度/stop/usage/wire 形态）（relay: upstream response）
-//  4. 响应出口：写出到客户端的响应摘要（协议/流式/块/字节/帧/编码错误）（relay: response）
+// paramlog.go 请求/响应参数日志：统一使用 agent phase=... 单行格式。
+// 请求侧记录 request_in/dispatch_out/dispatch_in/upstream_out，响应侧记录
+// upstream_in/upstream_stream_done/client_out；仅输出形状、数量、字节与耗时。
 //
 // 均不包含消息内容、系统提示、工具 schema 等上下文载荷。
 // 与访问日志同开关（access_log）。
@@ -13,6 +11,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
 )
@@ -160,15 +159,17 @@ func (s *respShape) String() string {
 
 // respSummarizer 响应入口累计器：上游侧视角（上游名/native 模型/wire 形态）。
 type respSummarizer struct {
-	enabled bool
-	up      string
-	model   string
-	wire    string // sse / json（上游响应体形态）
+	enabled   bool
+	requestID string
+	up        string
+	model     string
+	wire      string // sse / json（上游响应体形态）
+	started   time.Time
 	respShape
 }
 
-func newRespSummarizer(enabled bool, up, wire string) *respSummarizer {
-	return &respSummarizer{enabled: enabled, up: up, wire: wire, respShape: respShape{blocks: map[string]int{}}}
+func newRespSummarizer(enabled bool, requestID, up, wire string, started time.Time) *respSummarizer {
+	return &respSummarizer{enabled: enabled, requestID: requestID, up: up, wire: wire, started: started, respShape: respShape{blocks: map[string]int{}}}
 }
 
 func (s *respSummarizer) observe(ev ir.Event) {
@@ -199,23 +200,25 @@ func (s *respSummarizer) log() {
 	if !s.enabled {
 		return
 	}
-	log.Printf("relay: upstream response %s", s.String())
+	log.Printf("agent phase=upstream_stream_done request_id=%s %s latency=%s", s.requestID, s.String(), time.Since(s.started))
 }
 
 // clientSummarizer 响应出口累计器：写出到客户端的统计
 // （客户端协议/流式/字节/帧/编码错误），块形状与入口同口径。
 type clientSummarizer struct {
-	enabled bool
-	proto   string
-	stream  bool
-	bytes   int64
-	frames  int
-	errs    int
+	enabled   bool
+	requestID string
+	proto     string
+	stream    bool
+	started   time.Time
+	bytes     int64
+	frames    int
+	errs      int
 	respShape
 }
 
-func newClientSummarizer(enabled bool, clientProto string, stream bool) *clientSummarizer {
-	return &clientSummarizer{enabled: enabled, proto: clientProto, stream: stream, respShape: respShape{blocks: map[string]int{}}}
+func newClientSummarizer(enabled bool, requestID, clientProto string, stream bool, started time.Time) *clientSummarizer {
+	return &clientSummarizer{enabled: enabled, requestID: requestID, proto: clientProto, stream: stream, started: started, respShape: respShape{blocks: map[string]int{}}}
 }
 
 func (s *clientSummarizer) observe(ev ir.Event) {
@@ -265,5 +268,5 @@ func (s *clientSummarizer) log() {
 	if !s.enabled {
 		return
 	}
-	log.Printf("relay: response %s", s.String())
+	log.Printf("agent phase=client_out request_id=%s %s latency=%s", s.requestID, s.String(), time.Since(s.started))
 }

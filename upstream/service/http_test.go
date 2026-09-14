@@ -1,8 +1,10 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -26,6 +28,31 @@ func TestInternalAuthRejectsMissingKey(t *testing.T) {
 	}
 	if body := w.Body.String(); body == "" || body == "secret" {
 		t.Fatalf("unsafe body %q", body)
+	}
+}
+
+func TestAccessLogDisabledSilencesUpstreamHTTP(t *testing.T) {
+	h := NewHTTPServer(nil, "service-key")
+	h.AccessLogEnabled = false
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+	})
+
+	r := httptest.NewRequest(http.MethodGet, upstreamv1.BasePath+"/health", nil)
+	r.Header.Set("Authorization", "Bearer service-key")
+	w := httptest.NewRecorder()
+	h.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("access_log=false emitted logs: %s", logs.String())
 	}
 }
 

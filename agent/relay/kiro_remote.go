@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
 	"github.com/aceaura/ModelSurge/agent/proto"
@@ -24,7 +26,7 @@ func (f *Forwarder) attemptKiro(ctx context.Context, w http.ResponseWriter, clie
 	if policy := strictToolChoice(upReq); policy != nil {
 		return f.attemptKiroStrict(ctx, w, clientCodec, cand, req, upReq, policy, onUsage)
 	}
-	resp, openErr := f.openKiroReplay(ctx, cand, body)
+	resp, openErr := f.openKiroReplay(ctx, cand, body, requestParams("kiro", upReq))
 	if openErr != nil {
 		if openErr.StatusCode == 499 && ctx.Err() != nil {
 			return true, nil
@@ -38,19 +40,30 @@ func (f *Forwarder) attemptKiro(ctx context.Context, w http.ResponseWriter, clie
 	return f.collectKiroToClient(ctx, w, clientCodec, cand, req, resp.Body, onUsage)
 }
 
-func (f *Forwarder) openKiroReplay(ctx context.Context, cand candidate, request json.RawMessage) (*http.Response, *ir.Error) {
+func (f *Forwarder) openKiroReplay(ctx context.Context, cand candidate, request json.RawMessage, params string) (*http.Response, *ir.Error) {
 	executor, ok := f.replay.(interface {
 		ExecuteKiro(context.Context, replayv1.KiroExecuteRequest) (*http.Response, error)
 	})
 	if !ok {
 		return nil, &ir.Error{StatusCode: http.StatusBadGateway, Type: ir.ErrTypeUpstream, Message: "replay execute unavailable", Retryable: true}
 	}
-	resp, err := executor.ExecuteKiro(ctx, replayv1.KiroExecuteRequest{TargetID: cand.name, Request: request})
+	requestID := requestIDFrom(ctx)
+	started := time.Now()
+	if f.paramLog {
+		log.Printf("agent phase=upstream_out request_id=%s target=%s proto=kiro %s body_bytes=%d", requestID, cand.name, params, len(request))
+	}
+	resp, err := executor.ExecuteKiro(ctx, replayv1.KiroExecuteRequest{RequestID: requestID, TargetID: cand.name, Request: request})
 	if err != nil {
+		if f.paramLog {
+			log.Printf("agent phase=upstream_in request_id=%s target=%s proto=kiro status=0 content_type= latency=%s error=true", requestID, cand.name, time.Since(started))
+		}
 		if ctx.Err() != nil {
 			return nil, &ir.Error{StatusCode: 499, Type: ir.ErrTypeUpstream, Message: "client disconnected"}
 		}
 		return nil, &ir.Error{StatusCode: http.StatusBadGateway, Type: ir.ErrTypeUpstream, Message: "replay execute unavailable: " + err.Error(), Retryable: true}
+	}
+	if f.paramLog {
+		log.Printf("agent phase=upstream_in request_id=%s target=%s proto=kiro status=%d content_type=%s latency=%s error=false", requestID, cand.name, resp.StatusCode, resp.Header.Get("Content-Type"), time.Since(started))
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return resp, nil
@@ -82,7 +95,19 @@ func (f *Forwarder) streamKiroToClient(ctx context.Context, w http.ResponseWrite
 	encoder := clientCodec.NewStreamEncoder()
 	var output strings.Builder
 	var startUsage ir.Usage
+	var eventCount int
+	var bytesWritten int64
+	streamStarted := time.Now()
+	clientSummary := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), true, requestLogFrom(ctx).started)
+	defer func() {
+		if f.paramLog {
+			log.Printf("agent phase=kiro_stream_done request_id=%s target=%s events=%d bytes=%d latency=%s", requestIDFrom(ctx), cand.name, eventCount, bytesWritten, time.Since(streamStarted))
+		}
+		clientSummary.log()
+	}()
 	emit := func(event ir.Event) bool {
+		eventCount++
+		clientSummary.observe(event)
 		if event.Type == ir.EvMessageStart && event.Usage != nil {
 			startUsage = *event.Usage
 		}
@@ -94,10 +119,15 @@ func (f *Forwarder) streamKiroToClient(ctx context.Context, w http.ResponseWrite
 		}
 		frames, encodeErr := encoder.Encode(event)
 		if encodeErr != nil {
+			clientSummary.encErr()
 			frames = [][]byte{clientCodec.RenderStreamError(&ir.Error{Type: ir.ErrTypeUpstream, Message: encodeErr.Error()})}
 		}
+		clientSummary.framesAdd(len(frames))
 		for _, frame := range frames {
-			if _, writeErr := w.Write(frame); writeErr != nil {
+			written, writeErr := w.Write(frame)
+			bytesWritten += int64(written)
+			clientSummary.wrote(written)
+			if writeErr != nil {
 				return false
 			}
 		}
@@ -137,8 +167,12 @@ func (f *Forwarder) streamKiroToClient(ctx context.Context, w http.ResponseWrite
 			return true, nil
 		}
 	}
-	for _, frame := range encoder.Finish() {
-		_, _ = w.Write(frame)
+	finished := encoder.Finish()
+	clientSummary.framesAdd(len(finished))
+	for _, frame := range finished {
+		written, _ := w.Write(frame)
+		bytesWritten += int64(written)
+		clientSummary.wrote(written)
 	}
 	if flusher != nil {
 		flusher.Flush()
@@ -155,7 +189,13 @@ func (f *Forwarder) collectKiroToClient(ctx context.Context, w http.ResponseWrit
 	if onUsage != nil {
 		onUsage(&response.Usage)
 	}
-	writeResponse(w, clientCodec, response, false)
+	upstreamSummary := newRespSummarizer(f.paramLog, requestIDFrom(ctx), cand.name, "ndjson", requestLogFrom(ctx).started)
+	upstreamSummary.fill(response)
+	upstreamSummary.log()
+	clientSummary := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), false, requestLogFrom(ctx).started)
+	clientSummary.fill(response)
+	writeResponse(w, clientCodec, response, false, clientSummary)
+	clientSummary.log()
 	return true, nil
 }
 
@@ -204,7 +244,7 @@ func (f *Forwarder) attemptKiroStrict(ctx context.Context, w http.ResponseWriter
 		if err != nil {
 			return false, ir.NewHTTPError(http.StatusBadRequest, err.Error())
 		}
-		resp, openErr := f.openKiroReplay(ctx, cand, body)
+		resp, openErr := f.openKiroReplay(ctx, cand, body, requestParams("kiro", upReq))
 		if openErr != nil {
 			return false, openErr
 		}
@@ -224,7 +264,13 @@ func (f *Forwarder) attemptKiroStrict(ctx context.Context, w http.ResponseWriter
 		if onUsage != nil {
 			onUsage(&response.Usage)
 		}
-		writeResponse(w, clientCodec, response, req.Stream)
+		upstreamSummary := newRespSummarizer(f.paramLog, requestIDFrom(ctx), cand.name, "ndjson", requestLogFrom(ctx).started)
+		upstreamSummary.fill(response)
+		upstreamSummary.log()
+		clientSummary := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), req.Stream, requestLogFrom(ctx).started)
+		clientSummary.fill(response)
+		writeResponse(w, clientCodec, response, req.Stream, clientSummary)
+		clientSummary.log()
 		return true, nil
 	}
 }

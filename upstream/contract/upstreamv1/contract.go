@@ -66,8 +66,9 @@ type WebSearchRuntime struct {
 }
 
 type KiroExecuteRequest struct {
-	TargetID string          `json:"target_id"`
-	Request  json.RawMessage `json:"request"`
+	RequestID string          `json:"request_id"`
+	TargetID  string          `json:"target_id"`
+	Request   json.RawMessage `json:"request"`
 }
 
 type WebSearchRequest struct {

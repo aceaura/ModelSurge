@@ -2,11 +2,23 @@
 package replayv1
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 )
 
 const BasePath = "/internal/v1"
+
+type requestIDContextKey struct{}
+
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, requestIDContextKey{}, requestID)
+}
+
+func RequestIDFromContext(ctx context.Context) string {
+	requestID, _ := ctx.Value(requestIDContextKey{}).(string)
+	return requestID
+}
 
 const (
 	CodeUnauthorized      = "unauthorized"
@@ -69,8 +81,9 @@ type WebSearchRuntime struct {
 }
 
 type KiroExecuteRequest struct {
-	TargetID string          `json:"target_id"`
-	Request  json.RawMessage `json:"request"`
+	RequestID string          `json:"request_id"`
+	TargetID  string          `json:"target_id"`
+	Request   json.RawMessage `json:"request"`
 }
 
 type WebSearchRequest struct {

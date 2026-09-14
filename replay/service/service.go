@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
@@ -14,9 +15,15 @@ import (
 )
 
 type Service struct {
-	Store     *relaystore.Store
-	Scheduler *schedule.Scheduler
-	Upstream  schedule.Upstream
+	Store               *relaystore.Store
+	Scheduler           *schedule.Scheduler
+	Upstream            schedule.Upstream
+	AccessLogEnabled    bool
+	AccessLogConfigured bool
+}
+
+func (s *Service) accessLog() bool {
+	return !s.AccessLogConfigured || s.AccessLogEnabled
 }
 
 func (s *Service) Models(ctx context.Context) ([]replayv1.ModelSummary, error) {
@@ -34,10 +41,20 @@ func (s *Service) Models(ctx context.Context) ([]replayv1.ModelSummary, error) {
 }
 
 func (s *Service) Dispatch(ctx context.Context, req replayv1.DispatchRequest) (replayv1.TargetLease, error) {
+	ctx = replayv1.WithRequestID(ctx, req.RequestID)
+	if s.accessLog() {
+		log.Printf("replay phase=dispatch_validate request_id=%s model=%s proto=%s tried=%d", req.RequestID, req.Model, req.InboundProtocol, len(req.TriedIDs))
+	}
 	if req.Model == "" || req.InboundProtocol == "" || req.ClientKey == "" || req.RequestID == "" {
 		return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeInvalidRequest, Message: "model, inbound_protocol, client_key and request_id are required"}
 	}
+	if s.accessLog() {
+		log.Printf("replay phase=auth_start request_id=%s model=%s proto=%s", req.RequestID, req.Model, req.InboundProtocol)
+	}
 	configured, ok, err := s.Scheduler.Authenticate(ctx, req.Model, req.InboundProtocol, req.ClientKey)
+	if s.accessLog() {
+		log.Printf("replay phase=auth_result request_id=%s configured=%t authorized=%t error=%t", req.RequestID, configured, ok, err != nil)
+	}
 	if err != nil {
 		return replayv1.TargetLease{}, fmt.Errorf("authenticate user model: %w", err)
 	}
@@ -51,6 +68,9 @@ func (s *Service) Dispatch(ctx context.Context, req replayv1.DispatchRequest) (r
 	for _, id := range req.TriedIDs {
 		tried[id] = true
 	}
+	if s.accessLog() {
+		log.Printf("replay phase=select_start request_id=%s model=%s tried=%d", req.RequestID, req.Model, len(tried))
+	}
 	selection, err := s.Scheduler.Select(ctx, req.Model, tried)
 	if err != nil {
 		if errors.Is(err, schedule.ErrUnsupportedPolicy) {
@@ -60,6 +80,9 @@ func (s *Service) Dispatch(ctx context.Context, req replayv1.DispatchRequest) (r
 	}
 	if !allowedOutboundProtocol(selection.Target.Protocol) {
 		return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeTargetUnavailable, Message: fmt.Sprintf("unsupported outbound protocol %q", selection.Target.Protocol)}
+	}
+	if s.accessLog() {
+		log.Printf("replay phase=selected request_id=%s group=%s target=%s protocol=%s native_model=%s", req.RequestID, selection.GroupID, selection.Target.ID, selection.Target.Protocol, selection.Target.NativeModel)
 	}
 	return leaseFromTarget(req.RequestID, selection.GroupID, selection.Target), nil
 }
@@ -74,6 +97,7 @@ func allowedOutboundProtocol(protocol string) bool {
 }
 
 func (s *Service) Report(ctx context.Context, report replayv1.ResultReport) (replayv1.ResultResponse, error) {
+	ctx = replayv1.WithRequestID(ctx, report.RequestID)
 	if report.ReportID == "" || report.RequestID == "" || report.GroupID == "" || report.TargetID == "" || report.Outcome == "" {
 		return replayv1.ResultResponse{}, replayv1.Error{Code: replayv1.CodeInvalidRequest, Message: "report_id, request_id, group_id, target_id and outcome are required"}
 	}
@@ -87,7 +111,13 @@ func (s *Service) Report(ctx context.Context, report replayv1.ResultReport) (rep
 	if report.Reason == "INVALID_MODEL_ID" {
 		storeOutcome = "normal"
 	}
+	if s.accessLog() {
+		log.Printf("replay phase=report_normalize request_id=%s target=%s outcome=%s store_outcome=%s status=%d attempt=%d", report.RequestID, report.TargetID, report.Outcome, storeOutcome, report.Status, report.Attempt)
+	}
 	applied, err := s.Store.ApplyReport(ctx, report.ReportID, report.RequestID, report.GroupID, report.TargetID, storeOutcome)
+	if s.accessLog() {
+		log.Printf("replay phase=report_apply request_id=%s target=%s applied=%t error=%t", report.RequestID, report.TargetID, applied, err != nil)
+	}
 	if err != nil {
 		return replayv1.ResultResponse{}, fmt.Errorf("apply replay result: %w", err)
 	}
@@ -105,9 +135,18 @@ func (s *Service) Report(ctx context.Context, report replayv1.ResultReport) (rep
 		},
 		At: report.At,
 	}
+	if s.accessLog() {
+		log.Printf("replay phase=upstream_report_out request_id=%s target=%s outcome=%s status=%d attempt=%d", report.RequestID, report.TargetID, report.Outcome, report.Status, report.Attempt)
+	}
 	upstreamResult, err := s.Upstream.Report(ctx, upstreamReport)
+	if s.accessLog() {
+		log.Printf("replay phase=upstream_report_in request_id=%s target=%s action=%s error=%t", report.RequestID, report.TargetID, upstreamResult.Action, err != nil)
+	}
 	if err != nil {
 		return replayv1.ResultResponse{Applied: applied}, fmt.Errorf("report upstream result: %w", err)
+	}
+	if s.accessLog() {
+		log.Printf("replay phase=action request_id=%s target=%s action=%s", report.RequestID, report.TargetID, upstreamResult.Action)
 	}
 	return replayv1.ResultResponse{Applied: applied, Action: upstreamResult.Action}, nil
 }

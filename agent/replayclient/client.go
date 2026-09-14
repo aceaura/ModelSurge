@@ -59,6 +59,9 @@ func (c *Client) ExecuteKiro(ctx context.Context, req replayv1.KiroExecuteReques
 	httpReq.Header.Set("Authorization", "Bearer "+c.key)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/x-ndjson, application/json")
+	if req.RequestID != "" {
+		httpReq.Header.Set("X-Request-ID", req.RequestID)
+	}
 	client := c.streamHTTP
 	if client == nil {
 		client = &http.Client{}
@@ -68,12 +71,19 @@ func (c *Client) ExecuteKiro(ctx context.Context, req replayv1.KiroExecuteReques
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
+	var requestID string
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
 			return err
 		}
 		body = bytes.NewReader(b)
+		switch value := in.(type) {
+		case replayv1.DispatchRequest:
+			requestID = value.RequestID
+		case replayv1.ResultReport:
+			requestID = value.RequestID
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+replayv1.BasePath+path, body)
 	if err != nil {
@@ -82,6 +92,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	req.Header.Set("Authorization", "Bearer "+c.key)
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if requestID != "" {
+		req.Header.Set("X-Request-ID", requestID)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

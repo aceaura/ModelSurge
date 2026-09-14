@@ -3,6 +3,7 @@ package relay
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
 )
@@ -40,7 +41,7 @@ func TestRequestParams(t *testing.T) {
 }
 
 func TestRespSummarizerEvents(t *testing.T) {
-	s := newRespSummarizer(true, "ark-6", "sse")
+	s := newRespSummarizer(true, "req-1", "ark-6", "sse", time.Now())
 	s.observe(ir.Event{Type: ir.EvMessageStart, Model: "glm-5.3-flash", Usage: &ir.Usage{InputTokens: 100, CacheReadTokens: 50}})
 	s.observe(ir.Event{Type: ir.EvBlockStart, Block: &ir.Block{Type: ir.BlockThinking}})
 	s.observe(ir.Event{Type: ir.EvThinkingDelta, Text: "hmm"})
@@ -63,7 +64,7 @@ func TestRespSummarizerEvents(t *testing.T) {
 }
 
 func TestRespSummarizerFill(t *testing.T) {
-	s := newRespSummarizer(true, "up-1", "json")
+	s := newRespSummarizer(true, "req-1", "up-1", "json", time.Now())
 	s.fill(&ir.Response{
 		Model: "m", StopReason: ir.StopMaxTokens,
 		Content: []ir.Block{
@@ -81,7 +82,7 @@ func TestRespSummarizerFill(t *testing.T) {
 }
 
 func TestRespSummarizerDisabled(t *testing.T) {
-	s := newRespSummarizer(false, "up", "sse")
+	s := newRespSummarizer(false, "req-1", "up", "sse", time.Now())
 	s.observe(ir.Event{Type: ir.EvTextDelta, Text: "x"})
 	s.fill(&ir.Response{Model: "m", Usage: ir.Usage{InputTokens: 1}})
 	if len(s.blocks) != 0 || s.hasUsg || s.textLen != 0 {
@@ -92,7 +93,7 @@ func TestRespSummarizerDisabled(t *testing.T) {
 
 // 响应出口累计器：协议/流式/字节/帧/编码错误，块形状与入口同口径。
 func TestClientSummarizer(t *testing.T) {
-	s := newClientSummarizer(true, "anthropic", true)
+	s := newClientSummarizer(true, "req-1", "anthropic", true, time.Now())
 	s.observe(ir.Event{Type: ir.EvMessageStart, Usage: &ir.Usage{InputTokens: 17}})
 	s.observe(ir.Event{Type: ir.EvBlockStart, Block: &ir.Block{Type: ir.BlockText}})
 	s.observe(ir.Event{Type: ir.EvTextDelta, Text: "你好"})
@@ -110,7 +111,7 @@ func TestClientSummarizer(t *testing.T) {
 			t.Errorf("client summary missing %q in %q", want, got)
 		}
 	}
-	dis := newClientSummarizer(false, "anthropic", false)
+	dis := newClientSummarizer(false, "req-1", "anthropic", false, time.Now())
 	dis.observe(ir.Event{Type: ir.EvTextDelta, Text: "x"})
 	dis.wrote(9)
 	if dis.bytes != 0 || dis.textLen != 0 {

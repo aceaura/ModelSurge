@@ -10,6 +10,7 @@ import (
 	"github.com/aceaura/ModelSurge/upstream/account"
 	"github.com/aceaura/ModelSurge/upstream/contract/upstreamv1"
 	"github.com/aceaura/ModelSurge/upstream/ir"
+	"github.com/aceaura/ModelSurge/upstream/redisx"
 	"github.com/aceaura/ModelSurge/upstream/upstreamstore"
 )
 
@@ -21,6 +22,9 @@ type Service struct {
 	KiroStreamingReadTimeout time.Duration
 	KiroWebSearchInject      bool
 	AccessLogEnabled         bool
+	// Redis 可选热态层（Evaluate 读旁路 + Half-Open 试探锁）；
+	// nil = 纯 DB 路径（模式一现行为）。
+	Redis *redisx.Client
 }
 
 func NewService(store *upstreamstore.Store, manager *account.Manager) *Service {
@@ -54,7 +58,7 @@ func (s *Service) Resolve(ctx context.Context, id string) (upstreamv1.ResolvedTa
 	if err := upstreamv1.ValidateProtocol(m.Protocol); err != nil {
 		return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeTargetUnavailable, Message: "unsupported outbound protocol"}
 	}
-	if !m.Enabled || m.CooldownUntil.After(time.Now()) {
+	if !m.Enabled || (m.CooldownUntil.After(time.Now()) && !s.probeGranted(ctx, m.ID, entryFromModel(m))) {
 		return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeTargetUnavailable, Message: "target unavailable", Retryable: true}
 	}
 	var acc *account.Account
@@ -88,32 +92,33 @@ func (s *Service) Resolve(ctx context.Context, id string) (upstreamv1.ResolvedTa
 }
 
 func (s *Service) Evaluate(ctx context.Context, ids []string) ([]upstreamv1.CandidateEvaluation, error) {
-	models, err := s.Store.ListModels(ctx)
+	entries, err := s.modelStates(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	byID := map[string]upstreamstore.Model{}
-	for _, m := range models {
-		byID[m.ID] = m
-	}
 	out := make([]upstreamv1.CandidateEvaluation, 0, len(ids))
-	now := time.Now()
+	now := time.Now().Unix()
 	accountRequests := map[string]int64{}
 	for _, a := range s.Manager.Status() {
 		accountRequests[a.Name] = a.Stats.Requests
 	}
-	for _, id := range ids {
-		m, ok := byID[id]
+	for i, id := range ids {
+		e := entries[i]
 		c := upstreamv1.CandidateEvaluation{ID: id}
-		if !ok {
+		switch {
+		case !e.Found:
 			c.ExclusionReason = "not_found"
-		} else if !m.Enabled {
+		case !e.Enabled:
 			c.ExclusionReason = "disabled"
-		} else if m.CooldownUntil.After(now) {
+		case e.Cooldown > now:
 			c.ExclusionReason = "cooling_down"
-		} else {
+			// Half-Open：熔断退避类冷却经全局试探锁收敛放行（设计 2.4/2.5）。
+			if probeEligible(e) && s.acquireProbe(ctx, id) {
+				c = upstreamv1.CandidateEvaluation{ID: id, Available: true, Score: float64(accountRequests[e.Account])}
+			}
+		default:
 			c.Available = true
-			c.Score = float64(accountRequests[m.Account])
+			c.Score = float64(accountRequests[e.Account])
 		}
 		out = append(out, c)
 	}
@@ -184,6 +189,10 @@ func (s *Service) Report(ctx context.Context, r upstreamv1.ResultReport) (upstre
 	applied, err := s.Store.ApplyReport(ctx, r)
 	if err != nil {
 		return upstreamv1.ResultResponse{}, err
+	}
+	if applied {
+		// PG 权威写后失效读旁路缓存（设计 2.4）。
+		s.invalidateState(ctx, r.TargetID)
 	}
 	if applied && m != nil {
 		switch {

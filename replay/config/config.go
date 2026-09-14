@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aceaura/ModelSurge/upstream/dialect"
+	"github.com/aceaura/ModelSurge/upstream/redisx"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,6 +24,7 @@ type Config struct {
 	CacheTTL           string `yaml:"cache_ttl"`
 	BootstrapClientKey string `yaml:"bootstrap_client_key"`
 	AccessLog          *bool  `yaml:"access_log"`
+	Redis              redisx.Config `yaml:"redis"`
 
 	UpstreamTimeoutDuration time.Duration `yaml:"-"`
 	CacheTTLDuration        time.Duration `yaml:"-"`
@@ -66,6 +68,7 @@ func (c *Config) Normalize() error {
 	if c.DBDSN == "" {
 		c.DBDSN = c.DBPath
 	}
+	c.Redis.Normalize()
 	if c.UpstreamURL == "" || c.AgentServiceKey == "" || c.UpstreamServiceKey == "" || c.AdminKey == "" {
 		return fmt.Errorf("upstream_url, agent_service_key, upstream_service_key and admin_key are required")
 	}

@@ -36,6 +36,9 @@ type Model struct {
 	Enabled          bool
 	CooldownUntil    time.Time
 	Failures         int
+	// LastErrorClass 最近一次错误的归类（auth/rate_limit/cooldown_until/
+	// outcome）：Half-Open 试探只对熔断退避类放行，配额/限流/鉴权类严格跳过。
+	LastErrorClass string
 }
 
 // schema 时间戳列用 BIGINT（postgres 8 字节；sqlite 亲和性与 INTEGER 等价）。
@@ -191,7 +194,7 @@ func materializableProtocol(protocol string) bool {
 
 func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
 	rows, err := s.DB.QueryContext(ctx, s.q(`SELECT m.id,m.account,m.display_name,m.protocol,m.native_model,m.base_url,m.headers,m.request_overrides,m.enabled,
-		COALESCE(st.cooldown_until,0),COALESCE(st.failures,0) FROM upstream_models m LEFT JOIN model_state st ON st.upstream_model_id=m.id ORDER BY m.id`))
+		COALESCE(st.cooldown_until,0),COALESCE(st.failures,0),COALESCE(st.last_error_class,'') FROM upstream_models m LEFT JOIN model_state st ON st.upstream_model_id=m.id ORDER BY m.id`))
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +205,7 @@ func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
 		var headers, overrides string
 		var enabled int
 		var cooldown int64
-		if err := rows.Scan(&m.ID, &m.Account, &m.DisplayName, &m.Protocol, &m.NativeModel, &m.BaseURL, &headers, &overrides, &enabled, &cooldown, &m.Failures); err != nil {
+		if err := rows.Scan(&m.ID, &m.Account, &m.DisplayName, &m.Protocol, &m.NativeModel, &m.BaseURL, &headers, &overrides, &enabled, &cooldown, &m.Failures, &m.LastErrorClass); err != nil {
 			return nil, err
 		}
 		m.Enabled = enabled != 0
@@ -254,7 +257,18 @@ func (s *Store) ApplyReport(ctx context.Context, r upstreamv1.ResultReport) (boo
 	class := ""
 	isFailure := r.Outcome != "normal" && r.Outcome != "retrying" && r.Outcome != "invalid_model"
 	if isFailure {
-		class = r.Outcome
+		// 错误归类（Half-Open 试探资格判定）：显式冷却时刻（配额 402 等）/
+		// 鉴权失效/限流不试探（试探只浪费被拒请求）；其余按 outcome 记熔断退避。
+		switch {
+		case !r.CooldownUntil.IsZero():
+			class = "cooldown_until"
+		case r.Status == 401 || r.Status == 403:
+			class = "auth"
+		case r.Status == 429:
+			class = "rate_limit"
+		default:
+			class = r.Outcome
+		}
 		if err := tx.QueryRowContext(ctx, s.q(`SELECT COALESCE(failures,0) FROM model_state WHERE upstream_model_id=?`+lockSuffix), r.TargetID).Scan(&failures); err != nil && err != sql.ErrNoRows {
 			return false, err
 		}

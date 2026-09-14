@@ -14,6 +14,7 @@ import (
 	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
 	"github.com/aceaura/ModelSurge/replay/relaystore"
 	"github.com/aceaura/ModelSurge/upstream/contract/upstreamv1"
+	"github.com/aceaura/ModelSurge/upstream/redisx"
 )
 
 type Upstream interface {
@@ -32,6 +33,8 @@ type Scheduler struct {
 	CacheTTL            time.Duration
 	AccessLogEnabled    bool
 	AccessLogConfigured bool
+	// Redis 可选热态层（round_robin 全局游标）；nil = 副本内局部轮询（现行为）。
+	Redis *redisx.Client
 
 	mu      sync.Mutex
 	cursors map[string]int
@@ -108,7 +111,7 @@ func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]b
 	if err != nil {
 		return Selection{}, err
 	}
-	ordered, err := s.order(g, ids, evals)
+	ordered, err := s.order(ctx, g, ids, evals)
 	if err != nil {
 		return Selection{}, err
 	}
@@ -141,7 +144,7 @@ func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]b
 	return Selection{}, fmt.Errorf("no available target")
 }
 
-func (s *Scheduler) order(g *relaystore.Group, ids []string, evals []upstreamv1.CandidateEvaluation) ([]upstreamv1.CandidateEvaluation, error) {
+func (s *Scheduler) order(ctx context.Context, g *relaystore.Group, ids []string, evals []upstreamv1.CandidateEvaluation) ([]upstreamv1.CandidateEvaluation, error) {
 	byID := make(map[string]upstreamv1.CandidateEvaluation, len(evals))
 	for _, e := range evals {
 		byID[e.ID] = e
@@ -158,13 +161,7 @@ func (s *Scheduler) order(g *relaystore.Group, ids []string, evals []upstreamv1.
 	case "", "preset", "sticky", "failover":
 		return ordered, nil
 	case "round_robin":
-		s.mu.Lock()
-		if s.cursors == nil {
-			s.cursors = map[string]int{}
-		}
-		start := s.cursors[g.ID] % len(ordered)
-		s.cursors[g.ID] = (start + 1) % len(ordered)
-		s.mu.Unlock()
+		start := s.rrCursor(ctx, g.ID, len(ordered))
 		return append(ordered[start:], ordered[:start]...), nil
 	case "least_used":
 		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Score < ordered[j].Score })
@@ -176,6 +173,24 @@ func (s *Scheduler) order(g *relaystore.Group, ids []string, evals []upstreamv1.
 		_ = json.Unmarshal([]byte(g.PolicyConfig), &cfg)
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedPolicy, g.PolicyType)
 	}
+}
+
+// rrCursor round_robin 起始下标：Redis INCR 全局游标（多副本全局轮询，
+// 设计 2.4）；未配置/降级回退副本内局部游标（设计 2.5 明示可接受）。
+func (s *Scheduler) rrCursor(ctx context.Context, groupID string, n int) int {
+	if s.Redis != nil {
+		if v, err := s.Redis.Incr(ctx, "rr:"+groupID); err == nil {
+			return int((v - 1) % int64(n))
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cursors == nil {
+		s.cursors = map[string]int{}
+	}
+	start := s.cursors[groupID] % n
+	s.cursors[groupID] = (start + 1) % n
+	return start
 }
 
 func (s *Scheduler) Models(ctx context.Context) ([]string, error) { return s.Store.Models(ctx) }

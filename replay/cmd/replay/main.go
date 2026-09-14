@@ -14,6 +14,7 @@ import (
 	"github.com/aceaura/ModelSurge/replay/config"
 	"github.com/aceaura/ModelSurge/replay/relaystore"
 	"github.com/aceaura/ModelSurge/replay/service"
+	"github.com/aceaura/ModelSurge/upstream/redisx"
 )
 
 func main() {
@@ -28,6 +29,10 @@ func main() {
 		log.Fatal(err)
 	}
 	defer store.Close()
+	if cfg.Redis.Addr != "" {
+		store.Redis = redisx.New(cfg.Redis)
+		defer store.Redis.Close()
+	}
 
 	upstream := bootstrap.NewUpstreamClient(cfg.UpstreamURL, cfg.UpstreamServiceKey, cfg.UpstreamTimeoutDuration, cfg.AccessLogEnabled)
 	bootstrap.CompatBootstrap(store, upstream, cfg.BootstrapClientKey, cfg.UpstreamTimeoutDuration)

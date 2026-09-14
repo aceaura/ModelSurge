@@ -10,3 +10,10 @@ admin_key: ${MODELSURGE_REPLAY_ADMIN_KEY}
 upstream_timeout: 10s
 cache_ttl: 12h
 bootstrap_client_key: ${MODELSURGE_BOOTSTRAP_CLIENT_KEY}
+# 可选 Redis 热态（模式二集群必需；模式一/单进程忽略）：
+# round_robin 全局游标 + 鉴权缓存（TTL 60s，写路径主动失效）。
+# 未配置 addr = 纯 DB 路径（现行为）；运行中故障自动降级为副本内局部轮询。
+redis:
+  addr: ${MODELSURGE_REDIS_ADDR}
+  password: ${MODELSURGE_REDIS_PASSWORD}
+  prefix: ${MODELSURGE_REDIS_PREFIX}

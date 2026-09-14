@@ -49,8 +49,9 @@ func NewUpstreamClient(url, serviceKey string, timeout time.Duration, accessLog 
 }
 
 // BuildService 组装 Scheduler 与 Service（三进程入口与单进程入口共用）。
+// Redis 热态经 store.Redis 派生：两处使用方（鉴权缓存/rr 游标）共享同一客户端。
 func BuildService(store *relaystore.Store, upstream *upstreamclient.Client, cacheTTL time.Duration, accessLog bool) (*schedule.Scheduler, *service.Service) {
-	scheduler := &schedule.Scheduler{Store: store, Upstream: upstream, CacheTTL: cacheTTL, AccessLogEnabled: accessLog, AccessLogConfigured: true}
+	scheduler := &schedule.Scheduler{Store: store, Upstream: upstream, CacheTTL: cacheTTL, AccessLogEnabled: accessLog, AccessLogConfigured: true, Redis: store.Redis}
 	app := &service.Service{Store: store, Scheduler: scheduler, Upstream: upstream, AccessLogEnabled: accessLog, AccessLogConfigured: true}
 	return scheduler, app
 }

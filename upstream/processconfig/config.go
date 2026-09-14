@@ -7,6 +7,7 @@ import (
 
 	"github.com/aceaura/ModelSurge/upstream/config"
 	"github.com/aceaura/ModelSurge/upstream/dialect"
+	"github.com/aceaura/ModelSurge/upstream/redisx"
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,6 +36,7 @@ type Upstream struct {
 	AccessLogEnabled bool             `yaml:"-"`
 	Kiro             *config.Kiro     `yaml:"kiro"`
 	Cooldowns        config.Cooldowns `yaml:"cooldowns"`
+	Redis            redisx.Config    `yaml:"redis"`
 }
 
 func load(path string, v any) error {
@@ -94,6 +96,7 @@ func (c *Upstream) Normalize() error {
 		}
 		c.DBDSN = c.DBPath
 	}
+	c.Redis.Normalize()
 	if c.ServiceKey == "" {
 		return fmt.Errorf("service_key is required")
 	}

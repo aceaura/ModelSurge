@@ -73,6 +73,9 @@ services:
     environment:
       MODELSURGE_DB_DRIVER: postgres
       MODELSURGE_UPSTREAM_DB_DSN: ${MODELSURGE_UPSTREAM_DB_DSN:-postgres://upstream:upstream@postgres:5432/upstream}
+      MODELSURGE_REDIS_ADDR: ${MODELSURGE_REDIS_ADDR:-redis:6379}
+      MODELSURGE_REDIS_PASSWORD: ${MODELSURGE_REDIS_PASSWORD:-}
+      MODELSURGE_REDIS_PREFIX: ${MODELSURGE_REDIS_PREFIX:-modelsurge:}
 
   replay:
     depends_on:
@@ -80,9 +83,14 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       MODELSURGE_DB_DRIVER: postgres
       MODELSURGE_REPLAY_DB_DSN: ${MODELSURGE_REPLAY_DB_DSN:-postgres://replay:replay@postgres:5432/replay}
+      MODELSURGE_REDIS_ADDR: ${MODELSURGE_REDIS_ADDR:-redis:6379}
+      MODELSURGE_REDIS_PASSWORD: ${MODELSURGE_REDIS_PASSWORD:-}
+      MODELSURGE_REDIS_PREFIX: ${MODELSURGE_REDIS_PREFIX:-modelsurge:}
 
   agent:
     depends_on:

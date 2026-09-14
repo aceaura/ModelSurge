@@ -15,6 +15,7 @@ import (
 	"github.com/aceaura/ModelSurge/upstream/adminapi"
 	"github.com/aceaura/ModelSurge/upstream/bootstrap"
 	"github.com/aceaura/ModelSurge/upstream/processconfig"
+	"github.com/aceaura/ModelSurge/upstream/redisx"
 	service "github.com/aceaura/ModelSurge/upstream/service"
 	"github.com/aceaura/ModelSurge/upstream/upstreamstore"
 )
@@ -49,6 +50,10 @@ func main() {
 	}
 	svc := service.NewService(store, mgr)
 	svc.AccessLogEnabled = cfg.AccessLogEnabled
+	if cfg.Redis.Addr != "" {
+		svc.Redis = redisx.New(cfg.Redis)
+		defer svc.Redis.Close()
+	}
 	firstTokenTimeout := 30 * time.Second
 	if cfg.Kiro != nil {
 		if cfg.Kiro.FirstTokenTimeout != "" {

@@ -82,7 +82,7 @@ func (s *Service) ExecuteKiro(ctx context.Context, envelope upstreamv1.KiroExecu
 	if model == nil {
 		return nil, &upstreamv1.Error{Code: upstreamv1.CodeNotFound, Message: "target not found", Status: http.StatusNotFound}
 	}
-	if model.Protocol != "kiro" || !model.Enabled || model.CooldownUntil.After(time.Now()) {
+	if model.Protocol != "kiro" || !model.Enabled || (model.CooldownUntil.After(time.Now()) && !s.probeGranted(ctx, model.ID, entryFromModel(model))) {
 		return nil, &upstreamv1.Error{Code: upstreamv1.CodeTargetUnavailable, Message: "target unavailable", Retryable: true, Status: http.StatusServiceUnavailable}
 	}
 	var acc *account.Account

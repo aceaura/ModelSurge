@@ -8,6 +8,7 @@ import (
 	agentconfig "github.com/aceaura/ModelSurge/agent/config"
 	replayconfig "github.com/aceaura/ModelSurge/replay/config"
 	"github.com/aceaura/ModelSurge/upstream/processconfig"
+	"github.com/aceaura/ModelSurge/upstream/redisx"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,6 +62,19 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		*s.driver = ""
 		*s.dsn = ""
+	}
+	// Redis 热态同属模式二：单副本无共享语义需求，模式一保持零外部依赖。
+	for _, s := range []struct {
+		section string
+		cfg     *redisx.Config
+	}{
+		{"replay", &c.Replay.Redis},
+		{"upstream", &c.Upstream.Redis},
+	} {
+		if s.cfg.Addr != "" {
+			log.Printf("modelsurge: %s.redis.addr=%q ignored (single-process mode: hot state is cluster-only)", s.section, s.cfg.Addr)
+		}
+		*s.cfg = redisx.Config{}
 	}
 
 	if err := c.Upstream.Normalize(); err != nil {

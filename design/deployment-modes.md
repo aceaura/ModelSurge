@@ -185,10 +185,20 @@ account 收编：`upstreamstore.Open` 打开连接后已调 `account.OpenDB(db)`
 | ApplyReport 幂等 | 无降级（约束在 PG） |
 | Agent outbox | 多副本安全（report_id 全局幂等），可水平扩展 |
 
+### 2.5.1 实施修正（Phase C 落地）
+
+1. **Half-Open 试探的真实位置**：原设计参照 `account.Manager.Next` 的 rand 10% 试探——该路径自三模块重构后已无生产调用方（调度改为 model 级 `Evaluate`），现行语义是冷却目标严格跳过。Phase C 把试探做成活语义并全局收敛：`Evaluate` 对熔断冷却目标 `SET NX PX probe:{model}`（TTL 60s）抢锁，抢到即放行；`Resolve`/`ExecuteKiro` 执行侧经 `EXISTS` 核验在途试探放行（Evaluate 与执行侧判定必须一致，否则试探请求会在执行侧被二次拒绝）。未配置 Redis（模式一）= 严格跳过（现行为不变）；配置但故障 = rand 10% 兜底（2.5）。
+2. **试探资格按错误类判定**：`ApplyReport` 派生 `model_state.last_error_class`——显式冷却时刻（402 配额）= `cooldown_until`、401/403 = `auth`、429 = `rate_limit`、其余 = outcome。只对熔断退避类（outcome 类）试探；限流/鉴权/配额冷却试探只会浪费被拒请求，严格跳过。
+3. **熔断读旁路粒度**：按 model id 缓存（`state:{id}` → `{found,enabled,cooldown,failures,class,account}` JSON，TTL 60s）；miss 批量回源一次 `ListModels` 并回填。`Report` applied 后 `DEL state:{target}` 主动失效——活跃目标的状态自愈即时；管理面账号变更（物化）不主动失效，TTL 60s 收敛，执行侧 `Resolve`/`ExecuteKiro` 恒读 PG 新鲜态兜底正确性。
+4. **鉴权缓存**：`auth:{model}` → `"protocol|api_key_hash"`（与 DB 同信任边界，存的本就是 hash），TTL 60s；命中时协议匹配与常数时间比较在本地完成。`PutUserModel`/`DeleteUserModel` 主动 `DEL`；未配置/禁用模型缓存空值负条目（写路径失效保证即时生效）。
+5. **rr 游标**：`INCR rr:{group}` → `(v-1) % n`；Redis 未配置/降级回退副本内局部游标（原 `cursors` map 语义不变）。
+6. **模式一边界**：`cmd/modelsurge` 的 redis 段与 db_driver/db_dsn 同规则——出现即告警忽略（单副本无共享语义需求，保持零外部依赖）。
+7. **降级开关（redisx）**：命令超时 500ms；任何命令错误进入 10s 熔断窗口，窗口内快速失败（不打网络、不拖慢热路径），窗口后半开重试；`New` 时 Ping 失败仅告警不阻断启动。所有使用方把 Redis 错误一律视为「未命中/降级」，DB 恒权威。
+
 ### 2.6 实施分期（代码侧，非本次）
 
 - **Phase B（PG 方言层）**：4 包 `Open(driver, dsn)` 改造、account 收编、ApplyReport 计数原子化、迁移工具、cluster override。验收：同一测试套件两种 driver 全绿。
-- **Phase C（Redis 热态）**：round_robin INCR、试探锁、鉴权缓存、熔断读缓存、advisory lock、降级开关。验收：双副本全局轮询；kill redis 后按降级表运行。
+- **Phase C（Redis 热态）**：round_robin INCR、试探锁、鉴权缓存、熔断读缓存、advisory lock、降级开关。验收：双副本全局轮询；kill redis 后按降级表运行。（已实施：`upstream/redisx` 共享包 + replay 鉴权缓存/rr 游标 + upstream 读旁路/试探锁；advisory lock 已在 Phase B-2 落地。）
 
 ### 2.7 验证
 

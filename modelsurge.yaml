@@ -1,0 +1,37 @@
+# 模式一 · 单进程配置（cmd/modelsurge）
+# 单份 YAML 三 section，字段与三进程各自配置完全一致；${ENV} 插值保留。
+# 注意：replay/upstream 的 listen 与 URL 由组合根强制覆写为回环地址，
+# 在此配置中出现即告警忽略。
+
+agent:
+  listen: 0.0.0.0:18099
+  db_path: /data/agent.db
+  replay_url: http://127.0.0.1:18101   # 强制回环，忽略此值亦可
+  service_key: ${MODELSURGE_AGENT_REPLAY_KEY}
+  control_timeout: 10s
+  first_token_timeout: 30s
+  same_account_retries: 1
+  estimate_usage: false
+  access_log: true
+  truncation_recovery: true
+
+replay:
+  db_path: /data/replay.db
+  upstream_url: http://127.0.0.1:18100 # 强制回环，忽略此值亦可
+  agent_service_key: ${MODELSURGE_AGENT_REPLAY_KEY}
+  upstream_service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}
+  admin_key: ${MODELSURGE_REPLAY_ADMIN_KEY}
+  upstream_timeout: 10s
+  cache_ttl: 12h
+  bootstrap_client_key: ${MODELSURGE_BOOTSTRAP_CLIENT_KEY}
+
+upstream:
+  db_path: /data/upstream.db
+  service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}
+  admin_key: ${MODELSURGE_UPSTREAM_ADMIN_KEY}
+  cooldowns:
+    default: 5h
+    window_7h: 7h
+    monthly: 24h
+  kiro:
+    streaming_read_timeout: 60s

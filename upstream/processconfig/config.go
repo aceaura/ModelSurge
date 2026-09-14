@@ -62,19 +62,27 @@ func LoadUpstream(path string) (Upstream, error) {
 	if err := load(path, &c); err != nil {
 		return c, err
 	}
+	if err := c.Normalize(); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+// Normalize 补默认值并校验；单进程组合根在覆写回环地址后复用。
+func (c Upstream) Normalize() error {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:18100"
 	}
 	c.AccessLogEnabled = c.AccessLog == nil || *c.AccessLog
 	if c.DBPath == "" || c.ServiceKey == "" {
-		return c, fmt.Errorf("db_path and service_key are required")
+		return fmt.Errorf("db_path and service_key are required")
 	}
 	if c.Kiro != nil {
 		if err := config.ParseKiro(c.Kiro); err != nil {
-			return c, err
+			return err
 		}
 	}
-	return c, nil
+	return nil
 }
 
 func (u Upstream) CooldownDurations() (config.CooldownsDur, error) {

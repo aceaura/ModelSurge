@@ -35,25 +35,35 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal([]byte(os.ExpandEnv(string(data))), &cfg); err != nil {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
-	if cfg.Listen == "" {
-		cfg.Listen = "127.0.0.1:8081"
-	}
-	cfg.AccessLogEnabled = cfg.AccessLog == nil || *cfg.AccessLog
-	if cfg.DBPath == "" || cfg.UpstreamURL == "" || cfg.AgentServiceKey == "" || cfg.UpstreamServiceKey == "" || cfg.AdminKey == "" {
-		return nil, fmt.Errorf("config: db_path, upstream_url, agent_service_key, upstream_service_key and admin_key are required")
-	}
-	cfg.UpstreamTimeoutDuration = 10 * time.Second
-	if cfg.UpstreamTimeout != "" {
-		cfg.UpstreamTimeoutDuration, err = time.ParseDuration(cfg.UpstreamTimeout)
-		if err != nil || cfg.UpstreamTimeoutDuration <= 0 {
-			return nil, fmt.Errorf("config: upstream_timeout: invalid duration %q", cfg.UpstreamTimeout)
-		}
-	}
-	if cfg.CacheTTL != "" {
-		cfg.CacheTTLDuration, err = time.ParseDuration(cfg.CacheTTL)
-		if err != nil || cfg.CacheTTLDuration < 0 {
-			return nil, fmt.Errorf("config: cache_ttl: invalid duration %q", cfg.CacheTTL)
-		}
+	if err := cfg.Normalize(); err != nil {
+		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// Normalize 补默认值并校验必填项；单进程组合根在覆写回环地址后复用。
+func (c *Config) Normalize() error {
+	if c.Listen == "" {
+		c.Listen = "127.0.0.1:8081"
+	}
+	c.AccessLogEnabled = c.AccessLog == nil || *c.AccessLog
+	if c.DBPath == "" || c.UpstreamURL == "" || c.AgentServiceKey == "" || c.UpstreamServiceKey == "" || c.AdminKey == "" {
+		return fmt.Errorf("db_path, upstream_url, agent_service_key, upstream_service_key and admin_key are required")
+	}
+	c.UpstreamTimeoutDuration = 10 * time.Second
+	if c.UpstreamTimeout != "" {
+		var err error
+		c.UpstreamTimeoutDuration, err = time.ParseDuration(c.UpstreamTimeout)
+		if err != nil || c.UpstreamTimeoutDuration <= 0 {
+			return fmt.Errorf("upstream_timeout: invalid duration %q", c.UpstreamTimeout)
+		}
+	}
+	if c.CacheTTL != "" {
+		var err error
+		c.CacheTTLDuration, err = time.ParseDuration(c.CacheTTL)
+		if err != nil || c.CacheTTLDuration < 0 {
+			return fmt.Errorf("cache_ttl: invalid duration %q", c.CacheTTL)
+		}
+	}
+	return nil
 }

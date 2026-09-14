@@ -35,6 +35,14 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal([]byte(os.ExpandEnv(string(b))), &c); err != nil {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
+	if err := c.Normalize(); err != nil {
+		return nil, fmt.Errorf("config: %s: %w", path, err)
+	}
+	return &c, nil
+}
+
+// Normalize 补默认值并校验必填项；单进程组合根在覆写回环地址后复用。
+func (c *Config) Normalize() error {
 	if c.Listen == "" {
 		c.Listen = "0.0.0.0:18099"
 	}
@@ -42,25 +50,26 @@ func Load(path string) (*Config, error) {
 		c.DBPath = "/data/agent.db"
 	}
 	if c.ReplayURL == "" || c.ServiceKey == "" {
-		return nil, fmt.Errorf("config: replay_url and service_key are required")
+		return fmt.Errorf("replay_url and service_key are required")
 	}
+	var err error
 	c.ControlTimeoutDur, err = parseDuration(c.ControlTimeout, 10*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("config: control_timeout: %w", err)
+		return fmt.Errorf("control_timeout: %w", err)
 	}
 	c.FirstTokenTimeoutDur, err = parseDuration(c.FirstTokenTimeout, 30*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("config: first_token_timeout: %w", err)
+		return fmt.Errorf("first_token_timeout: %w", err)
 	}
 	if c.SameAccountRetries < 0 {
-		return nil, fmt.Errorf("config: same_account_retries must be >= 0")
+		return fmt.Errorf("same_account_retries must be >= 0")
 	}
 	if c.SameAccountRetries == 0 {
 		c.SameAccountRetries = 1
 	}
 	c.AccessLogEnabled = c.AccessLog == nil || *c.AccessLog
 	c.TruncationRecoveryEnabled = c.TruncationRecovery == nil || *c.TruncationRecovery
-	return &c, nil
+	return nil
 }
 
 func parseDuration(raw string, fallback time.Duration) (time.Duration, error) {

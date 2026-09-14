@@ -3,7 +3,7 @@
 // 相互独立）；scheduler 未启用或未配置 admin key 时不挂载（404）。
 // 账号 CRUD 落库后经 Manager.Reconfigure/Remove 热生效；
 // 响应凭据一律脱敏（末 4 位）。
-package upstreamhttp
+package adminapi
 
 import (
 	"context"

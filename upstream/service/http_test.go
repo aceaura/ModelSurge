@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/aceaura/ModelSurge/upstream/account"
+	"github.com/aceaura/ModelSurge/upstream/adminapi"
 	"github.com/aceaura/ModelSurge/upstream/contract/upstreamv1"
-	upstreamhttp "github.com/aceaura/ModelSurge/upstream/internal/http"
 	"github.com/aceaura/ModelSurge/upstream/upstreamstore"
 )
 
@@ -70,7 +70,7 @@ func TestAccountAdminBelongsToUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewHTTPServer(NewService(store, mgr), "service-key")
-	h.AdminHandler = upstreamhttp.NewAccountAdmin(mgr, "admin-key")
+	h.AdminHandler = adminapi.NewAccountAdmin(mgr, "admin-key")
 	r := httptest.NewRequest(http.MethodGet, "/admin/accounts", nil)
 	w := httptest.NewRecorder()
 	h.Handler().ServeHTTP(w, r)
@@ -96,7 +96,7 @@ func TestAdminRejectsGeminiProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := upstreamhttp.NewAccountAdmin(mgr, "admin-key")
+	h := adminapi.NewAccountAdmin(mgr, "admin-key")
 	r := httptest.NewRequest(http.MethodPost, "/admin/accounts", strings.NewReader(`{"name":"gemini","type":"api-key","protocol":"gemini","base_url":"https://example.test","api_key":"secret","models":{"public":"gemini-pro"}}`))
 	r.Header.Set("X-Admin-Key", "admin-key")
 	w := httptest.NewRecorder()

@@ -12,25 +12,12 @@ import (
 	"time"
 
 	"github.com/aceaura/ModelSurge/upstream/account"
-	upstreamhttp "github.com/aceaura/ModelSurge/upstream/internal/http"
+	"github.com/aceaura/ModelSurge/upstream/adminapi"
+	"github.com/aceaura/ModelSurge/upstream/bootstrap"
 	"github.com/aceaura/ModelSurge/upstream/processconfig"
-	"github.com/aceaura/ModelSurge/upstream/proto/kiro"
 	service "github.com/aceaura/ModelSurge/upstream/service"
 	"github.com/aceaura/ModelSurge/upstream/upstreamstore"
 )
-
-func kiroSetup(cfg processconfig.Upstream) account.ManagerDeps {
-	if cfg.Kiro == nil {
-		return account.ManagerDeps{}
-	}
-	k := cfg.Kiro
-	if k.Cloud != nil && k.Cloud.Enabled {
-		account.SetCloudConfig(account.CloudConfig{ForwardURL: k.Cloud.ForwardURL, APIKey: k.Cloud.APIKey})
-	}
-	account.SetKiroDebug(k.Debug, k.DebugDir)
-	kiro.SetOptions(kiro.Options{FakeReasoning: k.FakeReasoning, FakeReasoningMaxTokens: k.FakeReasoningMaxTokens, FakeReasoningBudgetCap: k.FakeReasoningBudgetCap, TruncationRecovery: true})
-	return account.ManagerDeps{BreakerBase: k.RecoveryTimeoutDur, BreakerMax: k.RecoveryTimeoutDur * time.Duration(k.MaxBackoffMultiplier), ProbeRate: k.ProbabilisticRetry, KiroRegion: k.Region, KiroCacheTTL: k.CacheTTLDur}
-}
 
 func main() {
 	path := flag.String("config", "upstream.yaml", "upstream config")
@@ -56,7 +43,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	mgr, err := account.NewManager(store.Accounts, account.Cooldowns{Default: cds.Default, Window7h: cds.Window7h, Monthly: cds.Monthly}, kiroSetup(cfg))
+	mgr, err := account.NewManager(store.Accounts, account.Cooldowns{Default: cds.Default, Window7h: cds.Window7h, Monthly: cds.Monthly}, bootstrap.BuildKiroDeps(cfg.Kiro))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -74,7 +61,7 @@ func main() {
 	h := service.NewHTTPServer(svc, cfg.ServiceKey)
 	h.AccessLogEnabled = cfg.AccessLogEnabled
 	if cfg.AdminKey != "" {
-		h.AdminHandler = upstreamhttp.NewAccountAdmin(mgr, cfg.AdminKey, store.MaterializeAccounts)
+		h.AdminHandler = adminapi.NewAccountAdmin(mgr, cfg.AdminKey, store.MaterializeAccounts)
 	}
 	srv := &http.Server{Addr: cfg.Listen, Handler: h.Handler(), ReadHeaderTimeout: 30 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

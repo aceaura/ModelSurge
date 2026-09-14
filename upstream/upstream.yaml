@@ -17,6 +17,6 @@ kiro:
 # Evaluate 读旁路缓存（报告写后主动失效）+ Half-Open 全局试探锁。
 # 未配置 addr = 纯 DB 路径（现行为）；运行中故障自动降级。
 redis:
-  addr: ${MODELSURGE_REDIS_ADDR}
-  password: ${MODELSURGE_REDIS_PASSWORD}
-  prefix: ${MODELSURGE_REDIS_PREFIX}
+  addr: "${MODELSURGE_REDIS_ADDR}"
+  password: "${MODELSURGE_REDIS_PASSWORD}"
+  prefix: "${MODELSURGE_REDIS_PREFIX}"

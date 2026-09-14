@@ -206,6 +206,19 @@ account 收编：`upstreamstore.Open` 打开连接后已调 `account.OpenDB(db)`
 - compose cluster 栈双副本端到端（客户端请求 → 全链路 200 → 双副本日志各自完整）。
 - Redis 故障降级演练：kill redis，按 2.5 清单逐项核对行为与恢复。
 
+**演练实录（2026-09-15，modelsurge-drill 独立项目栈，mock LLM 账号，不触线上）**：
+
+- 双副本全链路：upstream×2 + replay×2 + PG（pg-init 三库三 role 首次真实执行成功）+ redis；10 请求全 200。
+- 全局轮询铁证：rr 计数与请求数严格一致（7→10→13→17）；停 replay-1 后 replay-2 接手，轮询序列从全局游标续接（a 之后 b,a,b），跨副本无缝。
+- kill redis 降级：全部 200；每副本首个请求付 1.03s（两个 op 各吃 500ms 硬上限后进入降级窗口），后续 0.03s 纯 DB 路径；rr 退副本内局部轮询、鉴权/评估直读 DB；计数器冻结。
+- 恢复：重启 redis 后 ≤10s（降级窗口）热态回归，计数器从冻结值续增。
+- 演练揪出并修复两个真 bug：①`redis.prefix` env 值 `modelsurge:` 尾冒号未加引号 → YAML 解析炸（集群形态起不来）；②redisx 无单 op 硬超时 → 容器移除后 DNS i/o timeout × 池内拨号重试拖满请求 10s 超时 → 503（降级窗口来不及生效）。修复：YAML 值加引号；每 op 独立 500ms ctx 超时 + 父 ctx 取消不误标降级。
+
+**集群运维注意（演练发现）**：
+
+1. **账号花名册需滚动重启**：upstream 管理面账号 CRUD 只热更收到请求的那个副本（Manager 内存态）；其余副本启动时从 PG 重载。集群下账号变更后需滚动重启 upstream 副本（PG 恒权威，重启即同步；物化保运行态由 B-2 修复背书）。
+2. **keep-alive 钉连**：agent→replay、replay→upstream 的长连接经 Docker DNS 只在**新建连接**时轮换副本——单 agent 串行流量会钉在一个 replay 副本上（副本故障时自动重连切换，演练已验证）。真实多副本部署前置 LB 或接受连接级分布；全局语义（rr/试探/鉴权失效）经 Redis 共享，与钉连无关。
+
 ---
 
 ## 3. 评审 checklist

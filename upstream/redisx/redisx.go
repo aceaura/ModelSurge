@@ -6,6 +6,7 @@ package redisx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync/atomic"
@@ -77,12 +78,20 @@ func (c *Client) degraded() bool {
 // Available 当前是否可用（降级窗口外）。测试用；语义同各 op 的即时报错。
 func (c *Client) Available() bool { return !c.degraded() }
 
-// markErr 统一错误处理：连接类错误进入降级窗口；业务键错误（nil 键）原样返回。
+// markErr 统一错误处理：连接类错误进入降级窗口；业务键错误（redis.Nil）
+// 与父 ctx 取消（客户端断连，非 Redis 故障）不降级。
 func (c *Client) markErr(err error) error {
-	if err != nil && err != redis.Nil {
+	if err != nil && err != redis.Nil && !errors.Is(err, context.Canceled) {
 		c.markDown()
 	}
 	return err
+}
+
+// opCtx 单 op 硬超时：请求 ctx 可能长达 10s+，而 Redis 故障形态可以很慢
+// （容器移除后 DNS i/o timeout × 池内多次拨号重试）——热路径绝不被拖垮，
+// 超时即降级走 DB 兜底。
+func opCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, cmdWait)
 }
 
 // Incr 自增并返回新值（round_robin 全局游标）。降级/错误返回 err。
@@ -90,6 +99,8 @@ func (c *Client) Incr(ctx context.Context, key string) (int64, error) {
 	if c.degraded() {
 		return 0, fmt.Errorf("redisx: degraded")
 	}
+	ctx, cancel := opCtx(ctx)
+	defer cancel()
 	v, err := c.rdb.Incr(ctx, c.key(key)).Result()
 	return v, c.markErr(err)
 }
@@ -100,6 +111,8 @@ func (c *Client) TryLock(ctx context.Context, key string, ttl time.Duration) (bo
 	if c.degraded() {
 		return false, fmt.Errorf("redisx: degraded")
 	}
+	ctx, cancel := opCtx(ctx)
+	defer cancel()
 	ok, err := c.rdb.SetNX(ctx, c.key(key), "1", ttl).Result()
 	return ok, c.markErr(err)
 }
@@ -109,6 +122,8 @@ func (c *Client) Exists(ctx context.Context, key string) (bool, error) {
 	if c.degraded() {
 		return false, fmt.Errorf("redisx: degraded")
 	}
+	ctx, cancel := opCtx(ctx)
+	defer cancel()
 	n, err := c.rdb.Exists(ctx, c.key(key)).Result()
 	return n > 0, c.markErr(err)
 }
@@ -118,6 +133,8 @@ func (c *Client) Get(ctx context.Context, key string) (string, bool, error) {
 	if c.degraded() {
 		return "", false, fmt.Errorf("redisx: degraded")
 	}
+	ctx, cancel := opCtx(ctx)
+	defer cancel()
 	v, err := c.rdb.Get(ctx, c.key(key)).Result()
 	if err == redis.Nil {
 		return "", false, nil
@@ -130,6 +147,8 @@ func (c *Client) SetEx(ctx context.Context, key, val string, ttl time.Duration) 
 	if c.degraded() {
 		return fmt.Errorf("redisx: degraded")
 	}
+	ctx, cancel := opCtx(ctx)
+	defer cancel()
 	return c.markErr(c.rdb.SetEx(ctx, c.key(key), val, ttl).Err())
 }
 
@@ -141,6 +160,8 @@ func (c *Client) Del(ctx context.Context, keys ...string) error {
 	if c.degraded() {
 		return fmt.Errorf("redisx: degraded")
 	}
+	ctx, cancel := opCtx(ctx)
+	defer cancel()
 	full := make([]string, len(keys))
 	for i, k := range keys {
 		full[i] = c.key(k)

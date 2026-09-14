@@ -24,6 +24,7 @@ import (
 
 // Metadata 标志键（relay -> kiro codec 的账号级策略通道）。
 const (
+	metaProfileArn    = "kiro_profile_arn"
 	metaWebSearch     = "kiro_web_search"
 	metaFakeReasoning = "kiro_fake_reasoning"
 )
@@ -47,6 +48,9 @@ func (f *Forwarder) prepareKiroMetadata(cand candidate, req *ir.Request) {
 	}
 	if req.Metadata == nil {
 		req.Metadata = map[string]string{}
+	}
+	if cand.runtime.ProfileArn != "" {
+		req.Metadata[metaProfileArn] = cand.runtime.ProfileArn
 	}
 	if cand.runtime.WebSearch && !hasWebSearchTool(req) {
 		req.Metadata[metaWebSearch] = "1"

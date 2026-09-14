@@ -75,7 +75,7 @@ func (s *Service) Resolve(ctx context.Context, id string) (upstreamv1.ResolvedTa
 		if m.DisplayName != "*" {
 			native, _ = rt.Resolve(m.DisplayName)
 		}
-		token, _, err := rt.Auth.GetAccessToken(ctx)
+		token, state, err := rt.Auth.GetAccessToken(ctx)
 		if err != nil {
 			return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeCredentialRefresh, Message: "credential refresh failed", Retryable: true}
 		}
@@ -83,6 +83,7 @@ func (s *Service) Resolve(ctx context.Context, id string) (upstreamv1.ResolvedTa
 		headers = account.KiroHeaders(rt.Auth.Fingerprint(), token, account.TargetGenerateAssistantResponse)
 		headers["Connection"] = "close"
 		apiKey = ""
+		runtime.ProfileArn = state.ProfileArn
 		runtime.FakeReasoning = acc.Kiro != nil && acc.Kiro.FakeReasoning
 		runtime.WebSearch = acc.Kiro != nil && acc.Kiro.WebSearch
 		runtime.MaxInputTokens = int(rt.Models.MaxInputTokens(native))

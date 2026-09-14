@@ -146,6 +146,7 @@ func TestLeaseFromTargetPreservesOverrideTriState(t *testing.T) {
 	zeroInt := 0
 	target := upstreamv1.ResolvedTarget{
 		ID: "target", Protocol: "openai-chat", NativeModel: "native", BaseURL: "https://example.test",
+		Runtime: upstreamv1.RuntimeMetadata{ProfileArn: "arn:aws:codewhisperer:us-east-1:1:profile/test"},
 		RequestOverrides: &upstreamir.Overrides{
 			Temperature: &zeroFloat,
 			TopP:        nil,
@@ -154,6 +155,9 @@ func TestLeaseFromTargetPreservesOverrideTriState(t *testing.T) {
 		},
 	}
 	lease := leaseFromTarget("request", "group", target)
+	if lease.Runtime.ProfileArn != target.Runtime.ProfileArn {
+		t.Fatalf("profile_arn=%q, want %q", lease.Runtime.ProfileArn, target.Runtime.ProfileArn)
+	}
 	if lease.RequestOverrides == nil {
 		t.Fatal("request overrides lost")
 	}

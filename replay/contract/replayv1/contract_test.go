@@ -11,6 +11,7 @@ func TestRequestOverridesJSONRoundTripPreservesNilAndExplicitZero(t *testing.T) 
 	in := TargetLease{
 		RequestID: "req", GroupID: "group", TargetID: "target",
 		Protocol: "openai-chat", NativeModel: "native", BaseURL: "https://example.test",
+		Runtime: RuntimeMetadata{ProfileArn: "arn:aws:codewhisperer:us-east-1:1:profile/test"},
 		RequestOverrides: &RequestOverrides{
 			Temperature: &zeroFloat,
 			TopP:        nil,
@@ -25,6 +26,9 @@ func TestRequestOverridesJSONRoundTripPreservesNilAndExplicitZero(t *testing.T) 
 	var out TargetLease
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatal(err)
+	}
+	if out.Runtime.ProfileArn != in.Runtime.ProfileArn {
+		t.Fatalf("profile_arn = %q, want %q", out.Runtime.ProfileArn, in.Runtime.ProfileArn)
 	}
 	if out.RequestOverrides == nil {
 		t.Fatal("request_overrides lost")

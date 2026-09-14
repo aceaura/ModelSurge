@@ -133,9 +133,9 @@ func leaseFromTarget(requestID, groupID string, target upstreamv1.ResolvedTarget
 		NativeModel: target.NativeModel, BaseURL: target.BaseURL, Credential: target.APIKey,
 		Headers: target.Headers,
 		Runtime: replayv1.RuntimeMetadata{
-			AccountType: target.Runtime.AccountType, MaxInputTokens: target.Runtime.MaxInputTokens,
-			FakeReasoning: target.Runtime.FakeReasoning, WebSearch: target.Runtime.WebSearch,
-			StreamingTimeout: target.Runtime.StreamingTimeout,
+			AccountType: target.Runtime.AccountType, ProfileArn: target.Runtime.ProfileArn,
+			MaxInputTokens: target.Runtime.MaxInputTokens, FakeReasoning: target.Runtime.FakeReasoning,
+			WebSearch: target.Runtime.WebSearch, StreamingTimeout: target.Runtime.StreamingTimeout,
 		},
 	}
 	if x := target.Runtime.WebSearchRuntime; x != nil {

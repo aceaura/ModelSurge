@@ -1,6 +1,7 @@
 package upstreamv1
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -23,6 +24,24 @@ func TestResolvedTargetRedactionAndValidation(t *testing.T) {
 func TestValidateResolvedTargetRejectsUnknownProtocol(t *testing.T) {
 	if ValidateResolvedTarget(ResolvedTarget{ID: "x", Protocol: "unknown", NativeModel: "m", BaseURL: "https://x"}) == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestRuntimeMetadataProfileArnJSONRoundTrip(t *testing.T) {
+	in := ResolvedTarget{
+		ID: "kiro-2/gpt-5.6-sol", Protocol: "kiro", NativeModel: "gpt-5.6-sol", BaseURL: "https://example.test",
+		Runtime: RuntimeMetadata{AccountType: "kiro", ProfileArn: "arn:aws:codewhisperer:us-east-1:1:profile/test"},
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out ResolvedTarget
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Runtime.ProfileArn != in.Runtime.ProfileArn {
+		t.Fatalf("profile_arn=%q, want %q", out.Runtime.ProfileArn, in.Runtime.ProfileArn)
 	}
 }
 

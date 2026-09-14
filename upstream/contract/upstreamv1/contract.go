@@ -53,6 +53,7 @@ type ResolvedTarget struct {
 
 type RuntimeMetadata struct {
 	AccountType      string            `json:"account_type,omitempty"`
+	ProfileArn       string            `json:"profile_arn,omitempty"`
 	MaxInputTokens   int               `json:"max_input_tokens,omitempty"`
 	FakeReasoning    bool              `json:"fake_reasoning,omitempty"`
 	WebSearch        bool              `json:"web_search,omitempty"`

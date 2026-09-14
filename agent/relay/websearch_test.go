@@ -223,6 +223,16 @@ func TestRewriteWebSearchEvents_Degrade(t *testing.T) {
 	}
 }
 
+func TestPrepareKiroMetadataInjectsProfileArn(t *testing.T) {
+	f := &Forwarder{}
+	req := &ir.Request{}
+	want := "arn:aws:codewhisperer:us-east-1:1:profile/test"
+	f.prepareKiroMetadata(candidate{protocol: "kiro", runtime: replayv1.RuntimeMetadata{ProfileArn: want}}, req)
+	if got := req.Metadata[metaProfileArn]; got != want {
+		t.Fatalf("profile ARN metadata=%q, want %q", got, want)
+	}
+}
+
 func TestInterceptWebSearchUsesLeaseRuntime(t *testing.T) {
 	var gotMethod, gotQuery string
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

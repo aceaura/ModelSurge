@@ -322,6 +322,8 @@ func (m *Manager) Reconfigure(a *Account) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing := m.find(a.Name); existing != nil {
+		// 凭据变更（换 key）解除 401 自动禁用，否则新 key 永远调度不到。
+		credChanged := a.APIKey != existing.APIKey || encodeKiro(a.Kiro) != encodeKiro(existing.Kiro)
 		updated := *a
 		updated.Disabled = existing.Disabled
 		updated.LimitKind = existing.LimitKind
@@ -330,6 +332,13 @@ func (m *Manager) Reconfigure(a *Account) {
 		updated.LastFailure = existing.LastFailure
 		updated.Stats = existing.Stats
 		updated.UpdatedAt = existing.UpdatedAt
+		if credChanged && updated.Disabled {
+			updated.Disabled = false
+			if err := m.store.SetDisabled(a.Name, false); err != nil {
+				log.Printf("account: re-enable %s: %v", a.Name, err)
+			}
+			log.Printf("account: %s credential updated, re-enabled", a.Name)
+		}
 		*existing = updated
 		*a = updated // 调用方对象同步为生效态
 		if existing.Type == TypeKiro {

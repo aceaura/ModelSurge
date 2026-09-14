@@ -229,3 +229,35 @@ func TestNewManagerFromStore(t *testing.T) {
 		t.Fatalf("pick = %v %v, want api-created", a, ok)
 	}
 }
+
+// 换 key 热更解除 401 自动禁用（并落库）；key 未变时禁用保留。
+func TestReconfigureCredentialChangeReenables(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "reenable.db")
+	m, store := newTestManager(t, dbPath)
+
+	m.ReportAuthFailure("a1")
+	if _, ok := m.Next("m", map[string]bool{"a2": true, "a3": true}); ok {
+		t.Fatal("disabled a1 must not serve")
+	}
+
+	// key 未变：禁用保留
+	m.Reconfigure(&Account{Name: "a1", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k1", Models: map[string]string{"m": "m"}})
+	if _, ok := m.Next("m", map[string]bool{"a2": true, "a3": true}); ok {
+		t.Fatal("same key must keep a1 disabled")
+	}
+
+	// 换 key：解除禁用并恢复调度
+	m.Reconfigure(&Account{Name: "a1", Type: TypeAPIKey, Enabled: true, Protocol: "anthropic", BaseURL: "http://x", APIKey: "k1-new", Models: map[string]string{"m": "m"}})
+	if a, ok := m.Next("m", map[string]bool{"a2": true, "a3": true}); !ok || a.Name != "a1" {
+		t.Fatalf("pick = %v %v, want a1 re-enabled", a, ok)
+	}
+	accs, err := store.ListAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range accs {
+		if a.Name == "a1" && a.Disabled {
+			t.Error("a1 disabled flag must be cleared in store")
+		}
+	}
+}

@@ -113,6 +113,42 @@ func TestRequireToolPairing(t *testing.T) {
 	}
 }
 
+// 并行 tool_result 分两条 user 消息到达时不得误插占位（合并先于配对）。
+func TestRequireToolPairingParallelNoPlaceholder(t *testing.T) {
+	tr := func(id string) ir.Message {
+		return ir.Message{Role: ir.RoleUser, Content: []ir.Block{
+			{Type: ir.BlockToolResult, ToolResult: &ir.ToolResult{ToolUseID: id, Content: []ir.Block{{Type: ir.BlockText, Text: "r"}}}},
+		}}
+	}
+	req := &ir.Request{
+		Tools: []ir.Tool{{Name: "f"}},
+		Messages: []ir.Message{
+			{Role: ir.RoleAssistant, Content: []ir.Block{
+				{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "c1", Name: "f", Input: json.RawMessage(`{}`)}},
+				{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "c2", Name: "f", Input: json.RawMessage(`{}`)}},
+			}},
+			tr("c1"),
+			tr("c2"),
+		},
+	}
+	if err := Request(req, Options{MergeAdjacentRoles: true, RequireToolPairing: true, FixOrphanToolResults: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2 (no placeholder): %+v", len(req.Messages), req.Messages)
+	}
+	for _, b := range req.Messages[1].Content {
+		if b.Type != ir.BlockToolResult || b.ToolResult == nil {
+			continue
+		}
+		for _, c := range b.ToolResult.Content {
+			if c.Type == ir.BlockText && c.Text == placeholder {
+				t.Fatal("placeholder inserted for existing parallel result")
+			}
+		}
+	}
+}
+
 func TestStripToolTracesWhenNoTools(t *testing.T) {
 	req := &ir.Request{Messages: []ir.Message{
 		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "q"}}},

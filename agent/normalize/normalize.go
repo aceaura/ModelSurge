@@ -61,11 +61,11 @@ func Request(req *ir.Request, o Options) error {
 	if o.FixOrphanToolResults {
 		fixOrphanToolResults(req)
 	}
-	if o.RequireToolPairing {
-		requireToolPairing(req)
-	}
 	if o.MergeAdjacentRoles {
 		mergeAdjacent(req)
+	}
+	if o.RequireToolPairing {
+		requireToolPairing(req)
 	}
 	if o.EnsureAlternating {
 		ensureAlternating(req)

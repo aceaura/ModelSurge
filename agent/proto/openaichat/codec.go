@@ -237,6 +237,7 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	for _, m := range r.Messages {
 		out.Messages = append(out.Messages, encodeMessages(m)...)
 	}
+	out.Messages = fixToolOrder(out.Messages)
 	for _, t := range r.Tools {
 		if t.Hosted != "" {
 			continue // Chat Completions 无托管工具能力，丢弃（diagnose 已记录）
@@ -353,6 +354,38 @@ func encodeMessages(m ir.Message) []message {
 		return out
 	}
 	return []message{{Role: string(m.Role), Content: json.RawMessage(`""`)}}
+}
+
+// fixToolOrder 保证每条 role:tool 都挂在最近的非 tool 消息（assistant 且
+// 带对应 tool_calls）之下：客户端裁剪/合并历史可能产出孤儿或错序 tool 消息，
+// 严格上游（DeepSeek 等）会 400。违例者降级为 user 文本。
+func fixToolOrder(msgs []message) []message {
+	out := make([]message, 0, len(msgs))
+	pending := map[string]bool{}
+	for _, m := range msgs {
+		switch m.Role {
+		case "tool":
+			if pending[m.ToolCallID] {
+				out = append(out, m)
+				continue
+			}
+			var text string
+			_ = json.Unmarshal(m.Content, &text)
+			out = append(out, message{Role: "user", Content: json.RawMessage(marshalString(
+				fmt.Sprintf("[Tool Result (%s)]\n%s", m.ToolCallID, text)))})
+			pending = map[string]bool{}
+		case "assistant":
+			pending = map[string]bool{}
+			for _, tc := range m.ToolCalls {
+				pending[tc.ID] = true
+			}
+			out = append(out, m)
+		default:
+			pending = map[string]bool{}
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func blocksText(blocks []ir.Block) string {

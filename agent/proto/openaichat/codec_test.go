@@ -46,6 +46,77 @@ func TestDecodeRequestMinimalFlatTool(t *testing.T) {
 	}
 }
 
+// 孤儿/错序 tool 消息降级为 user 文本；合法并行 tool 序列原样保留。
+func TestEncodeRequestFixToolOrder(t *testing.T) {
+	assistantTC := `{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}`
+	cases := []struct {
+		name     string
+		messages string
+		wantTool int
+	}{
+		{"orphan after user", `[{"role":"user","content":"hi"},` + assistantTC +
+			`,{"role":"user","content":"next"},{"role":"tool","tool_call_id":"c1","content":"res"}]`, 0},
+		{"paired kept", `[` + assistantTC + `,{"role":"tool","tool_call_id":"c1","content":"res"}]`, 1},
+		{"parallel kept", `[{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"c2","type":"function","function":{"name":"g","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c1","content":"r1"},{"role":"tool","tool_call_id":"c2","content":"r2"}]`, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"model":"m","tools":[{"name":"f"},{"name":"g"}],"messages":` + tc.messages + `}`
+			req, err := (codec{}).DecodeRequest([]byte(body))
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			out, err := (codec{}).EncodeRequest(req)
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			var parsed struct {
+				Messages []struct {
+					Role       string          `json:"role"`
+					Content    json.RawMessage `json:"content"`
+					ToolCallID string          `json:"tool_call_id"`
+					ToolCalls  []struct {
+						ID string `json:"id"`
+					} `json:"tool_calls"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal(out, &parsed); err != nil {
+				t.Fatalf("unmarshal encoded: %v", err)
+			}
+			got := 0
+			for i, m := range parsed.Messages {
+				if m.Role != "tool" {
+					continue
+				}
+				got++
+				gov := -1
+				for j := i - 1; j >= 0; j-- {
+					if parsed.Messages[j].Role != "tool" {
+						gov = j
+						break
+					}
+				}
+				if gov < 0 || parsed.Messages[gov].Role != "assistant" {
+					t.Errorf("tool message at %d not governed by assistant", i)
+					continue
+				}
+				covered := false
+				for _, tc := range parsed.Messages[gov].ToolCalls {
+					if tc.ID == m.ToolCallID {
+						covered = true
+					}
+				}
+				if !covered {
+					t.Errorf("tool message at %d id %s not in governor tool_calls", i, m.ToolCallID)
+				}
+			}
+			if got != tc.wantTool {
+				t.Errorf("tool messages = %d, want %d", got, tc.wantTool)
+			}
+		})
+	}
+}
+
 // 标准形态回归：无 tools / 标准工具不受 UnmarshalJSON 影响且可再编码。
 func TestDecodeRequestStandardToolsRoundTrip(t *testing.T) {
 	req, err := (codec{}).DecodeRequest([]byte(

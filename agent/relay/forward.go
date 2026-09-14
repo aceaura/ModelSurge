@@ -330,7 +330,9 @@ func (f *Forwarder) openUpstream(ctx context.Context, cand candidate, upReq *ir.
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
 		resp.Body.Close()
 		cancel()
-		e := ir.NewHTTPError(resp.StatusCode, excerpt(string(errBody)))
+		msg := excerpt(string(errBody))
+		log.Printf("agent: target %s upstream %d: %s", cand.name, resp.StatusCode, msg)
+		e := ir.NewHTTPError(resp.StatusCode, msg)
 		if resp.StatusCode == http.StatusNotFound {
 			log.Printf("agent: target %s returned 404 (endpoint mismatch)", cand.name)
 		}

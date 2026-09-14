@@ -203,7 +203,9 @@ sequenceDiagram
 
 Upstream 管理面位于 `/admin/*`，使用另一独立 `X-Admin-Key`，负责账号、凭据、模型和运行状态管理。
 
-## 6. 三个数据库的唯一归属
+## 6. 三个数据库的逻辑唯一归属
+
+唯一归属是**逻辑**约束：agent/replay/upstream 三库在任何部署形态下都只有一个写者，与物理形态无关（三 SQLite 文件 / PostgreSQL 三 database），跨库读取始终禁止。部署形态见第 10 章与 `design/deployment-modes.md`。
 
 ### `agent.db`
 
@@ -260,6 +262,9 @@ upstream/                      独立 Go module
   contract/upstreamv1/         Replay→Upstream DTO
   upstream.yaml                正式容器配置
 
+cmd/modelsurge/               单二进制组合根（规划：Phase A，见 design/deployment-modes.md 模式一）
+go.mod（根）                   根模块与 replace 指令（规划：Phase A）
+
 surge/                         Flutter 管理前端，功能不变
 docker-compose.yml             最终三服务部署
 .env.example                   部署变量模板
@@ -283,5 +288,20 @@ upstream healthy → replay healthy → agent 对外
 - Replay admin 和 Upstream admin 各自使用独立环境变量密钥。
 - 正式 YAML 中服务 URL 使用 Compose DNS 名称：`http://replay:18101` 与 `http://upstream:18100`。
 - 复制 `.env.example` 为本地 `.env` 并填入随机密钥后再启动；仓库不提供真实密钥，也不提交 `.env`。
+- 集群模式（规划）：`docker-compose.cluster.yml` override 引入 PostgreSQL（三 database 三 role）与 Redis（纯易失热态），健康依赖链扩展为 postgres+redis → upstream → replay → agent；本文件保持「三进程 + SQLite」中间形态。详见 `design/deployment-modes.md` 第二部分。
 
 本次收口不运行 Docker。实际部署验证应在具备 Docker 的环境中执行 `docker compose config`、构建、健康依赖和端到端调用检查。
+
+## 10. 部署模式
+
+ModelSurge 规划两种部署模式，设计细节见 `design/deployment-modes.md`；本文件第 1–9 章描述的模块职责、契约、IR 不变式与库归属在两种模式下全部保持。
+
+| | 模式一 · 单进程 | 模式二 · 集群 |
+|---|---|---|
+| 形态 | `cmd/modelsurge` 单二进制三合一（规划 Phase A） | 三进程拆分不变，多副本 |
+| 存储 | 三个 SQLite 文件，单写者 `SetMaxOpenConns(1)` | PostgreSQL 三 database 三 role（Phase B） |
+| Redis | 无 | 必需但纯易失：rr 游标/试探锁/鉴权缓存/读旁路（Phase C） |
+| 进程内通信 | 回环 HTTP，与三进程共用同一契约代码路径 | 网络 HTTP，契约不变 |
+| 定位 | 非 Docker 桌面场景，零外部依赖 | 水平扩展，对标 new-api/sub2api 集群实证 |
+
+现有 `docker-compose.yml`（三进程 + SQLite）是两模式共同的基线形态：对模式一是「拆开跑」的同构验证，对模式二是切换 PG 前的中间形态。

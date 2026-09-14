@@ -143,6 +143,8 @@ func (s *Service) ExecuteKiro(ctx context.Context, envelope upstreamv1.KiroExecu
 
 	token, state, tokenErr := runtime.Auth.GetAccessToken(ctx)
 	if tokenErr != nil {
+		// 刷新失败原因必须可排障（瞬时网络 vs 凭据失效），错误串已截断脱敏。
+		log.Printf("upstream phase=kiro_auth_failed request_id=%s target=%s error=%v", requestID, envelope.TargetID, tokenErr)
 		return nil, &upstreamv1.Error{Code: upstreamv1.CodeCredentialRefresh, Message: "credential refresh failed", Retryable: true, Status: http.StatusServiceUnavailable}
 	}
 	if state.ProfileArn != "" {

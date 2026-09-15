@@ -405,6 +405,87 @@ func TestDecoder_ToolCallChain(t *testing.T) {
 	)
 }
 
+// 真实上游（gpt 系）toolUseEvent 每帧回显 name+toolUseId（2026-09-15
+// kiro-2/gpt-5.6-sol debug 抓包）：续片/结束帧先判 name 会碎成多段、
+// 只剩恰好自解析的片段（曾表现为 arguments="\":\""）。
+func TestDecoder_ToolCallNameEchoEveryFrame(t *testing.T) {
+	evs := summary(driveDecoder(t,
+		`{"name":"get_weather","toolUseId":"call_4066e4ff"}`,
+		`{"input":"{\"","name":"get_weather","toolUseId":"call_4066e4ff"}`,
+		`{"input":"city","name":"get_weather","toolUseId":"call_4066e4ff"}`,
+		`{"input":"\":\"","name":"get_weather","toolUseId":"call_4066e4ff"}`,
+		`{"input":"Paris","name":"get_weather","toolUseId":"call_4066e4ff"}`,
+		`{"input":"\"}","name":"get_weather","toolUseId":"call_4066e4ff"}`,
+		`{"name":"get_weather","stop":true,"toolUseId":"call_4066e4ff"}`,
+		`{"stopReason":"END_TURN"}`,
+		`{"contextUsagePercentage":0.172}`,
+		`{"unit":"credit","unitPlural":"credits","usage":0.021}`,
+	))
+	wantEvents(t, evs,
+		"start",
+		"block_start:tool_use",
+		"tool_input:"+`{"city":"Paris"}`,
+		"block_stop",
+		"delta:tool_use", "stop",
+	)
+}
+
+// 回显形态下并行两调用：第二调用的 start 帧开启新调用并携带首片，
+// 迟到的 stop 不误关当前调用。
+func TestDecoder_ToolCallNameEchoParallel(t *testing.T) {
+	evs := summary(driveDecoder(t,
+		`{"name":"read_file","toolUseId":"call_a"}`,
+		`{"input":"{\"path\"","name":"read_file","toolUseId":"call_a"}`,
+		`{"input":":\"a.txt\"}","name":"read_file","toolUseId":"call_a"}`,
+		`{"name":"read_file","toolUseId":"call_b"}`,
+		`{"input":"{\"path\"","name":"read_file","toolUseId":"call_b"}`,
+		`{"input":":\"b.txt\"}","name":"read_file","toolUseId":"call_b"}`,
+		`{"name":"read_file","stop":true,"toolUseId":"call_b"}`,
+		`{"name":"read_file","stop":true,"toolUseId":"call_a"}`,
+		`{"contextUsagePercentage":1.0}`,
+	))
+	wantEvents(t, evs,
+		"start",
+		"block_start:tool_use", "tool_input:"+`{"path":"a.txt"}`, "block_stop",
+		"block_start:tool_use", "tool_input:"+`{"path":"b.txt"}`, "block_stop",
+		"delta:tool_use", "stop",
+	)
+}
+
+// 单帧完成形态：name+input+stop 同帧（对象参数直出）。
+func TestDecoder_ToolCallSingleFrameComplete(t *testing.T) {
+	evs := summary(driveDecoder(t,
+		`{"name":"lookup","toolUseId":"call_s","input":{"key":"v"},"stop":true}`,
+		`{"contextUsagePercentage":0.5}`,
+	))
+	wantEvents(t, evs,
+		"start",
+		"block_start:tool_use",
+		"tool_input:"+`{"key":"v"}`,
+		"block_stop",
+		"delta:tool_use", "stop",
+	)
+}
+
+// stop 非真值帧（false/{}）不收尾、不误开调用。
+func TestDecoder_ToolCallStopFalsyIgnored(t *testing.T) {
+	evs := summary(driveDecoder(t,
+		`{"name":"get_weather","toolUseId":"call_f"}`,
+		`{"stop":false}`,
+		`{"stop":{}}`,
+		`{"input":"{}","name":"get_weather","toolUseId":"call_f"}`,
+		`{"stop":true}`,
+		`{"contextUsagePercentage":0.0}`,
+	))
+	wantEvents(t, evs,
+		"start",
+		"block_start:tool_use",
+		"tool_input:"+`{}`,
+		"block_stop",
+		"delta:tool_use", "stop",
+	)
+}
+
 func TestDecoder_ToolNameAliasReversed(t *testing.T) {
 	ResetToolAliases()
 	defer ResetToolAliases()

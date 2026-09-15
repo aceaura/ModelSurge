@@ -253,17 +253,43 @@ func (d *streamDecoder) Feed(_, data string) ([]ir.Event, error) {
 	}
 	var out []ir.Event
 	d.ensureStarted(&out)
+	// 分发优先级 input > stop(真值) > name > 其余。真实上游（gpt 系实测）
+	// 每个 toolUseEvent 帧都回显 name+toolUseId：续片/结束帧若先判 name
+	// 会被误当新调用开场，导致参数碎成多段、只剩恰好自解析的片段。
 	switch {
+	case len(ev.Input) != 0:
+		// 续片或首帧自带 input。toolUseId 匹配当前调用则追加；
+		// 不匹配（新调用首帧）经 onToolStart 开场并携带首片。
+		id := ""
+		if ev.ToolUseID != nil {
+			id = *ev.ToolUseID
+		}
+		if d.current != nil && (id == "" || id == d.current.ID) {
+			d.current.args += inputToString(ev.Input)
+			if len(ev.Stop) != 0 && truthyRaw(ev.Stop) {
+				d.finalizeTool()
+			}
+		} else if ev.Name != nil {
+			d.onToolStart(ev)
+		}
+	case len(ev.Stop) != 0 && truthyRaw(ev.Stop):
+		// 结束帧（可能回显 name/toolUseId，勿误开新调用；
+		// 迟到的不匹配 ID 不动当前调用）。
+		if d.current != nil {
+			id := ""
+			if ev.ToolUseID != nil {
+				id = *ev.ToolUseID
+			}
+			if id == "" || id == d.current.ID {
+				d.finalizeTool()
+			}
+		} else if ev.Name != nil {
+			d.onToolStart(ev) // 单帧完成形态（start+stop 同帧）
+		}
 	case ev.Name != nil:
 		d.onToolStart(ev)
 	case len(ev.Stop) != 0:
-		if d.current != nil && truthyRaw(ev.Stop) {
-			d.finalizeTool()
-		}
-	case len(ev.Input) != 0:
-		if d.current != nil {
-			d.current.args += inputToString(ev.Input)
-		}
+		// stop 非真值（false/{}）：无动作
 	case ev.Content != nil && !ev.Followup:
 		d.onContent(&out, *ev.Content)
 	case ev.Text != nil:

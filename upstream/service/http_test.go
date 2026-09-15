@@ -213,3 +213,19 @@ func testKiroService(t *testing.T) (*Service, *upstreamstore.Store) {
 	}
 	return NewService(store, mgr), store
 }
+
+// 超限是请求侧问题：Report 建议直接停止（不落入 Attempt==0 的
+// retry_target 默认分支），且目标不进熔断计数。
+func TestContextExceededReportsStopWithoutPenalty(t *testing.T) {
+	svc, store := testKiroService(t)
+	result, err := svc.Report(context.Background(), upstreamv1.ResultReport{
+		ReportID: "ctx-1", TargetID: "kiro/*", Outcome: "context_exceeded", Status: 400, Attempt: 0,
+	})
+	if err != nil || result.Action != upstreamv1.ActionStop {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	model, err := store.GetModel(context.Background(), "kiro/*")
+	if err != nil || model.Failures != 0 || !model.CooldownUntil.IsZero() {
+		t.Fatalf("model=%+v err=%v", model, err)
+	}
+}

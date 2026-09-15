@@ -154,6 +154,10 @@ func (s *Service) Report(ctx context.Context, r upstreamv1.ResultReport) (upstre
 	if m != nil && r.Outcome != "normal" {
 		isKiro := m.Protocol == "kiro"
 		switch {
+		case r.Outcome == "context_exceeded":
+			// 超限是请求侧问题，目标无恙：不重试不换目标，也不进熔断计数。
+			r.Action = upstreamv1.ActionStop
+			action = r.Action
 		case isKiro && (r.Status == 401 || r.Status == 403) && r.Attempt == 0:
 			if rt := s.Manager.KiroRuntimeOf(m.Account); rt != nil && rt.Auth.ForceRefresh(ctx) == nil {
 				action = upstreamv1.ActionRetryTarget

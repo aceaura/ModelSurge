@@ -244,8 +244,11 @@ func (s *Store) ApplyReport(ctx context.Context, reportID, requestID, groupID, t
 	if outcome == "normal" {
 		cacheResult = "normal"
 	}
-	if _, err = tx.ExecContext(ctx, s.q(`INSERT INTO target_cache(group_id,upstream_model_id,last_result,updated_at)VALUES(?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET upstream_model_id=excluded.upstream_model_id,last_result=excluded.last_result,updated_at=excluded.updated_at`), groupID, targetID, cacheResult, time.Now().Unix()); err != nil {
-		return false, err
+	// 超限是请求侧问题：target_cache 保持原值，不把无恙目标改写成 abnormal。
+	if outcome != "context_exceeded" {
+		if _, err = tx.ExecContext(ctx, s.q(`INSERT INTO target_cache(group_id,upstream_model_id,last_result,updated_at)VALUES(?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET upstream_model_id=excluded.upstream_model_id,last_result=excluded.last_result,updated_at=excluded.updated_at`), groupID, targetID, cacheResult, time.Now().Unix()); err != nil {
+			return false, err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return false, err

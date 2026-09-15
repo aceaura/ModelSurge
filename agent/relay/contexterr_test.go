@@ -1,0 +1,139 @@
+package relay
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/aceaura/ModelSurge/agent/config"
+	"github.com/aceaura/ModelSurge/agent/ir"
+	"github.com/aceaura/ModelSurge/agent/proto"
+	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
+	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
+)
+
+func TestClassifyContextError(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		msg     string
+		want    bool
+	}{
+		// 8 组特征各至少一例（含真实上游报文样本）
+		{"openai code", 400, "This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens.", true},
+		{"generic code", 413, "context_too_large", true},
+		{"deepseek code", 400, "Error: input tokens 100000 exceed the context length_exceeded limit", true},
+		{"anthropic prompt too long", 400, "prompt is too long: 210000 tokens > 200000 maximum", true},
+		{"kiro conversation too long", 400, "conversation too long: please start a new conversation", true},
+		{"context window exceeded", 400, "The context window is too large for this request", true},
+		{"context length exceeded", 400, "your request exceeds the context length limit", true},
+		{"token limit with context", 400, "this request exceeds the token limit for the context", true},
+		{"max context length", 400, "max context length reached", true},
+		// 负例
+		{"auth error", 400, "invalid api key provided", false},
+		{"unrelated 400", 400, "invalid request: unknown parameter", false},
+		{"server error", 500, "maximum context length exceeded", false},
+		{"ok", 200, "context length is fine", false},
+		{"empty message", 400, "", false},
+		{"model output", 400, "model output is not supported in this mode", false},
+	}
+	for _, c := range cases {
+		if got := classifyContextError(c.status, c.msg); got != c.want {
+			t.Errorf("%s: classify(%d, %q)=%v, want %v", c.name, c.status, c.msg, got, c.want)
+		}
+	}
+}
+
+type reportCaptureReplay struct {
+	lease   replayv1.TargetLease
+	reports []replayv1.ResultReport
+}
+
+func (r *reportCaptureReplay) Dispatch(context.Context, replayv1.DispatchRequest) (replayv1.TargetLease, error) {
+	return r.lease, nil
+}
+func (r *reportCaptureReplay) Report(_ context.Context, report replayv1.ResultReport) (replayv1.ResultResponse, error) {
+	r.reports = append(r.reports, report)
+	return replayv1.ResultResponse{}, nil
+}
+func (*reportCaptureReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
+	return replayv1.WebSearchResponse{}, nil
+}
+
+// 超限错误：单次上游调用（无原位重试、不换目标）、outcome=context_exceeded、
+// 客户端收到 400 且消息透传。
+func TestContextExceededStopsWithoutRetry(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens.","type":"invalid_request_error"}}`))
+	}))
+	defer upstream.Close()
+
+	replay := &reportCaptureReplay{lease: replayv1.TargetLease{
+		RequestID: "req", GroupID: "group", TargetID: "acct/m1", Protocol: "openai-chat",
+		NativeModel: "m1", BaseURL: upstream.URL, Credential: "sk-up",
+	}}
+	f := NewForwarder(&config.Config{}, replay, nil)
+	w := httptest.NewRecorder()
+	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
+		Model: "public", Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+	}, "client-key")
+
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("upstream calls=%d, want 1 (no in-place retry, no switch)", upstreamCalls.Load())
+	}
+	if len(replay.reports) != 1 {
+		t.Fatalf("reports=%d, want 1", len(replay.reports))
+	}
+	if got := replay.reports[0].Outcome; got != ReasonContextExceeded {
+		t.Fatalf("outcome=%q, want %q", got, ReasonContextExceeded)
+	}
+	if got := replay.reports[0].Reason; got != ReasonContextExceeded {
+		t.Fatalf("reason=%q, want %q", got, ReasonContextExceeded)
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("client status=%d, want 400", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "maximum context length") {
+		t.Fatalf("client body missing upstream message: %s", w.Body.String())
+	}
+}
+
+// 普通错误不受影响：abnormal 上报、正常失败语义（回归对照）。
+func TestNonContextErrorStillReportsAbnormal(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid api key provided","type":"invalid_request_error"}}`))
+	}))
+	defer upstream.Close()
+
+	replay := &reportCaptureReplay{lease: replayv1.TargetLease{
+		RequestID: "req", GroupID: "group", TargetID: "acct/m1", Protocol: "openai-chat",
+		NativeModel: "m1", BaseURL: upstream.URL, Credential: "sk-up",
+	}}
+	f := NewForwarder(&config.Config{}, replay, nil)
+	w := httptest.NewRecorder()
+	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
+		Model: "public", Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+	}, "client-key")
+
+	if len(replay.reports) != 1 {
+		t.Fatalf("reports=%d, want 1", len(replay.reports))
+	}
+	if got := replay.reports[0].Outcome; got != "abnormal" {
+		t.Fatalf("outcome=%q, want abnormal", got)
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("client status=%d, want 400", w.Code)
+	}
+	_ = upstreamCalls.Load()
+}

@@ -76,3 +76,43 @@ func TestApplyReportIsIdempotent(t *testing.T) {
 		t.Fatalf("group=%+v err=%v", group, err)
 	}
 }
+
+// 超限不污染 target_cache：原 target 与 last_result 保持不变
+// （对照 abnormal 仍写 "abnormal"）。
+func TestApplyReportContextExceededKeepsTargetCache(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "replay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.PutUserModel(ctx, UserModel{Name: "m", Protocol: "auto", APIKey: "key", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutGroup(ctx, Group{ID: "g", UserModel: "m", PolicyType: "sticky", PolicyConfig: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyReport(ctx, "warm", "request", "g", "a/model", "normal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyReport(ctx, "ctx", "request", "g", "b/model", "context_exceeded"); err != nil {
+		t.Fatal(err)
+	}
+	group, err := s.GroupForModel(ctx, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group.CachedTarget != "a/model" || group.LastResult != "normal" {
+		t.Fatalf("target_cache polluted: target=%q last_result=%q, want a/model normal", group.CachedTarget, group.LastResult)
+	}
+	if _, err := s.ApplyReport(ctx, "abn", "request", "g", "c/model", "abnormal"); err != nil {
+		t.Fatal(err)
+	}
+	group, err = s.GroupForModel(ctx, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group.CachedTarget != "c/model" || group.LastResult != "abnormal" {
+		t.Fatalf("abnormal should still write cache: target=%q last_result=%q", group.CachedTarget, group.LastResult)
+	}
+}

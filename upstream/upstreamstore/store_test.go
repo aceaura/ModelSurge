@@ -252,3 +252,56 @@ func TestImportLegacyFailureRollsBackEverything(t *testing.T) {
 		}
 	}
 }
+
+// 超限是请求侧问题：ApplyReport(context_exceeded) 不动 model_state
+// （failures/cooldown/last_error_class 原样），report 幂等记录仍写。
+func TestContextExceededKeepsModelState(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Accounts.InsertAccount(&account.Account{Name: "a", Type: account.TypeAPIKey, Enabled: true, Protocol: "openai-chat", BaseURL: "https://example.test", APIKey: "secret", Models: map[string]string{"m1": "n1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MaterializeAccounts(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyReport(ctx, upstreamv1.ResultReport{ReportID: "r1", TargetID: "a/m1", Outcome: "auth_error", Status: 401}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyReport(ctx, upstreamv1.ResultReport{ReportID: "r2", TargetID: "a/m1", Outcome: "auth_error", Status: 401}); err != nil {
+		t.Fatal(err)
+	}
+	var failures int
+	var cooldownBefore int64
+	var classBefore string
+	if err := s.DB.QueryRow(`SELECT failures,cooldown_until,last_error_class FROM model_state WHERE upstream_model_id='a/m1'`).Scan(&failures, &cooldownBefore, &classBefore); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := s.ApplyReport(ctx, upstreamv1.ResultReport{ReportID: "r3", TargetID: "a/m1", Outcome: "context_exceeded", Status: 400})
+	if err != nil || !applied {
+		t.Fatalf("applied=%v err=%v", applied, err)
+	}
+	var failures2 int
+	var cooldownAfter int64
+	var classAfter string
+	if err := s.DB.QueryRow(`SELECT failures,cooldown_until,last_error_class FROM model_state WHERE upstream_model_id='a/m1'`).Scan(&failures2, &cooldownAfter, &classAfter); err != nil {
+		t.Fatal(err)
+	}
+	if failures2 != failures || cooldownAfter != cooldownBefore || classAfter != classBefore {
+		t.Fatalf("model_state changed: failures %d->%d cooldown %d->%d class %q->%q", failures, failures2, cooldownBefore, cooldownAfter, classBefore, classAfter)
+	}
+	var reports int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM result_reports WHERE report_id='r3'`).Scan(&reports); err != nil {
+		t.Fatal(err)
+	}
+	if reports != 1 {
+		t.Fatalf("result_reports rows=%d, want 1", reports)
+	}
+	applied, err = s.ApplyReport(ctx, upstreamv1.ResultReport{ReportID: "r3", TargetID: "a/m1", Outcome: "context_exceeded", Status: 400})
+	if err != nil || applied {
+		t.Fatalf("duplicate applied=%v err=%v", applied, err)
+	}
+}

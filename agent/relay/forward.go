@@ -242,7 +242,13 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 			})
 			report := replayv1.ResultReport{ReportID: uuid.NewString(), RequestID: requestID, GroupID: lease.GroupID, TargetID: lease.TargetID, Outcome: "normal", Usage: usage, At: time.Now(), Attempt: attempt}
 			if aerr != nil {
+				if aerr.Reason == "" && classifyContextError(aerr.StatusCode, aerr.Message) {
+					aerr.Reason = ReasonContextExceeded
+				}
 				report.Outcome = "abnormal"
+				if aerr.Reason == ReasonContextExceeded {
+					report.Outcome = ReasonContextExceeded
+				}
 				report.Status = aerr.StatusCode
 				report.Reason = aerr.Reason
 				report.Message = excerpt(aerr.Message)
@@ -273,6 +279,9 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 
 func localResultAction(cand candidate, err *ir.Error, attempt, sameTargetRetries int) string {
 	if err == nil {
+		return replayv1.ActionStop
+	}
+	if err.Reason == ReasonContextExceeded {
 		return replayv1.ActionStop
 	}
 	if cand.protocol == "kiro" {

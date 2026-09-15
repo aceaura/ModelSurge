@@ -246,6 +246,11 @@ func (s *Store) ApplyReport(ctx context.Context, r upstreamv1.ResultReport) (boo
 	if n == 0 {
 		return false, tx.Commit()
 	}
+	if r.Outcome == "context_exceeded" {
+		// 超限是请求侧问题：model_state 整行不动（failures/cooldown/last_error_class
+		// 原样保留——覆盖 last_error_class 会破坏 Half-Open 试探的归类门），只记幂等 report。
+		return true, tx.Commit()
+	}
 	// FOR UPDATE：postgres 下锁行串行化并发退避读数（多副本失败计数不丢更新）；
 	// sqlite 单连接本就串行，且不支持该语法。
 	lockSuffix := ""

@@ -41,6 +41,11 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	if images > 0 && !caps.Images {
 		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream protocol has no image input", images))
 	}
+	if req.Thinking != nil && req.Thinking.Enabled && req.ToolChoice != nil &&
+		(req.ToolChoice.Mode == ir.ChoiceAny || req.ToolChoice.Mode == ir.ChoiceTool) &&
+		!caps.ThinkingForcedToolChoice {
+		notes = append(notes, "downgraded tool_choice to auto: upstream rejects forced tool choice while thinking is enabled")
+	}
 
 	var dropped, unmapped []string
 	for _, t := range req.Tools {

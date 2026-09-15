@@ -39,6 +39,7 @@ type message struct {
 	ToolCalls        []toolCall      `json:"tool_calls,omitempty"`
 	ToolCallID       string          `json:"tool_call_id,omitempty"`
 	Name             string          `json:"name,omitempty"`
+	media            bool            // 出站内部标记：tool 结果抽出的图片块消息（不参与 JSON）
 }
 
 type part struct {

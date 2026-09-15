@@ -21,7 +21,7 @@ func TestDiagnose(t *testing.T) {
 		Tools: []ir.Tool{{Hosted: ir.HostedWebSearch}},
 	}
 
-	full := proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true}
+	full := proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true}
 	if notes := Diagnose(req, "anthropic", full); len(notes) != 0 {
 		t.Errorf("same-protocol signature with full caps should produce no notes, got %v", notes)
 	}
@@ -66,5 +66,33 @@ func TestDiagnose(t *testing.T) {
 	}}
 	if notes := Diagnose(req3, "openai-chat", chat); len(notes) != 0 {
 		t.Errorf("unsigned thinking should not be noted: %v", notes)
+	}
+
+	// 思考模式 + 强制 tool_choice：上游不支持时提示降级，支持的协议不误报
+	req4 := &ir.Request{
+		Thinking:   &ir.ThinkingConfig{Enabled: true, Effort: "high"},
+		ToolChoice: &ir.ToolChoice{Mode: ir.ChoiceAny},
+	}
+	if notes := Diagnose(req4, "openai-chat", chat); len(notes) != 1 || !strings.Contains(notes[0], "tool_choice") {
+		t.Errorf("forced tool choice in thinking mode not reported: %v", notes)
+	}
+	if notes := Diagnose(req4, "anthropic", full); len(notes) != 0 {
+		t.Errorf("anthropic supports forced tool choice with thinking, got %v", notes)
+	}
+
+	// 思考未开启或 tool_choice 非 forced 时无需降级提示
+	off := &ir.Request{
+		Thinking:   &ir.ThinkingConfig{Enabled: false},
+		ToolChoice: &ir.ToolChoice{Mode: ir.ChoiceAny},
+	}
+	if notes := Diagnose(off, "openai-chat", chat); len(notes) != 0 {
+		t.Errorf("thinking off should not trigger tool_choice note: %v", notes)
+	}
+	auto := &ir.Request{
+		Thinking:   &ir.ThinkingConfig{Enabled: true},
+		ToolChoice: &ir.ToolChoice{Mode: ir.ChoiceAuto},
+	}
+	if notes := Diagnose(auto, "openai-chat", chat); len(notes) != 0 {
+		t.Errorf("tool_choice auto should not trigger note: %v", notes)
 	}
 }

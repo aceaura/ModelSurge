@@ -19,9 +19,10 @@ func New() proto.Codec { return codec{} }
 
 func (codec) Name() string { return Name }
 
-// Caps Responses：encrypted_content 签名、图片、hosted tools 均支持。
+// Caps Responses：encrypted_content 签名、图片、hosted tools 均支持；
+// 思考模式下强制 tool_choice 亦支持。
 func (codec) Caps() proto.Capabilities {
-	return proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true}
+	return proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true}
 }
 
 // ---- 请求解码：Responses -> IR ----

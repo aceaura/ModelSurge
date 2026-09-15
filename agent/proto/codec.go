@@ -13,9 +13,10 @@ import (
 // Capabilities 协议能力声明。relay 层在转发前对比请求特征与上游能力，
 // 把必然发生的有损转换记入诊断（日志 + X-ModelSurge-Notes），避免静默丢信息。
 type Capabilities struct {
-	ThinkingSignature bool // thinking 签名可双向保真（Anthropic signature / Responses encrypted_content / Gemini thoughtSignature）
-	Images            bool // 图片输入
-	HostedTools       bool // 服务端托管工具声明（web_search / code_execution 等）
+	ThinkingSignature        bool // thinking 签名可双向保真（Anthropic signature / Responses encrypted_content / Gemini thoughtSignature）
+	Images                   bool // 图片输入
+	HostedTools              bool // 服务端托管工具声明（web_search / code_execution 等）
+	ThinkingForcedToolChoice bool // 思考模式下允许 tool_choice 强制（required/指定函数）；DeepSeek 系 Chat 上游会 400
 }
 
 // InboundCodec 客户端入口协议编解码器。

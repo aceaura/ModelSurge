@@ -61,8 +61,9 @@ func init() { proto.Register(Codec{}) }
 func (Codec) Name() string { return "kiro" }
 
 // Caps 能力声明：无 thinking 签名保真；支持图片与托管工具（web_search）。
+// tool_choice 以提示指令模拟（无原生字段），思考模式下不会因强制选择被拒。
 func (Codec) Caps() proto.Capabilities {
-	return proto.Capabilities{ThinkingSignature: false, Images: true, HostedTools: true}
+	return proto.Capabilities{ThinkingSignature: false, Images: true, HostedTools: true, ThinkingForcedToolChoice: true}
 }
 
 // anySlice 载荷边界统一 []any 形态（管线内部保持 []map[string]any 强类型，

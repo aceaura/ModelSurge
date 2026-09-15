@@ -19,9 +19,10 @@ func New() proto.Codec { return codec{} }
 
 func (codec) Name() string { return Name }
 
-// Caps Chat Completions：reasoning_content 无签名机制，也无 hosted tools。
+// Caps Chat Completions：reasoning_content 无签名机制，也无 hosted tools；
+// DeepSeek 系上游思考模式下强制 tool_choice 会 400（EncodeRequest 兜底降级 auto）。
 func (codec) Caps() proto.Capabilities {
-	return proto.Capabilities{ThinkingSignature: false, Images: true, HostedTools: false}
+	return proto.Capabilities{ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false}
 }
 
 // MapFinishReason OpenAI finish_reason -> 规范 StopReason。
@@ -249,7 +250,12 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		}})
 	}
 	out.ToolChoice = encodeToolChoice(r.ToolChoice)
-	if r.Thinking != nil && r.Thinking.Enabled {
+	thinkingOn := r.Thinking != nil && r.Thinking.Enabled
+	if thinkingOn {
+		// DeepSeek 系上游思考模式下强制 tool_choice（required/指定函数）会 400，降级 auto
+		if r.ToolChoice != nil && (r.ToolChoice.Mode == ir.ChoiceAny || r.ToolChoice.Mode == ir.ChoiceTool) {
+			out.ToolChoice = "auto"
+		}
 		effort := r.Thinking.Effort
 		if effort == "" {
 			effort = "medium"
@@ -344,6 +350,22 @@ func encodeMessages(m ir.Message) []message {
 						ToolCallID: b.ToolResult.ToolUseID,
 						Content:    json.RawMessage(marshalString(blocksText(b.ToolResult.Content))),
 					})
+					// tool 消息 content 只能是文本；结果里的图片块抽出为
+					// 紧随的 user 媒体消息（fixToolOrder 会挪到整组回复之后）
+					var imgParts []part
+					for _, c := range b.ToolResult.Content {
+						if c.Type != ir.BlockImage || c.Image == nil {
+							continue
+						}
+						url := c.Image.URL
+						if url == "" && c.Image.Data != "" {
+							url = "data:" + c.Image.MediaType + ";base64," + c.Image.Data
+						}
+						imgParts = append(imgParts, part{Type: "image_url", ImageURL: &imageURL{URL: url}})
+					}
+					if len(imgParts) > 0 {
+						out = append(out, message{Role: "user", Content: marshal(imgParts), media: true})
+					}
 				}
 			}
 		}
@@ -356,32 +378,65 @@ func encodeMessages(m ir.Message) []message {
 	return []message{{Role: string(m.Role), Content: json.RawMessage(`""`)}}
 }
 
-// fixToolOrder 保证每条 role:tool 都挂在最近的非 tool 消息（assistant 且
-// 带对应 tool_calls）之下：客户端裁剪/合并历史可能产出孤儿或错序 tool 消息，
-// 严格上游（DeepSeek 等）会 400。违例者降级为 user 文本。
+// fixToolOrder 重建 tool 消息布局，满足严格上游（DeepSeek 等）的不变式：
+// assistant 的每个 tool_calls 都要有对应 role:tool 回复，且紧随该 assistant
+// （按 call 顺序连续排列）。客户端裁剪/错序历史里可挽救的 tool 回复被
+// 重排到 governing assistant 旁（参考 sub2api normalize 思路）；孤儿
+// （id 无对应 call）降级为 user 文本，重复 id 静默丢弃；tool 结果抽出的
+// 媒体消息统一压到整组回复之后。
 func fixToolOrder(msgs []message) []message {
+	// 索引：id -> 首条 tool 消息下标；mediaOf：tool 消息 -> 其后紧随的媒体消息
+	byID := map[string]int{}
+	mediaOf := map[int][]message{}
+	owned := map[int]bool{} // 已归属到某 tool 消息的媒体下标
+	for i, m := range msgs {
+		if m.Role == "tool" {
+			if _, ok := byID[m.ToolCallID]; !ok {
+				byID[m.ToolCallID] = i
+			}
+			continue
+		}
+		if m.media && i > 0 && msgs[i-1].Role == "tool" {
+			mediaOf[i-1] = append(mediaOf[i-1], m)
+			owned[i] = true
+		}
+	}
+	used := make([]bool, len(msgs))
 	out := make([]message, 0, len(msgs))
-	pending := map[string]bool{}
-	for _, m := range msgs {
-		switch m.Role {
-		case "tool":
-			if pending[m.ToolCallID] {
-				out = append(out, m)
-				continue
+	downgrade := func(m message) {
+		var text string
+		_ = json.Unmarshal(m.Content, &text)
+		out = append(out, message{Role: "user", Content: json.RawMessage(marshalString(
+			fmt.Sprintf("[Tool Result (%s)]\n%s", m.ToolCallID, text)))})
+	}
+	for i, m := range msgs {
+		switch {
+		case m.Role == "tool":
+			if used[i] || byID[m.ToolCallID] != i {
+				continue // 已重排安置；重复 id 丢弃
 			}
-			var text string
-			_ = json.Unmarshal(m.Content, &text)
-			out = append(out, message{Role: "user", Content: json.RawMessage(marshalString(
-				fmt.Sprintf("[Tool Result (%s)]\n%s", m.ToolCallID, text)))})
-			pending = map[string]bool{}
-		case "assistant":
-			pending = map[string]bool{}
-			for _, tc := range m.ToolCalls {
-				pending[tc.ID] = true
+			used[i] = true
+			downgrade(m)                     // 孤儿：无 governing call
+			out = append(out, mediaOf[i]...) // 孤儿的媒体跟随降级文本
+		case m.media:
+			if owned[i] {
+				continue // 已随所属 tool 消息安置
 			}
+			out = append(out, m) // 未归属（非 tool 紧随）：按普通 user 消息输出
+		case m.Role == "assistant" && len(m.ToolCalls) > 0:
 			out = append(out, m)
+			var tail []message
+			for _, tc := range m.ToolCalls {
+				j, ok := byID[tc.ID]
+				if !ok || used[j] {
+					continue
+				}
+				used[j] = true
+				out = append(out, msgs[j])
+				tail = append(tail, mediaOf[j]...)
+			}
+			out = append(out, tail...) // 媒体压组尾，不打断 tool 序列
 		default:
-			pending = map[string]bool{}
 			out = append(out, m)
 		}
 	}

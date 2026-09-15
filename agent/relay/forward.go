@@ -204,12 +204,7 @@ func allowedOutboundProtocol(protocol string) bool {
 func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, req *ir.Request, clientKey string) {
 	requestID := requestIDFrom(ctx)
 	// 估算输入+输出预算（kiro 入站有专用 tokenizer 时用之，CountTokens 同款取法）。
-	est := ir.EstimateRequestTokens(req) + req.MaxTokens
-	if clientCodec.Name() == "kiro" {
-		if te, ok := clientCodec.(interface{ EstimateRequestTokens(*ir.Request) int }); ok {
-			est = te.EstimateRequestTokens(req) + req.MaxTokens
-		}
-	}
+	est := estimateReqTokens(clientCodec, req)
 	tried := map[string]bool{}
 	attempts := map[string]int{}
 	var lastErr *ir.Error
@@ -219,6 +214,10 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 	compressModel := ""
 	compactOf := ""
 	compactRetried := false
+	// 第二档自动压缩状态（循环局部）：src=原始全量历史快照（每轮压缩都从
+	// 原始历史切分），k=保留轮数（2→0），calls=压缩调用数（≤2），
+	// header=续命响应标记头。
+	var auto autoCompactState
 	for {
 		if ctx.Err() != nil {
 			return
@@ -258,6 +257,19 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 				attempts = map[string]int{}
 				continue
 			}
+			// 第二档拦截（dispatch 失败路径）：普通请求被调度层窗口过滤
+			// （context_too_large）→ 自动压缩续命（2.1/8.1）。
+			if !req.Compact && compactOf == "" && compressModel != "" && isContextTooLargeDispatch(err) {
+				if newReq, ok := f.tryAutoCompact(ctx, clientCodec, req, compressModel, clientKey, requestID, &auto); ok {
+					req = newReq
+					est = estimateReqTokens(clientCodec, req)
+					tried = map[string]bool{}
+					attempts = map[string]int{}
+					continue
+				}
+				f.writeClientError(ctx, w, clientCodec, req.Stream, dispatchErr)
+				return
+			}
 			if lastErr == nil {
 				lastErr = dispatchErr
 			}
@@ -280,6 +292,9 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 		for {
 			attempt := attempts[lease.TargetID]
 			var usage replayv1.Usage
+			if auto.header {
+				w.Header().Set(headerCompacted, "true") // 第二档续命标记（8.5）
+			}
 			wrote, aerr := f.attempt(ctx, w, clientCodec, cand, req, func(u *ir.Usage) {
 				if u == nil || u.Estimated {
 					return
@@ -301,8 +316,12 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 			}
 			result := f.finishReport(clientCodec.Name(), req.Model, report)
 			if aerr == nil || wrote {
+				if aerr == nil && auto.header {
+					log.Printf("agent phase=auto_compact request_id=%s result=success model=%s compress_model=%s round=%d", requestID, req.Model, compressModel, auto.calls)
+				}
 				return
 			}
+			w.Header().Del(headerCompacted) // 本次尝试未写出任何字节，撤销标记头
 			lastErr = aerr
 			attempts[lease.TargetID] = attempt + 1
 			action := result.Action
@@ -325,6 +344,19 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 					tried = map[string]bool{}
 					attempts = map[string]int{}
 					break
+				}
+				// 第二档拦截（action=stop 路径）：普通请求超限 → 服务端自动
+				// 压缩续命（2.1-2.3/8.1-8.3）。
+				if !req.Compact && compactOf == "" && compressModel != "" && aerr.Reason == ReasonContextExceeded {
+					if newReq, ok := f.tryAutoCompact(ctx, clientCodec, req, compressModel, clientKey, requestID, &auto); ok {
+						req = newReq
+						est = estimateReqTokens(clientCodec, req)
+						tried = map[string]bool{}
+						attempts = map[string]int{}
+						break
+					}
+					f.writeClientError(ctx, w, clientCodec, req.Stream, aerr)
+					return
 				}
 				f.writeClientError(ctx, w, clientCodec, req.Stream, aerr)
 				return

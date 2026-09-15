@@ -306,3 +306,27 @@ ModelSurge 规划两种部署模式，设计细节见 `design/deployment-modes.m
 | 定位 | 非 Docker 桌面场景，零外部依赖 | 水平扩展，对标 new-api/sub2api 集群实证 |
 
 现有 `docker-compose.yml`（三进程 + SQLite）是两模式共同的基线形态：对模式一是「拆开跑」的同构验证，对模式二是切换 PG 前的中间形态。
+
+## 11. 上下文压缩回退
+
+超限（`context_exceeded` / 调度层窗口过滤 `context_too_large`）不再直接透传致死，由 user model 上配置的 `compress_model`（引用另一个 user model 名，空串=关闭）承接，分两档：
+
+### 第一档：显式压缩请求兜底
+
+Codex CLI 等客户端显式发起的压缩请求（`POST /v1/responses/compact` 系路由或 input 含 `compaction_trigger` 条目）在原模型失败（超限/模型不可用）时，整请求换 `compress_model` 重发一次（dispatch 带 `CompressOf=原模型名`）。压缩语义由客户端自述，网关只换执行者，零质量风险（sub2api 生产同款）。
+
+### 第二档：服务端自动压缩续命
+
+普通请求超限时服务端自动续命：按 K 轮切分原始历史（最后一条 user 永远保留、工具配对边界回退），旧历史交 `compress_model` 摘要（单次 max_tokens 4096），新历史 = system + 合成 summary 消息（带来源说明提示）+ 最近 K 轮原文，本地重估 token 后重新 dispatch 原模型。仍超窗则 K 递减（2→0）再压一轮，压缩调用总数 ≤2；成功响应带 `X-ModelSurge-Compacted: true` 标记头。
+
+### 配置与防护边界
+
+- `compress_model` 管理面硬校验：引用不存在/自引用/引用禁用 → 400；窗口 best-effort 告警（双方组首成员窗口可得且压缩模型窗口 ≤ 原模型时告警，运行时试探兜底）。
+- `DispatchRequest.CompressOf` 是 Agent→Replay 的内部信任标记：Replay 见非空跳过 key/协议校验（原请求已在 Agent 入口鉴权），调度与评估不豁免；外部客户端无法注入。
+- 递归防护：带 `CompressOf` 的内部压缩调用失败不再触发任何压缩（深度封顶 1）；第二档 K 单调递减 + 压缩调用 ≤2 + summary 有界保证终止性。
+- 压缩调用自身失败按原失败原样返回，不吞错误；kiro 目标暂不支持作为压缩调用上游（数据面特殊，跳过换下一候选）。
+- 压缩路径日志记 `phase=auto_compact`（触发/成功/失败/轮次/模型，不含消息内容）。
+
+### 明确不做
+
+前缀哈希缓存（跨轮复用 summary）、机械截断降级层、Anthropic 客户端压缩请求启发式识别（Claude Code 的 /compact 是普通请求，超限场景由第二档覆盖）。

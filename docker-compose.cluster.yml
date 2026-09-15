@@ -9,6 +9,7 @@
 
 services:
   postgres:
+    container_name: modelsurge-postgres
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
@@ -29,6 +30,7 @@ services:
     restart: unless-stopped
 
   redis:
+    container_name: modelsurge-redis
     image: redis:7-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -38,6 +40,7 @@ services:
     restart: unless-stopped
 
   config-check:
+    container_name: modelsurge-config-check
     image: alpine:3.20
     restart: "no"
     environment:

@@ -2,6 +2,7 @@ name: modelsurge
 
 services:
   upstream:
+    container_name: modelsurge-upstream
     build:
       context: .
       dockerfile: upstream/Dockerfile
@@ -25,6 +26,7 @@ services:
     restart: unless-stopped
 
   replay:
+    container_name: modelsurge-replay
     build:
       context: .
       dockerfile: replay/Dockerfile
@@ -53,6 +55,7 @@ services:
     restart: unless-stopped
 
   agent:
+    container_name: modelsurge-agent
     build:
       context: .
       dockerfile: agent/Dockerfile

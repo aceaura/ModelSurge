@@ -41,17 +41,24 @@ func Load(path string) (*Config, error) {
 	if err := c.Normalize(); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
+	// 三进程二进制的硬约束：sqlite 仅属单进程模式（cmd/modelsurge），此处
+	// 只接受 postgres——env 漏配时 fail fast，杜绝静默服务陈旧本地库。
+	if c.DBDriver != dialect.Postgres {
+		return nil, fmt.Errorf("config: %s: db_driver: cluster process requires postgres, got %q (sqlite is single-process mode only)", path, c.DBDriver)
+	}
 	return &c, nil
 }
 
-// Normalize 补默认值并校验必填项；单进程组合根在覆写回环地址后复用。
-// 数据源解析：db_driver 缺省 sqlite；sqlite 且 db_dsn 空时回落 db_path。
+// Normalize 补默认值并校验必填项；单进程组合根在覆写回环地址后复用（它必须
+// 显式声明 db_driver=sqlite）。数据源解析：db_driver 必填，绝无缺省——集群
+// 进程漏配 DSN 时宁可启动失败，也不能静默回落陈旧 SQLite；sqlite 且 db_dsn
+// 空时取 db_path。
 func (c *Config) Normalize() error {
 	if c.Listen == "" {
 		c.Listen = "0.0.0.0:18099"
 	}
 	if c.DBDriver == "" {
-		c.DBDriver = dialect.SQLite
+		return fmt.Errorf("db_driver: required (postgres for cluster processes; sqlite only in single-process mode)")
 	}
 	if !dialect.Valid(c.DBDriver) {
 		return fmt.Errorf("db_driver: unsupported %q", c.DBDriver)

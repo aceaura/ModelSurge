@@ -8,8 +8,10 @@ import (
 	"time"
 )
 
+const clusterPreamble = "db_driver: postgres\ndb_dsn: postgres://agent@localhost/agent\nreplay_url: http://replay\nservice_key: key\n"
+
 func TestLoadDurationDefaultsAndSameAccountRetries(t *testing.T) {
-	cfg := loadTestConfig(t, "replay_url: http://replay\nservice_key: key\n")
+	cfg := loadTestConfig(t, clusterPreamble)
 	if cfg.ControlTimeoutDur != 10*time.Second || cfg.FirstTokenTimeoutDur != 30*time.Second {
 		t.Fatalf("durations = %s/%s", cfg.ControlTimeoutDur, cfg.FirstTokenTimeoutDur)
 	}
@@ -19,7 +21,7 @@ func TestLoadDurationDefaultsAndSameAccountRetries(t *testing.T) {
 }
 
 func TestLoadDurationExplicitZero(t *testing.T) {
-	cfg := loadTestConfig(t, "replay_url: http://replay\nservice_key: key\ncontrol_timeout: 0\nfirst_token_timeout: 0\nsame_account_retries: 2\n")
+	cfg := loadTestConfig(t, clusterPreamble+"control_timeout: 0\nfirst_token_timeout: 0\nsame_account_retries: 2\n")
 	if cfg.ControlTimeoutDur != 0 || cfg.FirstTokenTimeoutDur != 0 {
 		t.Fatalf("durations = %s/%s, want zero", cfg.ControlTimeoutDur, cfg.FirstTokenTimeoutDur)
 	}
@@ -40,7 +42,7 @@ func TestLoadInvalidDurationFailsFast(t *testing.T) {
 		{name: "first token negative", body: "first_token_timeout: -1s\n", want: "first_token_timeout"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Load(writeTestConfig(t, "replay_url: http://replay\nservice_key: key\n"+tc.body))
+			_, err := Load(writeTestConfig(t, clusterPreamble+tc.body))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want field %q", err, tc.want)
 			}
@@ -49,9 +51,29 @@ func TestLoadInvalidDurationFailsFast(t *testing.T) {
 }
 
 func TestLoadNegativeSameAccountRetriesFails(t *testing.T) {
-	_, err := Load(writeTestConfig(t, "replay_url: http://replay\nservice_key: key\nsame_account_retries: -1\n"))
+	_, err := Load(writeTestConfig(t, clusterPreamble+"same_account_retries: -1\n"))
 	if err == nil || !strings.Contains(err.Error(), "same_account_retries") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Load 是集群进程入口：sqlite 仅属单进程模式，必须拒绝；缺省（空）同样拒绝。
+func TestLoadRejectsSQLiteAndMissingDriver(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "sqlite explicit", body: "db_driver: sqlite\ndb_path: agent.db\nreplay_url: http://replay\nservice_key: key\n", want: "single-process"},
+		{name: "driver missing", body: "replay_url: http://replay\nservice_key: key\n", want: "db_driver: required"},
+		{name: "postgres without dsn", body: "db_driver: postgres\nreplay_url: http://replay\nservice_key: key\n", want: "db_dsn is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeTestConfig(t, tc.body))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

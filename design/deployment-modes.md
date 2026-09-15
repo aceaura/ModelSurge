@@ -125,7 +125,10 @@ MODELSURGE_UPSTREAM_DB_DSN=postgres://upstream:.../upstream
 MODELSURGE_REDIS_ADDR= / MODELSURGE_REDIS_PASSWORD= / MODELSURGE_REDIS_PREFIX=modelsurge:
 ```
 
-三份 DSN 分开配置、拒绝共享（配置加载校验三者互不相同）。
+三份 DSN 分开配置、拒绝共享（配置加载校验三者互不相同）。**db_driver 无缺省**：
+三进程二进制（agent/replay/upstream 的 cmd 入口）只接受 postgres，driver 缺失或
+sqlite 一律启动报错（fail fast）——sqlite 仅由模式一组合根（cmd/modelsurge）显式
+注入，杜绝 override 文件漏加载时静默回落陈旧本地库。
 
 **多副本**：agent 可水平扩展（outbox 上报按 report_id 全局幂等）；replay/upstream 同样可多副本（PG 权威 + Redis 共享热态）。compose cluster 验证栈用 `deploy.replicas` 或 `--scale` 起双副本。
 

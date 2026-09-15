@@ -7,6 +7,7 @@ import (
 
 	agentconfig "github.com/aceaura/ModelSurge/agent/config"
 	replayconfig "github.com/aceaura/ModelSurge/replay/config"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"github.com/aceaura/ModelSurge/upstream/processconfig"
 	"github.com/aceaura/ModelSurge/upstream/redisx"
 	"gopkg.in/yaml.v3"
@@ -44,7 +45,8 @@ func LoadConfig(path string) (*Config, error) {
 	c.Replay.UpstreamURL = override("replay", "upstream_url", c.Replay.UpstreamURL, "http://"+upstreamLoopback)
 	c.Agent.ReplayURL = override("agent", "replay_url", c.Agent.ReplayURL, "http://"+replayLoopback)
 
-	// 模式一固定 SQLite：集群数据源（postgres/Redis）属模式二（三进程形态）。
+	// 模式一固定 SQLite（显式声明：Normalize 不再做任何缺省回落）：
+	// 集群数据源（postgres/Redis）属模式二（三进程形态）。
 	for _, s := range []struct {
 		section string
 		driver  *string
@@ -54,13 +56,10 @@ func LoadConfig(path string) (*Config, error) {
 		{"replay", &c.Replay.DBDriver, &c.Replay.DBDSN},
 		{"upstream", &c.Upstream.DBDriver, &c.Upstream.DBDSN},
 	} {
-		if *s.driver != "" && *s.driver != "sqlite" {
-			log.Printf("modelsurge: %s.db_driver=%q ignored, forced to sqlite (single-process mode)", s.section, *s.driver)
-		}
 		if *s.dsn != "" {
 			log.Printf("modelsurge: %s.db_dsn ignored, using db_path (single-process mode)", s.section)
 		}
-		*s.driver = ""
+		*s.driver = dialect.SQLite
 		*s.dsn = ""
 	}
 	// Redis 热态同属模式二：单副本无共享语义需求，模式一保持零外部依赖。

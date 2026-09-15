@@ -1,6 +1,6 @@
 listen: 0.0.0.0:18100
 db_path: /data/upstream.db
-# 模式二数据源（未设 env 时为空 -> Normalize 回落 sqlite + db_path）
+# 模式二数据源（env 漏配 -> 启动报错 fail fast；sqlite 仅属单进程模式）
 db_driver: ${MODELSURGE_DB_DRIVER}
 db_dsn: ${MODELSURGE_UPSTREAM_DB_DSN}
 service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}

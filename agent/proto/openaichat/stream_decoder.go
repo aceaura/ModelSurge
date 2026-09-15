@@ -139,7 +139,7 @@ func (d *streamDecoder) feedToolCall(tc toolCall) []ir.Event {
 			out = append(out, ir.Event{Type: ir.EvToolInput, Index: pt.blockIdx, Text: frag})
 		}
 		pt.pendingArgs = nil
-		return out
+		// 不提前返回：本帧可能同帧携带 arguments（GLM/智谱形态），需续走下方参数处理
 	}
 	if tc.Function.Arguments != "" {
 		if pt.started {

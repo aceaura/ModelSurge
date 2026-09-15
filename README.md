@@ -71,7 +71,7 @@ Gemini 请求和响应仍由 Agent 的 Gemini codec、流编码器、错误渲�
 - **每请求租约**：Agent 不复用旧租约，每个客户端请求都调用 Replay `/internal/v1/dispatch`。
 - **Replay 缓存与 failover**：正常缓存走快速 resolve；缓存缺失、异常、过期或目标已尝试时，Replay 请求 Upstream evaluate，再按 Policy 选择目标。
 - **首字节边界**：首字节前可换目标；首字节后禁止 redispatch。
-- **独立持久化**：`agent.db`、`replay.db`、`upstream.db` 分属三个进程和三个 named volume。
+- **独立持久化**：agent/replay/upstream 数据分属三个 PostgreSQL database（compose 三库三 role）。
 - **幂等结果上报**：Agent→Replay→Upstream 的结果链按 report ID 支持安全重试。
 
 ## 配置
@@ -88,17 +88,17 @@ Gemini 请求和响应仍由 Agent 的 Gemini codec、流编码器、错误渲�
 # agent/agent.yaml
 replay_url: http://replay:18101
 service_key: ${MODELSURGE_AGENT_REPLAY_KEY}
-db_path: /data/agent.db
+db_dsn: ${MODELSURGE_AGENT_DB_DSN}
 
 # replay/replay.yaml
 upstream_url: http://upstream:18100
 agent_service_key: ${MODELSURGE_AGENT_REPLAY_KEY}
 upstream_service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}
-db_path: /data/replay.db
+db_dsn: ${MODELSURGE_REPLAY_DB_DSN}
 
 # upstream/upstream.yaml
 service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}
-db_path: /data/upstream.db
+db_dsn: ${MODELSURGE_UPSTREAM_DB_DSN}
 ```
 
 Replay 和 Upstream 管理面使用独立 admin key，均只在 Compose 私网 listener 上提供；默认不映射宿主端口。
@@ -115,7 +115,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Compose 项目名固定为 `modelsurge`，健康依赖顺序为 `upstream → replay → agent`。只有 Agent 映射宿主端口：
+Compose 项目名固定为 `modelsurge`，健康依赖顺序为 `config-check + postgres + redis → upstream → replay → agent`。只有 Agent 映射宿主端口：
 
 ```text
 ${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-12345}
@@ -123,9 +123,9 @@ ${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-12345}
 
 数据卷：
 
-- `modelsurge_agent-data` → `/data/agent.db`
-- `modelsurge_replay-data` → `/data/replay.db`
-- `modelsurge_upstream-data` → `/data/upstream.db`
+- `modelsurge_pg-data` → PostgreSQL 三库（agent/replay/upstream）持久化数据
+
+历史 SQLite named volume（`modelsurge_agent-data`/`replay-data`/`upstream-data`）在当前形态下不再挂载，成为孤儿卷；确认无用后可用 `docker volume rm` 清理。
 
 停止服务使用 `docker compose down`。除非确认要删除全部持久化数据，否则不要添加 `-v`。
 

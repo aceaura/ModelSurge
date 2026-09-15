@@ -14,6 +14,7 @@ import (
 	"github.com/aceaura/ModelSurge/replay/config"
 	"github.com/aceaura/ModelSurge/replay/relaystore"
 	"github.com/aceaura/ModelSurge/replay/service"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"github.com/aceaura/ModelSurge/upstream/redisx"
 )
 
@@ -24,7 +25,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	store, err := relaystore.Open(cfg.DBDriver, cfg.DBDSN)
+	store, err := relaystore.Open(dialect.Postgres, cfg.DBDSN)
 	if err != nil {
 		log.Fatal(err)
 	}

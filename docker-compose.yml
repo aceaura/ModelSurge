@@ -1,17 +1,92 @@
+# ModelSurge 集群栈（唯一部署形态）：
+#   docker compose up -d --build
+# 形态：三进程容器 + postgres:16（三库三 role，deploy/pg-init/01-roles.sh 初始化）
+# + redis:7（纯易失热态）。
+# 必填 env（.env）：MODELSURGE_AGENT_REPLAY_KEY / MODELSURGE_REPLAY_UPSTREAM_KEY /
+# MODELSURGE_REPLAY_ADMIN_KEY / MODELSURGE_UPSTREAM_ADMIN_KEY。
+# 可选：MODELSURGE_PG_*_PASSWORD（默认弱密码=role 名）、MODELSURGE_*_DB_DSN
+# （全量 DSN，覆盖默认拼装）、MODELSURGE_REDIS_*、MODELSURGE_AGENT_BIND/PORT、
+# MODELSURGE_BOOTSTRAP_CLIENT_KEY、TZ。
+# config-check 一次性服务在拓扑上强制：三 DSN 非空且互不相同
+# （设计 2.1「三份 DSN 分开配置、拒绝共享」）。
+
 name: modelsurge
 
 services:
+  postgres:
+    container_name: modelsurge-postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${MODELSURGE_PG_ADMIN_PASSWORD:-postgres}
+      POSTGRES_AGENT_PASSWORD: ${MODELSURGE_PG_AGENT_PASSWORD:-agent}
+      POSTGRES_REPLAY_PASSWORD: ${MODELSURGE_PG_REPLAY_PASSWORD:-replay}
+      POSTGRES_UPSTREAM_PASSWORD: ${MODELSURGE_PG_UPSTREAM_PASSWORD:-upstream}
+      POSTGRES_DB: postgres
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./deploy/pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    container_name: modelsurge-redis
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    restart: unless-stopped
+
+  config-check:
+    container_name: modelsurge-config-check
+    image: alpine:3.20
+    restart: "no"
+    environment:
+      MODELSURGE_AGENT_DB_DSN: ${MODELSURGE_AGENT_DB_DSN:-postgres://agent:${MODELSURGE_PG_AGENT_PASSWORD:-agent}@postgres:5432/agent}
+      MODELSURGE_REPLAY_DB_DSN: ${MODELSURGE_REPLAY_DB_DSN:-postgres://replay:${MODELSURGE_PG_REPLAY_PASSWORD:-replay}@postgres:5432/replay}
+      MODELSURGE_UPSTREAM_DB_DSN: ${MODELSURGE_UPSTREAM_DB_DSN:-postgres://upstream:${MODELSURGE_PG_UPSTREAM_PASSWORD:-upstream}@postgres:5432/upstream}
+    command:
+      - sh
+      - -c
+      - |
+        if [ -z "$$MODELSURGE_AGENT_DB_DSN" ] || [ -z "$$MODELSURGE_REPLAY_DB_DSN" ] || [ -z "$$MODELSURGE_UPSTREAM_DB_DSN" ]; then
+          echo "config-check: all three DSNs must be set"; exit 1
+        fi
+        if [ "$$MODELSURGE_AGENT_DB_DSN" = "$$MODELSURGE_REPLAY_DB_DSN" ] \
+           || [ "$$MODELSURGE_AGENT_DB_DSN" = "$$MODELSURGE_UPSTREAM_DB_DSN" ] \
+           || [ "$$MODELSURGE_REPLAY_DB_DSN" = "$$MODELSURGE_UPSTREAM_DB_DSN" ]; then
+          echo "config-check: agent/replay/upstream DSNs must differ"; exit 1
+        fi
+        echo "config-check: ok (DSNs distinct)"
+
   upstream:
     container_name: modelsurge-upstream
     build:
       context: .
       dockerfile: upstream/Dockerfile
+    depends_on:
+      config-check:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       MODELSURGE_REPLAY_UPSTREAM_KEY: ${MODELSURGE_REPLAY_UPSTREAM_KEY:?set MODELSURGE_REPLAY_UPSTREAM_KEY in .env}
       MODELSURGE_UPSTREAM_ADMIN_KEY: ${MODELSURGE_UPSTREAM_ADMIN_KEY:?set MODELSURGE_UPSTREAM_ADMIN_KEY in .env}
+      MODELSURGE_UPSTREAM_DB_DSN: ${MODELSURGE_UPSTREAM_DB_DSN:-postgres://upstream:${MODELSURGE_PG_UPSTREAM_PASSWORD:-upstream}@postgres:5432/upstream}
+      MODELSURGE_REDIS_ADDR: ${MODELSURGE_REDIS_ADDR:-redis:6379}
+      MODELSURGE_REDIS_PASSWORD: ${MODELSURGE_REDIS_PASSWORD:-}
+      MODELSURGE_REDIS_PREFIX: ${MODELSURGE_REDIS_PREFIX:-modelsurge:}
       TZ: ${TZ:-UTC}
     volumes:
-      - upstream-data:/data
       - ./upstream/upstream.yaml:/app/upstream.yaml:ro
     expose:
       - "18100"
@@ -33,14 +108,21 @@ services:
     depends_on:
       upstream:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       MODELSURGE_AGENT_REPLAY_KEY: ${MODELSURGE_AGENT_REPLAY_KEY:?set MODELSURGE_AGENT_REPLAY_KEY in .env}
       MODELSURGE_REPLAY_UPSTREAM_KEY: ${MODELSURGE_REPLAY_UPSTREAM_KEY:?set MODELSURGE_REPLAY_UPSTREAM_KEY in .env}
       MODELSURGE_REPLAY_ADMIN_KEY: ${MODELSURGE_REPLAY_ADMIN_KEY:?set MODELSURGE_REPLAY_ADMIN_KEY in .env}
       MODELSURGE_BOOTSTRAP_CLIENT_KEY: ${MODELSURGE_BOOTSTRAP_CLIENT_KEY:-}
+      MODELSURGE_REPLAY_DB_DSN: ${MODELSURGE_REPLAY_DB_DSN:-postgres://replay:${MODELSURGE_PG_REPLAY_PASSWORD:-replay}@postgres:5432/replay}
+      MODELSURGE_REDIS_ADDR: ${MODELSURGE_REDIS_ADDR:-redis:6379}
+      MODELSURGE_REDIS_PASSWORD: ${MODELSURGE_REDIS_PASSWORD:-}
+      MODELSURGE_REDIS_PREFIX: ${MODELSURGE_REDIS_PREFIX:-modelsurge:}
       TZ: ${TZ:-UTC}
     volumes:
-      - replay-data:/data
       - ./replay/replay.yaml:/app/replay.yaml:ro
     expose:
       - "18101"
@@ -62,11 +144,13 @@ services:
     depends_on:
       replay:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       MODELSURGE_AGENT_REPLAY_KEY: ${MODELSURGE_AGENT_REPLAY_KEY:?set MODELSURGE_AGENT_REPLAY_KEY in .env}
+      MODELSURGE_AGENT_DB_DSN: ${MODELSURGE_AGENT_DB_DSN:-postgres://agent:${MODELSURGE_PG_AGENT_PASSWORD:-agent}@postgres:5432/agent}
       TZ: ${TZ:-UTC}
     volumes:
-      - agent-data:/data
       - ./agent/agent.yaml:/app/agent.yaml:ro
     ports:
       - "${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-12345}:18099"
@@ -84,6 +168,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  agent-data:
-  replay-data:
-  upstream-data:
+  pg-data:

@@ -16,6 +16,7 @@ import (
 	"github.com/aceaura/ModelSurge/agent/relay"
 	"github.com/aceaura/ModelSurge/agent/replayclient"
 	"github.com/aceaura/ModelSurge/agent/server"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 )
 
 func main() {
@@ -25,7 +26,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	store, err := agentstore.Open(cfg.DBDriver, cfg.DBDSN)
+	store, err := agentstore.Open(dialect.Postgres, cfg.DBDSN)
 	if err != nil {
 		log.Fatal(err)
 	}

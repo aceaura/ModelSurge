@@ -1,6 +1,9 @@
 # ModelSurge 双模式部署设计
 
 > 本文是设计文档，不含代码改动。模式一与模式二**各自独立设计**，各自的分期实施路线见文内「实施分期」章节。
+>
+> **【2026-09-15 状态更新】模式一（单进程 + SQLite）已从代码库整体移除**：`cmd/modelsurge/` 与 `modelsurge.yaml` 已删除，`docker-compose.cluster.yml` 已并入单文件 `docker-compose.yml`（三进程 + PG + Redis，唯一部署形态），三进程配置只保留 `db_dsn` 字段（必填，`db_driver`/`db_path` 字段不复存在）。本文第一部分（模式一）及全文对两模式的对比陈述**保留为历史设计记录**；现行配置规则以 agent/replay/upstream 各 config 包与 `docker-compose.yml` 头注释为准。
+>
 > 选型调研实证（2026-09）：**new-api** = 默认 SQLite、`SQL_DSN` 切 MySQL/PG、Redis 可选（缓存/限流/会话）、集群 = 应用主从多节点 + 共享单库入口（DB 主从/ProxySQL 是部署侧可选增强，应用无感知）；**sub2api** = 强制 PostgreSQL 15+ + Redis 7+（缓存/队列）、无 DB 集群设计。
 
 ## 0. 总纲：两模式共享不变量
@@ -111,24 +114,23 @@ flowchart LR
 
 ### 2.1 形态与拓扑
 
-三进程保持现有拆分与 HTTP 契约，**启动入口沿用现有三个 cmd 目录，不新建代码目录**。Compose 新增 `docker-compose.cluster.yml` override：`postgres:16-alpine` + `redis:7-alpine`，健康依赖链 postgres+redis → upstream → replay → agent。现有 `docker-compose.yml` 保留为「集群拓扑 + SQLite」中间形态（三进程分容器 + named volume，便于渐进迁移）。Phase B/C 的方言层与 Redis 热态改造全部落在共享 store/service 包内，模式一与模式二入口同时受益。
+三进程保持现有拆分与 HTTP 契约，**启动入口沿用现有三个 cmd 目录，不新建代码目录**。Compose 拓扑（现役单文件 `docker-compose.yml`，原 cluster override 已并入）：`postgres:16-alpine` + `redis:7-alpine` + config-check 一次性校验服务，健康依赖链 config-check+postgres+redis → upstream → replay → agent。Phase B/C 的方言层与 Redis 热态改造全部落在共享 store/service 包内，三进程入口共同受益。
 
 **PG 三库三 role**：`agent`/`replay`/`upstream` 各一个 database + 一个 role，role 只授本库权限——从部署层强制三库唯一归属。应用只配单个 DSN 入口；DB 主从/代理层 HA 留部署侧，应用不做读写分离/多数据源（new-api 实证：集群是应用多节点 + 共享单库入口，应用对 DB 拓扑无感知）。
 
 **env 命名**：
 
 ```text
-MODELSURGE_DB_DRIVER=sqlite|postgres
 MODELSURGE_AGENT_DB_DSN=postgres://agent:.../agent
 MODELSURGE_REPLAY_DB_DSN=postgres://replay:.../replay
 MODELSURGE_UPSTREAM_DB_DSN=postgres://upstream:.../upstream
 MODELSURGE_REDIS_ADDR= / MODELSURGE_REDIS_PASSWORD= / MODELSURGE_REDIS_PREFIX=modelsurge:
 ```
 
-三份 DSN 分开配置、拒绝共享（配置加载校验三者互不相同）。**db_driver 无缺省**：
-三进程二进制（agent/replay/upstream 的 cmd 入口）只接受 postgres，driver 缺失或
-sqlite 一律启动报错（fail fast）——sqlite 仅由模式一组合根（cmd/modelsurge）显式
-注入，杜绝 override 文件漏加载时静默回落陈旧本地库。
+三份 DSN 分开配置、拒绝共享（config-check 校验三者非空且互不相同；compose 默认值
+按 `MODELSURGE_PG_*_PASSWORD` 拼装，可整条 `MODELSURGE_*_DB_DSN` 覆盖）。**配置只有
+`db_dsn` 一个数据源字段**：必填、无缺省，`db_driver`/`db_path` 字段已随模式一移除——
+漏配 DSN 时宁可启动失败，也不能静默服务陈旧本地库。
 
 **多副本**：agent 可水平扩展（outbox 上报按 report_id 全局幂等）；replay/upstream 同样可多副本（PG 权威 + Redis 共享热态）。compose cluster 验证栈用 `deploy.replicas` 或 `--scale` 起双副本。
 
@@ -195,7 +197,7 @@ account 收编：`upstreamstore.Open` 打开连接后已调 `account.OpenDB(db)`
 3. **熔断读旁路粒度**：按 model id 缓存（`state:{id}` → `{found,enabled,cooldown,failures,class,account}` JSON，TTL 60s）；miss 批量回源一次 `ListModels` 并回填。`Report` applied 后 `DEL state:{target}` 主动失效——活跃目标的状态自愈即时；管理面账号变更（物化）不主动失效，TTL 60s 收敛，执行侧 `Resolve`/`ExecuteKiro` 恒读 PG 新鲜态兜底正确性。
 4. **鉴权缓存**：`auth:{model}` → `"protocol|api_key_hash"`（与 DB 同信任边界，存的本就是 hash），TTL 60s；命中时协议匹配与常数时间比较在本地完成。`PutUserModel`/`DeleteUserModel` 主动 `DEL`；未配置/禁用模型缓存空值负条目（写路径失效保证即时生效）。
 5. **rr 游标**：`INCR rr:{group}` → `(v-1) % n`；Redis 未配置/降级回退副本内局部游标（原 `cursors` map 语义不变）。
-6. **模式一边界**：`cmd/modelsurge` 的 redis 段与 db_driver/db_dsn 同规则——出现即告警忽略（单副本无共享语义需求，保持零外部依赖）。
+6. **模式一边界（已废止）**：`cmd/modelsurge` 及其「redis/db_driver 出现即告警忽略」规则随模式一移除而不复存在；三进程对未配置 Redis 的行为 = 严格跳过（原局部游标回退语义不变）。
 7. **降级开关（redisx）**：命令超时 500ms；任何命令错误进入 10s 熔断窗口，窗口内快速失败（不打网络、不拖慢热路径），窗口后半开重试；`New` 时 Ping 失败仅告警不阻断启动。所有使用方把 Redis 错误一律视为「未命中/降级」，DB 恒权威。
 
 ### 2.6 实施分期（代码侧，非本次）

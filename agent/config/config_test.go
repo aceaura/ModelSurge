@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const clusterPreamble = "db_driver: postgres\ndb_dsn: postgres://agent@localhost/agent\nreplay_url: http://replay\nservice_key: key\n"
+const clusterPreamble = "db_dsn: postgres://agent@localhost/agent\nreplay_url: http://replay\nservice_key: key\n"
 
 func TestLoadDurationDefaultsAndSameAccountRetries(t *testing.T) {
 	cfg := loadTestConfig(t, clusterPreamble)
@@ -57,23 +57,11 @@ func TestLoadNegativeSameAccountRetriesFails(t *testing.T) {
 	}
 }
 
-// Load 是集群进程入口：sqlite 仅属单进程模式，必须拒绝；缺省（空）同样拒绝。
-func TestLoadRejectsSQLiteAndMissingDriver(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		body string
-		want string
-	}{
-		{name: "sqlite explicit", body: "db_driver: sqlite\ndb_path: agent.db\nreplay_url: http://replay\nservice_key: key\n", want: "single-process"},
-		{name: "driver missing", body: "replay_url: http://replay\nservice_key: key\n", want: "db_driver: required"},
-		{name: "postgres without dsn", body: "db_driver: postgres\nreplay_url: http://replay\nservice_key: key\n", want: "db_dsn is required"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := Load(writeTestConfig(t, tc.body))
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("err = %v, want %q", err, tc.want)
-			}
-		})
+// db_dsn 必填，绝无缺省：漏配时宁可启动失败，也不能静默服务陈旧本地库。
+func TestLoadRequiresDBDSN(t *testing.T) {
+	_, err := Load(writeTestConfig(t, "replay_url: http://replay\nservice_key: key\n"))
+	if err == nil || !strings.Contains(err.Error(), "db_dsn: required") {
+		t.Fatalf("err = %v, want db_dsn required", err)
 	}
 }
 

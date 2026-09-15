@@ -262,11 +262,8 @@ upstream/                      独立 Go module
   contract/upstreamv1/         Replay→Upstream DTO
   upstream.yaml                正式容器配置
 
-cmd/modelsurge/               模式一启动入口：纯编排壳，核心代码与三进程共用（规划：Phase A，见 design/deployment-modes.md）
-go.mod（根）                   根模块与 replace 指令（规划：Phase A）
-
 surge/                         Flutter 管理前端，功能不变
-docker-compose.yml             最终三服务部署
+docker-compose.yml             唯一部署形态：三进程 + PostgreSQL + Redis（cluster override 已并入）
 .env.example                   部署变量模板
 ```
 
@@ -283,29 +280,18 @@ upstream healthy → replay healthy → agent 对外
 - 只有 Agent 映射宿主端口：`${MODELSURGE_AGENT_BIND:-127.0.0.1}:${MODELSURGE_AGENT_PORT:-12345}:18099`。
 - Replay `18101` 和 Upstream `18100` 只在 Compose 网络内可访问。
 - 三份配置分别只读挂载到 `/app/agent.yaml`、`/app/replay.yaml`、`/app/upstream.yaml`。
-- 三个数据库分别写入各自 `/data` named volume。
+- 三库数据落 PostgreSQL（`pg-data` volume，三 database 三 role，由 `deploy/pg-init` 初始化）；redis 为纯易失热态。
 - Agent→Replay 使用 `MODELSURGE_AGENT_REPLAY_KEY`；Replay→Upstream 使用 `MODELSURGE_REPLAY_UPSTREAM_KEY`。
 - Replay admin 和 Upstream admin 各自使用独立环境变量密钥。
 - 正式 YAML 中服务 URL 使用 Compose DNS 名称：`http://replay:18101` 与 `http://upstream:18100`。
 - 复制 `.env.example` 为本地 `.env` 并填入随机密钥后再启动；仓库不提供真实密钥，也不提交 `.env`。
-- 集群模式（规划）：`docker-compose.cluster.yml` override 引入 PostgreSQL（三 database 三 role）与 Redis（纯易失热态），健康依赖链扩展为 postgres+redis → upstream → replay → agent；本文件保持「三进程 + SQLite」中间形态。详见 `design/deployment-modes.md` 第二部分。
+- PostgreSQL（三 database 三 role）与 Redis（纯易失热态）由同一 `docker-compose.yml` 提供（原 cluster override 已并入），健康依赖链为 config-check+postgres+redis → upstream → replay → agent。详见 `design/deployment-modes.md` 第二部分。
 
 本次收口不运行 Docker。实际部署验证应在具备 Docker 的环境中执行 `docker compose config`、构建、健康依赖和端到端调用检查。
 
 ## 10. 部署模式
 
-ModelSurge 规划两种部署模式，设计细节见 `design/deployment-modes.md`；本文件第 1–9 章描述的模块职责、契约、IR 不变式与库归属在两种模式下全部保持。两模式**不分叉代码**：共用同一份核心代码，差异只在启动入口（每个入口一个目录，目录内仅装配）与运行配置。
-
-| | 模式一 · 单进程 | 模式二 · 集群 |
-|---|---|---|
-| 启动入口 | `cmd/modelsurge/`（唯一新增目录，纯编排壳） | `agent/cmd/agent` 等 3 个现有目录，不变 |
-| 形态 | 单二进制三合一（规划 Phase A） | 三进程拆分不变，多副本 |
-| 存储 | 三个 SQLite 文件，单写者 `SetMaxOpenConns(1)` | PostgreSQL 三 database 三 role（Phase B） |
-| Redis | 无 | 必需但纯易失：rr 游标/试探锁/鉴权缓存/读旁路（Phase C） |
-| 进程内通信 | 回环 HTTP，与三进程共用同一契约代码路径 | 网络 HTTP，契约不变 |
-| 定位 | 非 Docker 桌面场景，零外部依赖 | 水平扩展，对标 new-api/sub2api 集群实证 |
-
-现有 `docker-compose.yml`（三进程 + SQLite）是两模式共同的基线形态：对模式一是「拆开跑」的同构验证，对模式二是切换 PG 前的中间形态。
+原规划的「模式一 · 单进程（`cmd/modelsurge` 三合一 + SQLite）」已于 2026-09-15 从代码库移除；**唯一部署形态 = compose 多进程集群**（三进程容器 + PostgreSQL 三库三 role + Redis 纯易失热态）。设计细节与历史记录见 `design/deployment-modes.md`；本文件第 1–9 章描述的模块职责、契约、IR 不变式与库归属全部保持。
 
 ## 11. 上下文压缩回退
 

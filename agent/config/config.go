@@ -5,7 +5,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"gopkg.in/yaml.v3"
 )
 
@@ -13,8 +12,6 @@ type Config struct {
 	Listen             string `yaml:"listen"`
 	ReplayURL          string `yaml:"replay_url"`
 	ServiceKey         string `yaml:"service_key"`
-	DBPath             string `yaml:"db_path"`
-	DBDriver           string `yaml:"db_driver"`
 	DBDSN              string `yaml:"db_dsn"`
 	ControlTimeout     string `yaml:"control_timeout"`
 	FirstTokenTimeout  string `yaml:"first_token_timeout"`
@@ -41,36 +38,17 @@ func Load(path string) (*Config, error) {
 	if err := c.Normalize(); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
-	// 三进程二进制的硬约束：sqlite 仅属单进程模式（cmd/modelsurge），此处
-	// 只接受 postgres——env 漏配时 fail fast，杜绝静默服务陈旧本地库。
-	if c.DBDriver != dialect.Postgres {
-		return nil, fmt.Errorf("config: %s: db_driver: cluster process requires postgres, got %q (sqlite is single-process mode only)", path, c.DBDriver)
-	}
 	return &c, nil
 }
 
-// Normalize 补默认值并校验必填项；单进程组合根在覆写回环地址后复用（它必须
-// 显式声明 db_driver=sqlite）。数据源解析：db_driver 必填，绝无缺省——集群
-// 进程漏配 DSN 时宁可启动失败，也不能静默回落陈旧 SQLite；sqlite 且 db_dsn
-// 空时取 db_path。
+// Normalize 补默认值并校验必填项。数据源：db_dsn 必填，绝无缺省——漏配时
+// 宁可启动失败，也不能静默服务陈旧本地库。
 func (c *Config) Normalize() error {
 	if c.Listen == "" {
 		c.Listen = "0.0.0.0:18099"
 	}
-	if c.DBDriver == "" {
-		return fmt.Errorf("db_driver: required (postgres for cluster processes; sqlite only in single-process mode)")
-	}
-	if !dialect.Valid(c.DBDriver) {
-		return fmt.Errorf("db_driver: unsupported %q", c.DBDriver)
-	}
-	if c.DBDriver == dialect.Postgres && c.DBDSN == "" {
-		return fmt.Errorf("db_dsn is required when db_driver is postgres")
-	}
 	if c.DBDSN == "" {
-		if c.DBPath == "" {
-			c.DBPath = "/data/agent.db"
-		}
-		c.DBDSN = c.DBPath
+		return fmt.Errorf("db_dsn: required")
 	}
 	if c.ReplayURL == "" || c.ServiceKey == "" {
 		return fmt.Errorf("replay_url and service_key are required")

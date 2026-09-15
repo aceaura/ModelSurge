@@ -14,6 +14,7 @@ import (
 	"github.com/aceaura/ModelSurge/upstream/account"
 	"github.com/aceaura/ModelSurge/upstream/adminapi"
 	"github.com/aceaura/ModelSurge/upstream/bootstrap"
+	"github.com/aceaura/ModelSurge/upstream/dialect"
 	"github.com/aceaura/ModelSurge/upstream/processconfig"
 	"github.com/aceaura/ModelSurge/upstream/redisx"
 	service "github.com/aceaura/ModelSurge/upstream/service"
@@ -27,7 +28,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	store, err := upstreamstore.Open(cfg.DBDriver, cfg.DBDSN)
+	store, err := upstreamstore.Open(dialect.Postgres, cfg.DBDSN)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -1,7 +1,5 @@
 listen: 0.0.0.0:18100
-db_path: /data/upstream.db
-# 模式二数据源（env 漏配 -> 启动报错 fail fast；sqlite 仅属单进程模式）
-db_driver: ${MODELSURGE_DB_DRIVER}
+# 数据源：db_dsn 必填（env 漏配 -> 启动报错 fail fast）
 db_dsn: ${MODELSURGE_UPSTREAM_DB_DSN}
 service_key: ${MODELSURGE_REPLAY_UPSTREAM_KEY}
 admin_key: ${MODELSURGE_UPSTREAM_ADMIN_KEY}

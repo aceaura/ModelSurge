@@ -324,7 +324,7 @@ Codex CLI 等客户端显式发起的压缩请求（`POST /v1/responses/compact`
 - `compress_model` 管理面硬校验：引用不存在/自引用/引用禁用 → 400；窗口 best-effort 告警（双方组首成员窗口可得且压缩模型窗口 ≤ 原模型时告警，运行时试探兜底）。
 - `DispatchRequest.CompressOf` 是 Agent→Replay 的内部信任标记：Replay 见非空跳过 key/协议校验（原请求已在 Agent 入口鉴权），调度与评估不豁免；外部客户端无法注入。
 - 递归防护：带 `CompressOf` 的内部压缩调用失败不再触发任何压缩（深度封顶 1）；第二档 K 单调递减 + 压缩调用 ≤2 + summary 有界保证终止性。
-- 压缩调用自身失败按原失败原样返回，不吞错误；kiro 目标暂不支持作为压缩调用上游（数据面特殊，跳过换下一候选）。
+- 压缩调用自身失败按原失败原样返回，不吞错误；kiro 目标作为压缩上游走 `ExecuteKiro` 数据面（IR 规范 JSON 进、NDJSON IR 事件流出，凭据/签名在 Upstream 侧完成），聚合语义与普通目标一致。
 - 压缩路径日志记 `phase=auto_compact`（触发/成功/失败/轮次/模型，不含消息内容）。
 
 ### 明确不做

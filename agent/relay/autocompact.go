@@ -2,8 +2,10 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -76,7 +78,6 @@ func isContextTooLargeDispatch(err error) bool {
 // runCompactCall 执行一次内部压缩调用（第二档）：压缩请求经完整
 // dispatch→上游聚合链路拿到 summary 文本。不向客户端写任何字节；
 // 任何失败返回 ok=false（调用方按原失败返回，2.4）。
-// kiro 目标不支持（数据面特殊、复用代价高），跳过换下一候选。
 func (f *Forwarder) runCompactCall(ctx context.Context, clientCodec proto.InboundCodec, compReq *ir.Request, origModel, compressModel, clientKey, requestID string) (string, bool) {
 	tried := map[string]bool{}
 	for {
@@ -97,10 +98,7 @@ func (f *Forwarder) runCompactCall(ctx context.Context, clientCodec proto.Inboun
 			return "", false
 		}
 		cand, cerr := resolvedCandidate(lease)
-		if cerr != nil || cand.protocol == "kiro" {
-			if cerr == nil {
-				log.Printf("agent phase=auto_compact request_id=%s result=skip_target target=%s reason=kiro_unsupported", requestID, lease.TargetID)
-			}
+		if cerr != nil {
 			tried[lease.TargetID] = true
 			continue
 		}
@@ -131,8 +129,12 @@ func (f *Forwarder) runCompactCall(ctx context.Context, clientCodec proto.Inboun
 
 // fetchSummary 对单个上游执行压缩调用并聚合为 summary 文本。
 // 复用 attempt 的上游预处理（native 模型改写、覆盖、流式请求），
-// 但聚合结果不写客户端。
+// 但聚合结果不写客户端。kiro 目标走 ExecuteKiro 数据面（凭据/签名
+// 在 Upstream 侧完成，返回 NDJSON IR 事件流）。
 func (f *Forwarder) fetchSummary(ctx context.Context, cand candidate, req *ir.Request) (string, replayv1.Usage, *ir.Error) {
+	if cand.protocol == "kiro" {
+		return f.fetchKiroSummary(ctx, cand, req)
+	}
 	upReq := req.Clone()
 	upReq.Model = cand.native
 	upReq.Stream = true
@@ -171,9 +173,39 @@ func (f *Forwarder) fetchSummary(ctx context.Context, cand candidate, req *ir.Re
 		}
 		irResp = aggregated
 	}
-	usage := replayv1.Usage{InputTokens: int64(irResp.Usage.InputTokens), OutputTokens: int64(irResp.Usage.OutputTokens), CacheRead: int64(irResp.Usage.CacheReadTokens), CacheCreation: int64(irResp.Usage.CacheCreationTokens)}
+	return summaryFromResponse(irResp)
+}
+
+// fetchKiroSummary kiro 压缩上游：请求以 IR 规范 JSON 经 ExecuteKiro
+// 通道转发（压缩请求无工具/tool_choice，不涉及 strict 路径），NDJSON
+// IR 事件流聚合为 summary。与 attemptKiro 的 collect 形态一致，但
+// 结果不写客户端。
+func (f *Forwarder) fetchKiroSummary(ctx context.Context, cand candidate, req *ir.Request) (string, replayv1.Usage, *ir.Error) {
+	upReq := req.Clone()
+	upReq.Stream = true
+	body, err := json.Marshal(upReq)
+	if err != nil {
+		return "", replayv1.Usage{}, &ir.Error{StatusCode: http.StatusBadRequest, Type: ir.ErrTypeUpstream, Message: "encode canonical request: " + err.Error()}
+	}
+	resp, openErr := f.openKiroReplay(ctx, cand, body, requestParams("kiro", upReq))
+	if openErr != nil {
+		return "", replayv1.Usage{}, openErr
+	}
+	defer resp.Body.Close()
+	irResp, aerr := f.aggregateKiro(ctx, cand, upReq, resp.Body)
+	if aerr != nil {
+		return "", replayv1.Usage{}, aerr
+	}
+	f.estimateUsageOnResponse(upReq, irResp, cand.name)
+	return summaryFromResponse(irResp)
+}
+
+// summaryFromResponse 从聚合响应提取 summary 文本与 usage；正文为空
+// 视为压缩失败（Retryable，允许换候选）。
+func summaryFromResponse(r *ir.Response) (string, replayv1.Usage, *ir.Error) {
+	usage := replayv1.Usage{InputTokens: int64(r.Usage.InputTokens), OutputTokens: int64(r.Usage.OutputTokens), CacheRead: int64(r.Usage.CacheReadTokens), CacheCreation: int64(r.Usage.CacheCreationTokens)}
 	var sb strings.Builder
-	for _, b := range irResp.Content {
+	for _, b := range r.Content {
 		if b.Type == ir.BlockText {
 			sb.WriteString(b.Text)
 		}

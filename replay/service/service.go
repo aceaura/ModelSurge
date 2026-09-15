@@ -51,7 +51,7 @@ func (s *Service) Dispatch(ctx context.Context, req replayv1.DispatchRequest) (r
 	if s.accessLog() {
 		log.Printf("replay phase=auth_start request_id=%s model=%s proto=%s", req.RequestID, req.Model, req.InboundProtocol)
 	}
-	configured, ok, err := s.Scheduler.Authenticate(ctx, req.Model, req.InboundProtocol, req.ClientKey)
+	configured, ok, compressModel, err := s.Scheduler.Authenticate(ctx, req.Model, req.InboundProtocol, req.ClientKey, req.CompressOf)
 	if s.accessLog() {
 		log.Printf("replay phase=auth_result request_id=%s configured=%t authorized=%t error=%t", req.RequestID, configured, ok, err != nil)
 	}
@@ -74,20 +74,22 @@ func (s *Service) Dispatch(ctx context.Context, req replayv1.DispatchRequest) (r
 	selection, err := s.Scheduler.Select(ctx, req.Model, tried, req.EstTokens)
 	if err != nil {
 		if errors.Is(err, schedule.ErrUnsupportedPolicy) {
-			return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeInvalidRequest, Message: err.Error()}
+			return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeInvalidRequest, Message: err.Error(), CompressModel: compressModel}
 		}
 		if errors.Is(err, schedule.ErrContextTooLarge) {
-			return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeContextTooLarge, Message: err.Error()}
+			return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeContextTooLarge, Message: err.Error(), CompressModel: compressModel}
 		}
-		return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeTargetUnavailable, Message: err.Error(), Retryable: true}
+		return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeTargetUnavailable, Message: err.Error(), Retryable: true, CompressModel: compressModel}
 	}
 	if !allowedOutboundProtocol(selection.Target.Protocol) {
-		return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeTargetUnavailable, Message: fmt.Sprintf("unsupported outbound protocol %q", selection.Target.Protocol)}
+		return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeTargetUnavailable, Message: fmt.Sprintf("unsupported outbound protocol %q", selection.Target.Protocol), CompressModel: compressModel}
 	}
 	if s.accessLog() {
 		log.Printf("replay phase=selected request_id=%s group=%s target=%s protocol=%s native_model=%s", req.RequestID, selection.GroupID, selection.Target.ID, selection.Target.Protocol, selection.Target.NativeModel)
 	}
-	return leaseFromTarget(req.RequestID, selection.GroupID, selection.Target), nil
+	lease := leaseFromTarget(req.RequestID, selection.GroupID, selection.Target)
+	lease.CompressModel = compressModel
+	return lease, nil
 }
 
 func allowedOutboundProtocol(protocol string) bool {

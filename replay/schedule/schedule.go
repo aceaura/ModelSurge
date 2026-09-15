@@ -221,8 +221,8 @@ func (s *Scheduler) rrCursor(ctx context.Context, groupID string, n int) int {
 
 func (s *Scheduler) Models(ctx context.Context) ([]string, error) { return s.Store.Models(ctx) }
 
-func (s *Scheduler) Authenticate(ctx context.Context, model, protocol, key string) (bool, bool, error) {
-	return s.Store.Authenticate(ctx, model, protocol, key)
+func (s *Scheduler) Authenticate(ctx context.Context, model, protocol, key, compressOf string) (bool, bool, string, error) {
+	return s.Store.Authenticate(ctx, model, protocol, key, compressOf)
 }
 
 func (s *Scheduler) ValidateMembers(ctx context.Context, ids []string) error {

@@ -101,6 +101,11 @@ func decodeItem(req *ir.Request, it inputItem) {
 			return
 		}
 		appendAssistantBlock(req, ir.Block{Type: ir.BlockThinking, Thinking: th})
+	case "compaction_trigger":
+		// Codex CLI 显式压缩请求标记：不进 IR 消息流（无内容可转），
+		// 仅置 Compact 供 relay 压缩回退识别。其余字段透传语义由
+		// compact 路径承担。
+		req.Compact = true
 	}
 }
 

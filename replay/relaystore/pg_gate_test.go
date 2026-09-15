@@ -33,7 +33,7 @@ func TestMigrateSQLiteToPG(t *testing.T) {
 	}
 
 	model := "m" + sfx
-	configured, ok, err := s.Authenticate(ctx, model, "anthropic", "model-key")
+	configured, ok, _, err := s.Authenticate(ctx, model, "anthropic", "model-key", "")
 	if err != nil || !configured || !ok {
 		t.Fatalf("auth after pg migrate: configured=%v ok=%v err=%v", configured, ok, err)
 	}

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"log"
 	"net/http"
 	"strings"
 
@@ -49,6 +50,33 @@ func (s *HTTPServer) putUserModel(w http.ResponseWriter, r *http.Request) {
 	if in.Name == "" || strings.Contains(in.Name, "/") || in.Protocol == "" || in.APIKey == "" {
 		adminError(w, 400, "", "name, protocol and api_key are required")
 		return
+	}
+	if in.CompressModel != "" {
+		if in.CompressModel == in.Name {
+			adminError(w, 400, "compress_model", "compress_model must reference a different user model")
+			return
+		}
+		models, err := s.service.Store.ListUserModels(r.Context())
+		if err != nil {
+			adminError(w, 500, "", err.Error())
+			return
+		}
+		found := false
+		for _, m := range models {
+			if m.Name == in.CompressModel {
+				found = true
+				if !m.Enabled {
+					adminError(w, 400, "compress_model", "compress_model references a disabled user model")
+					return
+				}
+				break
+			}
+		}
+		if !found {
+			adminError(w, 400, "compress_model", "compress_model references an unknown user model")
+			return
+		}
+		s.warnCompressWindow(r, in.Name, in.CompressModel)
 	}
 	if err := s.service.Store.PutUserModel(r.Context(), in); err != nil {
 		adminError(w, 500, "", err.Error())
@@ -152,4 +180,31 @@ func (s *HTTPServer) invalidateCache(w http.ResponseWriter, r *http.Request) {
 
 func adminError(w http.ResponseWriter, status int, field, message string) {
 	writeError(w, status, replayv1.Error{Code: replayv1.CodeInvalidRequest, Message: message, Field: field})
+}
+
+// warnCompressWindow compress_model 窗口 best-effort 告警（设计 3.3）：
+// 两个 user model 组首个成员的评估窗口可得且压缩模型窗口不大于原模型时
+// 记告警（不阻止保存——窗口是运行时过滤信号，跨库硬校验违反架构不变量）；
+// 窗口不可得或评估失败时记说明日志。无组/无成员/无压缩配置时不打扰。
+func (s *HTTPServer) warnCompressWindow(r *http.Request, name, compressModel string) {
+	firstWindow := func(model string) (int, bool) {
+		g, err := s.service.Store.GroupForModel(r.Context(), model)
+		if err != nil || g == nil || len(g.Members) == 0 {
+			return 0, false
+		}
+		evals, err := s.service.Upstream.Evaluate(r.Context(), []string{g.Members[0]})
+		if err != nil || len(evals) == 0 || evals[0].ContextWindow <= 0 {
+			return 0, false
+		}
+		return evals[0].ContextWindow, true
+	}
+	origW, origOK := firstWindow(name)
+	compW, compOK := firstWindow(compressModel)
+	if origOK && compOK {
+		if compW <= origW {
+			log.Printf("replay admin: user model %s compress_model %s window %d not larger than original %d; compression may not help oversized requests", name, compressModel, compW, origW)
+		}
+		return
+	}
+	log.Printf("replay admin: user model %s compress_model %s window unknown (original=%t compress=%t); window check skipped, runtime probing is the backstop", name, compressModel, origOK, compOK)
 }

@@ -56,6 +56,10 @@ type DispatchRequest struct {
 	TriedIDs        []string `json:"tried_ids,omitempty"`
 	// EstTokens 估算输入+输出预算合计（Agent 估算；0=未送，调度不过滤）。
 	EstTokens int `json:"est_tokens,omitempty"`
+	// CompressOf 非空 = Agent 内部压缩调用（原模型超限后的回退重发），
+	// 值为原 user model 名。Replay 见非空跳过 key 校验（信任 Agent 已鉴权
+	// 原请求），调度与评估不豁免。仅内部契约，外部客户端无法注入。
+	CompressOf string `json:"compress_of,omitempty"`
 }
 
 type ThinkingOverride struct {
@@ -120,16 +124,20 @@ type TargetLease struct {
 	Headers          map[string]string `json:"headers,omitempty"`
 	RequestOverrides *RequestOverrides `json:"request_overrides,omitempty"`
 	Runtime          RuntimeMetadata   `json:"runtime,omitempty"`
+	// CompressModel 本 user model 配置的压缩备用模型名（空=未配置压缩回退）。
+	// Agent 据此在超限/不可用失败时换模型重发。非机密（仅模型名）。
+	CompressModel string `json:"compress_model,omitempty"`
 }
 
 func (l TargetLease) MarshalJSON() ([]byte, error) {
 	if l.Protocol == "kiro" {
 		return json.Marshal(struct {
-			RequestID string `json:"request_id"`
-			GroupID   string `json:"group_id"`
-			TargetID  string `json:"target_id"`
-			Protocol  string `json:"protocol"`
-		}{RequestID: l.RequestID, GroupID: l.GroupID, TargetID: l.TargetID, Protocol: l.Protocol})
+			RequestID     string `json:"request_id"`
+			GroupID       string `json:"group_id"`
+			TargetID      string `json:"target_id"`
+			Protocol      string `json:"protocol"`
+			CompressModel string `json:"compress_model,omitempty"`
+		}{RequestID: l.RequestID, GroupID: l.GroupID, TargetID: l.TargetID, Protocol: l.Protocol, CompressModel: l.CompressModel})
 	}
 	type alias TargetLease
 	if l.Runtime == (RuntimeMetadata{}) {
@@ -180,6 +188,10 @@ type Error struct {
 	Field     string `json:"field,omitempty"`
 	Status    int    `json:"status,omitempty"`
 	Reason    string `json:"reason,omitempty"`
+	// CompressModel dispatch 失败时携带（鉴权通过后的失败）：本 user model
+	// 配置的压缩备用模型名，供 Agent 显式压缩请求换模型重发。鉴权类失败
+	// 不携带（未鉴权请求不触发压缩）。
+	CompressModel string `json:"compress_model,omitempty"`
 }
 
 func (e Error) Error() string { return e.Code + ": " + e.Message }

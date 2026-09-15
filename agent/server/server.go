@@ -47,6 +47,8 @@ func (s *Server) mountPublic() {
 	s.mux.HandleFunc("POST /v1/messages/count_tokens", s.handleCountTokens)
 	s.mux.HandleFunc("POST /v1/chat/completions", s.handleChat("openai-chat"))
 	s.mux.HandleFunc("POST /v1/responses", s.handleChat("openai-responses"))
+	// Codex CLI 显式压缩请求：responses 语义 + compact 标记（第一档兜底触发）
+	s.mux.HandleFunc("POST /v1/responses/compact", s.handleChat("openai-responses", markCompact))
 	s.mux.HandleFunc("POST /v1beta/models/", s.handleGemini)
 	s.mux.HandleFunc("GET /v1/models", s.handleModels)
 	// 协议前缀别名：同一地址按 /anthropic /openai /gemini 前缀区分接入协议
@@ -54,11 +56,13 @@ func (s *Server) mountPublic() {
 	s.mux.HandleFunc("POST /anthropic/v1/messages/count_tokens", s.handleCountTokens)
 	s.mux.HandleFunc("POST /openai/v1/chat/completions", s.handleChat("openai-chat"))
 	s.mux.HandleFunc("POST /openai/v1/responses", s.handleChat("openai-responses"))
+	s.mux.HandleFunc("POST /openai/v1/responses/compact", s.handleChat("openai-responses", markCompact))
 	s.mux.HandleFunc("POST /gemini/v1beta/models/", s.handleGemini)
 	s.mux.HandleFunc("GET /openai/v1/models", s.handleModels)
 	// 无 /v1 前缀裸路径：客户端 base_url 不带 /v1 时（DeepSeek 原生风格 /chat/completions 等）自动适配
 	s.mux.HandleFunc("POST /chat/completions", s.handleChat("openai-chat"))
 	s.mux.HandleFunc("POST /responses", s.handleChat("openai-responses"))
+	s.mux.HandleFunc("POST /responses/compact", s.handleChat("openai-responses", markCompact))
 	s.mux.HandleFunc("POST /messages", s.handleChat("anthropic"))
 	s.mux.HandleFunc("POST /messages/count_tokens", s.handleCountTokens)
 	s.mux.HandleFunc("GET /models", s.handleModels)
@@ -117,8 +121,9 @@ func requestAPIKey(r *http.Request) string {
 	return key
 }
 
-// handleChat 三个 JSON-body 协议的统一入口。
-func (s *Server) handleChat(codecName string) http.HandlerFunc {
+// handleChat 三个 JSON-body 协议的统一入口。mut 可选改写解码后的请求
+// （compact 路径置显式压缩标记）。
+func (s *Server) handleChat(codecName string, mut ...func(*ir.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		codec := proto.MustInbound(codecName)
 		body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
@@ -131,9 +136,15 @@ func (s *Server) handleChat(codecName string) http.HandlerFunc {
 			s.renderError(w, codec, ir.NewHTTPError(400, err.Error()))
 			return
 		}
+		for _, m := range mut {
+			m(req)
+		}
 		s.fwd.Forward(r.Context(), w, codec, req, requestAPIKey(r))
 	}
 }
+
+// markCompact 显式压缩请求标记（compact 路径入口使用）。
+func markCompact(req *ir.Request) { req.Compact = true }
 
 // handleGemini Gemini 原生入口：[/gemini]/v1beta/models/{model}:generateContent
 // 或 :streamGenerateContent。模型名与流式标志由路径决定（body 内无 stream 字段）。

@@ -169,6 +169,10 @@ type Request struct {
 	Stream        bool
 	Thinking      *ThinkingConfig
 	Metadata      map[string]string
+	// Compact 显式压缩请求标记：openai-responses 入站 compact 路径或
+	// input 含 compaction_trigger 条目。客户端自述压缩语义（如 Codex CLI），
+	// 原模型失败时 Agent 可换 compress_model 兜底（第一档）。
+	Compact bool
 }
 
 // Clone 深拷贝请求，用于重试隔离（参考 new-api 的 DeepCopy 惯例）。

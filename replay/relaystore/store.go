@@ -28,6 +28,8 @@ type UserModel struct {
 	Protocol string `json:"protocol"`
 	APIKey   string `json:"api_key,omitempty"`
 	Enabled  bool   `json:"enabled"`
+	// CompressModel 压缩备用 user model 名（空串=关闭压缩回退）。
+	CompressModel string `json:"compress_model,omitempty"`
 }
 type Group struct {
 	ID           string    `json:"id"`
@@ -61,7 +63,18 @@ func Open(driver, dsn string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("relaystore: migrate: %w", err)
 	}
+	// 存量库补列（CREATE IF NOT EXISTS 不改已存在表；「列已存在」忽略）。
+	if _, err = db.Exec(`ALTER TABLE user_models ADD COLUMN compress_model TEXT NOT NULL DEFAULT ''`); err != nil && !columnExists(err) {
+		db.Close()
+		return nil, fmt.Errorf("relaystore: migrate compress_model: %w", err)
+	}
 	return &Store{DB: db, driver: driver, path: dialect.SQLitePath(driver, dsn)}, nil
+}
+
+// columnExists 判定 ALTER ADD COLUMN 的「列已存在」错误（sqlite/pg 方言串不同）。
+func columnExists(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate column name") || strings.Contains(msg, "already exists")
 }
 
 // q 按方言重写占位符（postgres ? → $n）。
@@ -157,58 +170,80 @@ func HashAPIKey(key string) string {
 // authCacheTTL 鉴权缓存 TTL（设计 2.4：60s 兜底，写路径主动失效）。
 const authCacheTTL = 60 * time.Second
 
-// authCacheKey 按 user model 名取缓存键（值 = "protocol|api_key_hash"，
+// authCacheKey 按 user model 名取缓存键（值 = "protocol|api_key_hash|compress_model"，
 // 空 protocol 段代表「未配置/禁用」负缓存）。
 func authCacheKey(model string) string { return "auth:" + model }
 
 // Authenticate 校验客户端 API key。Redis 热态旁路：命中则免 DB 直读，
 // 本地完成协议匹配与常数时间比较；未命中走 DB 并回填。
 // Redis 未配置或降级 = 纯 DB 路径（现行为）。
-func (s *Store) Authenticate(ctx context.Context, model, protocol, key string) (configured bool, ok bool, err error) {
+// compressOf 非空 = Agent 内部压缩调用（dispatch 目标为 compress_model）：
+// 跳过 key 与协议校验放行（信任 Agent 已对原请求完成鉴权），但模型存在且
+// 启用的判定不豁免。compressModel 返回该 user model 配置的压缩备用模型名。
+func (s *Store) Authenticate(ctx context.Context, model, protocol, key, compressOf string) (configured bool, ok bool, compressModel string, err error) {
 	if s.Redis != nil {
 		if v, found, rerr := s.Redis.Get(ctx, authCacheKey(model)); rerr == nil && found {
 			if v == "" {
-				return false, false, nil
+				return false, false, "", nil
 			}
-			storedProtocol, want, _ := strings.Cut(v, "|")
-			if storedProtocol != "" && storedProtocol != "auto" && storedProtocol != protocol {
-				return true, false, nil
+			var storedProtocol, want, cachedCompress string
+			if parts := strings.SplitN(v, "|", 3); len(parts) > 1 {
+				storedProtocol, want = parts[0], parts[1]
+				if len(parts) > 2 {
+					cachedCompress = parts[2]
+				}
+			} else {
+				storedProtocol = parts[0]
+			}
+			if compressOf == "" && storedProtocol != "" && storedProtocol != "auto" && storedProtocol != protocol {
+				return true, false, cachedCompress, nil
+			}
+			if compressOf != "" {
+				return true, true, cachedCompress, nil
 			}
 			got := HashAPIKey(key)
 			if len(want) != len(got) {
-				return true, false, nil
+				return true, false, cachedCompress, nil
 			}
-			return true, subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1, nil
+			return true, subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1, cachedCompress, nil
 		}
 	}
-	var want, storedProtocol string
-	err = s.DB.QueryRowContext(ctx, s.q(`SELECT protocol,api_key_hash FROM user_models WHERE name=? AND enabled=1`), model).Scan(&storedProtocol, &want)
+	var want, storedProtocol, storedCompress string
+	err = s.DB.QueryRowContext(ctx, s.q(`SELECT protocol,api_key_hash,compress_model FROM user_models WHERE name=? AND enabled=1`), model).Scan(&storedProtocol, &want, &storedCompress)
 	if err == sql.ErrNoRows {
 		s.cacheAuth(ctx, model, "", "")
-		return false, false, nil
+		return false, false, "", nil
 	}
 	if err != nil {
-		return false, false, err
+		return false, false, "", err
 	}
-	s.cacheAuth(ctx, model, storedProtocol, want)
+	s.cacheAuth(ctx, model, storedProtocol, want, storedCompress)
+	if compressOf != "" {
+		return true, true, storedCompress, nil
+	}
 	if storedProtocol != "" && storedProtocol != "auto" && storedProtocol != protocol {
-		return true, false, nil
+		return true, false, storedCompress, nil
 	}
 	got := HashAPIKey(key)
 	if len(want) != len(got) {
-		return true, false, nil
+		return true, false, storedCompress, nil
 	}
-	return true, subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1, nil
+	return true, subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1, storedCompress, nil
 }
 
 // cacheAuth 回填鉴权缓存（nil/失败静默：TTL 兜底，不影响正确性）。
-func (s *Store) cacheAuth(ctx context.Context, model, protocol, hash string) {
+// 可变参数末位为 compress_model（省略 = 空串；旧调用兼容）。
+func (s *Store) cacheAuth(ctx context.Context, model, protocol, hash string, compress ...string) {
 	if s.Redis == nil {
 		return
 	}
+	cm := ""
+	if len(compress) > 0 {
+		cm = compress[0]
+	}
 	val := ""
 	if protocol != "" || hash != "" {
-		val = protocol + "|" + hash
+		val = protocol + "|" + hash + "|" + cm
 	}
 	_ = s.Redis.SetEx(ctx, authCacheKey(model), val, authCacheTTL)
 }
@@ -261,7 +296,7 @@ func (s *Store) PutUserModel(ctx context.Context, m UserModel) error {
 	if m.Enabled {
 		enabled = 1
 	}
-	_, err := s.DB.ExecContext(ctx, s.q(`INSERT INTO user_models(name,protocol,api_key_hash,enabled,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET protocol=excluded.protocol,api_key_hash=CASE WHEN excluded.api_key_hash='' THEN user_models.api_key_hash ELSE excluded.api_key_hash END,enabled=excluded.enabled,updated_at=excluded.updated_at`), m.Name, m.Protocol, HashAPIKey(m.APIKey), enabled, time.Now().Unix())
+	_, err := s.DB.ExecContext(ctx, s.q(`INSERT INTO user_models(name,protocol,api_key_hash,enabled,compress_model,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET protocol=excluded.protocol,api_key_hash=CASE WHEN excluded.api_key_hash='' THEN user_models.api_key_hash ELSE excluded.api_key_hash END,enabled=excluded.enabled,compress_model=excluded.compress_model,updated_at=excluded.updated_at`), m.Name, m.Protocol, HashAPIKey(m.APIKey), enabled, m.CompressModel, time.Now().Unix())
 	if err == nil {
 		s.invalidateAuth(ctx, m.Name)
 	}
@@ -269,7 +304,7 @@ func (s *Store) PutUserModel(ctx context.Context, m UserModel) error {
 }
 
 func (s *Store) ListUserModels(ctx context.Context) ([]UserModel, error) {
-	rows, err := s.DB.QueryContext(ctx, s.q(`SELECT name,protocol,enabled FROM user_models ORDER BY name`))
+	rows, err := s.DB.QueryContext(ctx, s.q(`SELECT name,protocol,enabled,compress_model FROM user_models ORDER BY name`))
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +313,7 @@ func (s *Store) ListUserModels(ctx context.Context) ([]UserModel, error) {
 	for rows.Next() {
 		var m UserModel
 		var enabled int
-		if err := rows.Scan(&m.Name, &m.Protocol, &enabled); err != nil {
+		if err := rows.Scan(&m.Name, &m.Protocol, &enabled, &m.CompressModel); err != nil {
 			return nil, err
 		}
 		m.Enabled = enabled != 0

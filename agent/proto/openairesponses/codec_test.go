@@ -86,6 +86,28 @@ func TestDecodeRequest_InputShapes(t *testing.T) {
 	}
 }
 
+// compaction_trigger 条目：置 Compact 且不进消息流；普通请求不置位。
+func TestDecodeRequest_CompactionTrigger(t *testing.T) {
+	req, err := New().DecodeRequest([]byte(`{"model":"m","input":[{"role":"user","content":"hi"},{"type":"compaction_trigger"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !req.Compact {
+		t.Fatal("compaction_trigger item must set req.Compact")
+	}
+	if len(req.Messages) != 1 {
+		t.Fatalf("compaction_trigger must not enter message stream, messages = %+v", req.Messages)
+	}
+
+	req, err = New().DecodeRequest([]byte(`{"model":"m","input":"hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Compact {
+		t.Fatal("plain request must not set req.Compact")
+	}
+}
+
 // codex 别名 codec：协议名独立注册，编解码与 openai-responses 同一实现；
 // instructions 恒存在（订阅端点要求字段，无 system 时输出空串）。
 func TestCodexCodec(t *testing.T) {

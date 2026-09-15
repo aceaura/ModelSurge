@@ -65,7 +65,7 @@ func TestMigrateFreshIdempotent(t *testing.T) {
 	}
 
 	// 迁移后鉴权/调度数据可用（bootstrap key 与 model-key 均能过）
-	configured, ok, err := dst.Authenticate(ctx, "compat", "auto", "bootstrap-secret")
+	configured, ok, _, err := dst.Authenticate(ctx, "compat", "auto", "bootstrap-secret", "")
 	if err != nil || !configured || !ok {
 		t.Fatalf("compat auth: configured=%v ok=%v err=%v", configured, ok, err)
 	}

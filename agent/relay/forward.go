@@ -213,6 +213,12 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 	tried := map[string]bool{}
 	attempts := map[string]int{}
 	var lastErr *ir.Error
+	// 第一档压缩回退状态（循环局部）：compressModel 由 lease / dispatch 错误
+	// 信封携带；compactOf 非空 = 已进入内部压缩调用（此后所有 dispatch 都带
+	// CompressOf 供 Replay 跳过 key 校验）；compactRetried 永久封顶重试深度。
+	compressModel := ""
+	compactOf := ""
+	compactRetried := false
 	for {
 		if ctx.Err() != nil {
 			return
@@ -220,13 +226,46 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 		if f.paramLog {
 			log.Printf("agent phase=dispatch_out request_id=%s model=%s proto=%s tried=%d", requestID, req.Model, clientCodec.Name(), len(tried))
 		}
-		lease, err := f.replay.Dispatch(ctx, replayv1.DispatchRequest{Model: req.Model, InboundProtocol: clientCodec.Name(), ClientKey: clientKey, RequestID: requestID, TriedIDs: triedIDs(tried), EstTokens: est})
+		lease, err := f.replay.Dispatch(ctx, replayv1.DispatchRequest{Model: req.Model, InboundProtocol: clientCodec.Name(), ClientKey: clientKey, RequestID: requestID, TriedIDs: triedIDs(tried), EstTokens: est, CompressOf: compactOf})
 		if err != nil {
+			dispatchErr := replayDispatchError(err)
+			// 鉴权通过后的失败信封携带 compress_model（组容灾穷尽/调度超限
+			// 都可兜底）；鉴权类失败不携带（4.3：鉴权先于压缩）。
+			if e, ok := err.(replayv1.Error); ok && e.CompressModel != "" {
+				compressModel = e.CompressModel
+			}
+			// 重试 dispatch 失败：not_found = compress_model 引用不存在/禁用，
+			// 视为未配置并告警，按原失败返回（1.5）；其余按最后一次失败
+			// 原样返回（1.4）。
+			if compactOf != "" {
+				if e, ok := err.(replayv1.Error); ok && e.Code == replayv1.CodeNotFound {
+					log.Printf("agent: compact fallback model %q not found or disabled; treated as unconfigured, returning original failure", req.Model)
+					f.writeClientError(ctx, w, clientCodec, req.Stream, lastErr)
+					return
+				}
+				f.writeClientError(ctx, w, clientCodec, req.Stream, dispatchErr)
+				return
+			}
+			// 第一档拦截（dispatch 失败路径）：显式压缩请求 + 模型不可用类
+			// 失败（组容灾穷尽/窗口过滤超限）+ 配了 compress_model + 未重试。
+			if req.Compact && !compactRetried && compressModel != "" && modelUnavailableDispatch(err) {
+				lastErr = dispatchErr
+				log.Printf("agent phase=compact_fallback request_id=%s trigger=dispatch_unavailable model=%s compress_model=%s", requestID, req.Model, compressModel)
+				compactRetried = true
+				compactOf = req.Model
+				req.Model = compressModel
+				tried = map[string]bool{}
+				attempts = map[string]int{}
+				continue
+			}
 			if lastErr == nil {
-				lastErr = replayDispatchError(err)
+				lastErr = dispatchErr
 			}
 			f.writeClientError(ctx, w, clientCodec, req.Stream, lastErr)
 			return
+		}
+		if lease.CompressModel != "" {
+			compressModel = lease.CompressModel
 		}
 		if f.paramLog {
 			o := lease.RequestOverrides
@@ -276,12 +315,33 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 			case replayv1.ActionSwitchTarget:
 				tried[lease.TargetID] = true
 			default:
+				// 第一档拦截（action=stop 路径）：显式压缩请求 + context_exceeded
+				// + 配了 compress_model + 未重试 → 换模型重发（1.3）。
+				if req.Compact && !compactRetried && compactOf == "" && compressModel != "" && aerr.Reason == ReasonContextExceeded {
+					log.Printf("agent phase=compact_fallback request_id=%s trigger=context_exceeded model=%s compress_model=%s", requestID, req.Model, compressModel)
+					compactRetried = true
+					compactOf = req.Model
+					req.Model = compressModel
+					tried = map[string]bool{}
+					attempts = map[string]int{}
+					break
+				}
 				f.writeClientError(ctx, w, clientCodec, req.Stream, aerr)
 				return
 			}
 			break
 		}
 	}
+}
+
+// modelUnavailableDispatch dispatch 错误是否模型不可用类（第一档拦截条件；
+// 鉴权/参数错误不触发压缩回退，replay 不可达同理——重试也必失败）。
+func modelUnavailableDispatch(err error) bool {
+	e, ok := err.(replayv1.Error)
+	if !ok {
+		return false
+	}
+	return e.Code == replayv1.CodeTargetUnavailable || e.Code == replayv1.CodeContextTooLarge
 }
 
 func localResultAction(cand candidate, err *ir.Error, attempt, sameTargetRetries int) string {

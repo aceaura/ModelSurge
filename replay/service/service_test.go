@@ -365,3 +365,166 @@ func status(resp *http.Response) int {
 	defer resp.Body.Close()
 	return resp.StatusCode
 }
+
+// ---- compact-fallback 第一档：CompressOf 放行与 compress_model 契约 ----
+
+// 鉴权通过的 dispatch：lease 携带 compress_model；鉴权失败不携带（4.3）。
+func TestDispatchLeaseCarriesCompressModel(t *testing.T) {
+	server, store, _ := newTestServer(t)
+	ctx := context.Background()
+	if err := store.PutUserModel(ctx, relaystore.UserModel{Name: "public", Protocol: "openai-chat", APIKey: "client-key", Enabled: true, CompressModel: "comp"}); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	var lease replayv1.TargetLease
+	dispatch := replayv1.DispatchRequest{Model: "public", InboundProtocol: "openai-chat", ClientKey: "client-key", RequestID: "req-cm"}
+	doJSON(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key", dispatch, http.StatusOK, &lease)
+	if lease.CompressModel != "comp" {
+		t.Fatalf("lease compress_model = %q, want comp", lease.CompressModel)
+	}
+	// 鉴权失败：错误信封不携带 compress_model（未鉴权请求不触发压缩）
+	doJSON(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key",
+		replayv1.DispatchRequest{Model: "public", InboundProtocol: "openai-chat", ClientKey: "wrong", RequestID: "req-cm2"},
+		http.StatusUnauthorized, nil)
+}
+
+// dispatch 失败（鉴权通过后）：错误信封携带 compress_model（组容灾穷尽/
+// 窗口过滤超限两条失败路径都可得）。
+func TestDispatchErrorEnvelopeCarriesCompressModel(t *testing.T) {
+	server, store, upstream := newTestServer(t)
+	ctx := context.Background()
+	if err := store.PutUserModel(ctx, relaystore.UserModel{Name: "public", Protocol: "openai-chat", APIKey: "client-key", Enabled: true, CompressModel: "comp"}); err != nil {
+		t.Fatal(err)
+	}
+	upstream.candidates = []upstreamv1.CandidateEvaluation{{ID: "a/model", Available: false, ExclusionReason: "cooling_down"}}
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	var env struct {
+		Error replayv1.Error `json:"error"`
+	}
+	doJSONErr(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key",
+		replayv1.DispatchRequest{Model: "public", InboundProtocol: "openai-chat", ClientKey: "client-key", RequestID: "req-cm3"},
+		http.StatusServiceUnavailable, &env)
+	if env.Error.CompressModel != "comp" {
+		t.Fatalf("error envelope compress_model = %q, want comp", env.Error.CompressModel)
+	}
+}
+
+// CompressOf 非空：错误 key 也放行（4.2 信任通道）；置空时同 key 被拒。
+func TestDispatchCompressOfBypassesKeyCheck(t *testing.T) {
+	server, store, _ := newTestServer(t)
+	ctx := context.Background()
+	if err := store.PutUserModel(ctx, relaystore.UserModel{Name: "comp", Protocol: "openai-chat", APIKey: "comp-key", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutGroup(ctx, relaystore.Group{ID: "g-comp", UserModel: "comp", PolicyType: "sticky", PolicyConfig: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMembers(ctx, "g-comp", []string{"a/model"}); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	// compress_of=public：public 的 key（非 comp 的 key）照样放行
+	var lease replayv1.TargetLease
+	doJSON(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key",
+		replayv1.DispatchRequest{Model: "comp", InboundProtocol: "openai-chat", ClientKey: "client-key", RequestID: "req-cm4", CompressOf: "public"},
+		http.StatusOK, &lease)
+	if lease.TargetID == "" {
+		t.Fatalf("no lease: %+v", lease)
+	}
+	// 无 compress_of：错误 key 被拒
+	doJSON(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key",
+		replayv1.DispatchRequest{Model: "comp", InboundProtocol: "openai-chat", ClientKey: "client-key", RequestID: "req-cm5"},
+		http.StatusUnauthorized, nil)
+}
+
+// 管理面：compress_model 引用校验（3.2 硬校验；3.3 窗口 best-effort 不阻止）。
+func TestAdminUserModelCompressModelValidation(t *testing.T) {
+	server, store, _ := newTestServer(t)
+	ctx := context.Background()
+	if err := store.PutUserModel(ctx, relaystore.UserModel{Name: "comp", Protocol: "openai-chat", APIKey: "comp-key", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutUserModel(ctx, relaystore.UserModel{Name: "off", Protocol: "openai-chat", APIKey: "k", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	put := func(name string, m relaystore.UserModel) int {
+		body, _ := json.Marshal(m)
+		req, _ := http.NewRequest(http.MethodPut, ts.URL+"/admin/user-models/"+name, bytes.NewReader(body))
+		req.Header.Set("X-Admin-Key", "admin-key")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := put("public", relaystore.UserModel{Protocol: "openai-chat", APIKey: "client-key", Enabled: true, CompressModel: "comp"}); code != http.StatusOK {
+		t.Fatalf("valid compress_model: status=%d want 200", code)
+	}
+	if code := put("public", relaystore.UserModel{Protocol: "openai-chat", APIKey: "client-key", Enabled: true, CompressModel: "public"}); code != http.StatusBadRequest {
+		t.Fatalf("self reference: status=%d want 400", code)
+	}
+	if code := put("public", relaystore.UserModel{Protocol: "openai-chat", APIKey: "client-key", Enabled: true, CompressModel: "missing"}); code != http.StatusBadRequest {
+		t.Fatalf("unknown reference: status=%d want 400", code)
+	}
+	if code := put("public", relaystore.UserModel{Protocol: "openai-chat", APIKey: "client-key", Enabled: true, CompressModel: "off"}); code != http.StatusBadRequest {
+		t.Fatalf("disabled reference: status=%d want 400", code)
+	}
+
+	// GET 回显（3.4）
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/admin/user-models", nil)
+	req.Header.Set("X-Admin-Key", "admin-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var models []relaystore.UserModel
+	if err := json.NewDecoder(resp.Body).Decode(&models); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range models {
+		if m.Name == "public" {
+			found = true
+			if m.CompressModel != "comp" {
+				t.Fatalf("GET compress_model = %q, want comp", m.CompressModel)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("public not listed")
+	}
+}
+
+// doJSONErr 断言错误状态码并解码 error 信封（doJSON 的 4xx 变体）。
+func doJSONErr(t *testing.T, url, key string, input any, want int, env any) {
+	t.Helper()
+	body, _ := json.Marshal(input)
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != want {
+		t.Fatalf("status=%d want=%d", resp.StatusCode, want)
+	}
+	if env != nil {
+		if err := json.NewDecoder(resp.Body).Decode(env); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

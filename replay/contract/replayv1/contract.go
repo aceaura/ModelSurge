@@ -27,6 +27,9 @@ const (
 	CodeTargetUnavailable = "target_unavailable"
 	CodeConflict          = "conflict"
 	CodeInternal          = "internal_error"
+	// CodeContextTooLarge 估算 token 超过全部可用候选的上下文窗口
+	// （调度层前置过滤，非上游错误）。
+	CodeContextTooLarge = "context_too_large"
 )
 
 type HealthResponse struct {
@@ -51,6 +54,8 @@ type DispatchRequest struct {
 	ClientKey       string   `json:"client_key"`
 	RequestID       string   `json:"request_id"`
 	TriedIDs        []string `json:"tried_ids,omitempty"`
+	// EstTokens 估算输入+输出预算合计（Agent 估算；0=未送，调度不过滤）。
+	EstTokens int `json:"est_tokens,omitempty"`
 }
 
 type ThinkingOverride struct {

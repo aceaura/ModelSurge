@@ -184,10 +184,10 @@ sequenceDiagram
 |---|---|---|
 | `GET` | `/internal/v1/health` | Replay、Replay DB 与 Upstream 连通状态 |
 | `GET` | `/internal/v1/models` | 返回 Agent 对外可见的 UserModel 摘要 |
-| `POST` | `/internal/v1/dispatch` | 每次请求获取 `TargetLease`；redispatch 时携带 `tried_ids` |
-| `POST` | `/internal/v1/results` | Agent 幂等上报请求结果和 usage |
+| `POST` | `/internal/v1/dispatch` | 每次请求获取 `TargetLease`；redispatch 时携带 `tried_ids`；请求带 `est_tokens`（Agent 估算的输入+输出预算，0=未送不过滤），调度层按候选 `context_window` 前置过滤装不下的目标，可用候选全被排除时返回 `context_too_large`（HTTP 413） |
+| `POST` | `/internal/v1/results` | Agent 幂等上报请求结果和 usage；`outcome` 枚举 `normal / retrying / invalid_model / abnormal / context_exceeded`——`context_exceeded` 为请求侧超限（不进熔断计数、不污染目标缓存） |
 
-`TargetLease` 包括请求/组/目标 ID、目标协议、native model、base URL、短期 credential/headers、request overrides 和 runtime metadata。Replay 管理面位于 `/admin/*`，使用独立 `X-Admin-Key`，管理 UserModel、Group、成员、Policy 与缓存。
+`TargetLease` 包括请求/组/目标 ID、目标协议、native model、base URL、短期 credential/headers、request overrides 和 runtime metadata（含 `max_input_tokens`，缓存命中时用于窗口不足绕过）。Replay 管理面位于 `/admin/*`，使用独立 `X-Admin-Key`，管理 UserModel、Group、成员、Policy 与缓存。
 
 ### 5.2 Replay → Upstream
 
@@ -197,9 +197,9 @@ sequenceDiagram
 |---|---|---|
 | `GET` | `/internal/v1/health` | Upstream 与 Upstream DB 健康检查 |
 | `GET` | `/internal/v1/models` | 返回 UpstreamModel 摘要 |
-| `GET` | `/internal/v1/models/{id}/resolve` | 返回单次调度所需的 `ResolvedTarget` |
-| `POST` | `/internal/v1/candidates/evaluate` | 对候选执行可用性、额度、冷却和评分评估 |
-| `POST` | `/internal/v1/results` | Replay 幂等转报结果和 usage |
+| `GET` | `/internal/v1/models/{id}/resolve` | 返回单次调度所需的 `ResolvedTarget`（runtime 含 `max_input_tokens`） |
+| `POST` | `/internal/v1/candidates/evaluate` | 对候选执行可用性、额度、冷却和评分评估；`CandidateEvaluation` 带 `context_window`（模型输入窗口 token 数，0=未知；管理面经账号 `model_limits` 配置，kiro 账号回落动态模型缓存） |
+| `POST` | `/internal/v1/results` | Replay 幂等转报结果和 usage；`context_exceeded` 不惩罚目标（model_state 整行不动） |
 
 Upstream 管理面位于 `/admin/*`，使用另一独立 `X-Admin-Key`，负责账号、凭据、模型和运行状态管理。
 

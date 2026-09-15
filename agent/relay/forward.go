@@ -203,6 +203,13 @@ func allowedOutboundProtocol(protocol string) bool {
 
 func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, req *ir.Request, clientKey string) {
 	requestID := requestIDFrom(ctx)
+	// 估算输入+输出预算（kiro 入站有专用 tokenizer 时用之，CountTokens 同款取法）。
+	est := ir.EstimateRequestTokens(req) + req.MaxTokens
+	if clientCodec.Name() == "kiro" {
+		if te, ok := clientCodec.(interface{ EstimateRequestTokens(*ir.Request) int }); ok {
+			est = te.EstimateRequestTokens(req) + req.MaxTokens
+		}
+	}
 	tried := map[string]bool{}
 	attempts := map[string]int{}
 	var lastErr *ir.Error
@@ -213,7 +220,7 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 		if f.paramLog {
 			log.Printf("agent phase=dispatch_out request_id=%s model=%s proto=%s tried=%d", requestID, req.Model, clientCodec.Name(), len(tried))
 		}
-		lease, err := f.replay.Dispatch(ctx, replayv1.DispatchRequest{Model: req.Model, InboundProtocol: clientCodec.Name(), ClientKey: clientKey, RequestID: requestID, TriedIDs: triedIDs(tried)})
+		lease, err := f.replay.Dispatch(ctx, replayv1.DispatchRequest{Model: req.Model, InboundProtocol: clientCodec.Name(), ClientKey: clientKey, RequestID: requestID, TriedIDs: triedIDs(tried), EstTokens: est})
 		if err != nil {
 			if lastErr == nil {
 				lastErr = replayDispatchError(err)
@@ -893,6 +900,8 @@ func replayDispatchError(err error) *ir.Error {
 			return &ir.Error{StatusCode: http.StatusNotFound, Type: ir.ErrTypeInvalidReq, Message: e.Message}
 		case replayv1.CodeInvalidRequest:
 			return &ir.Error{StatusCode: http.StatusBadRequest, Type: ir.ErrTypeInvalidReq, Message: e.Message}
+		case replayv1.CodeContextTooLarge:
+			return &ir.Error{StatusCode: http.StatusRequestEntityTooLarge, Type: ir.ErrTypeInvalidReq, Message: e.Message}
 		default:
 			return &ir.Error{StatusCode: http.StatusServiceUnavailable, Type: ir.ErrTypeUpstream, Message: e.Message, Retryable: e.Retryable}
 		}

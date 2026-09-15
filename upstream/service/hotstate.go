@@ -30,6 +30,11 @@ type stateCacheEntry struct {
 	Failures int    `json:"n"`
 	Class    string `json:"k"`
 	Account  string `json:"a"`
+	// Window 上下文窗口（upstream_models.context_window；0=未知）；
+	// Native 原生模型名——两者供 Evaluate 的窗口回填。旧缓存条目缺字段
+	// 反序列化为 0/""（不过滤，60s TTL 自然收敛）。
+	Window  int    `json:"w,omitempty"`
+	Native  string `json:"m,omitempty"`
 }
 
 func stateKey(id string) string { return "state:" + id }
@@ -71,7 +76,7 @@ func (s *Service) probeGranted(ctx context.Context, id string, e stateCacheEntry
 
 // entryFromModel 从 store 行构造缓存条目形态（执行侧核验复用 probeEligible）。
 func entryFromModel(m *upstreamstore.Model) stateCacheEntry {
-	e := stateCacheEntry{Found: true, Enabled: m.Enabled, Failures: m.Failures, Class: m.LastErrorClass, Account: m.Account}
+	e := stateCacheEntry{Found: true, Enabled: m.Enabled, Failures: m.Failures, Class: m.LastErrorClass, Account: m.Account, Window: m.ContextWindow, Native: m.NativeModel}
 	if !m.CooldownUntil.IsZero() {
 		e.Cooldown = m.CooldownUntil.Unix()
 	}

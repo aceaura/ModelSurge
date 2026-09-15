@@ -26,6 +26,7 @@ type fakeUpstream struct {
 	reports     int
 	target      upstreamv1.ResolvedTarget
 	executeResp *http.Response
+	candidates  []upstreamv1.CandidateEvaluation
 }
 
 func (f *fakeUpstream) Health(context.Context) error { return nil }
@@ -43,6 +44,9 @@ func (f *fakeUpstream) Resolve(_ context.Context, id string) (upstreamv1.Resolve
 }
 func (f *fakeUpstream) Evaluate(_ context.Context, ids []string) ([]upstreamv1.CandidateEvaluation, error) {
 	f.evaluates++
+	if f.candidates != nil {
+		return f.candidates, nil
+	}
 	return []upstreamv1.CandidateEvaluation{{ID: ids[0], Available: true}}, nil
 }
 func (f *fakeUpstream) Report(context.Context, upstreamv1.ResultReport) (upstreamv1.ResultResponse, error) {
@@ -152,6 +156,55 @@ func TestDispatchAuthenticatesUserModelAndUsesCache(t *testing.T) {
 
 	dispatch.ClientKey = "wrong"
 	doJSON(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key", dispatch, http.StatusUnauthorized, nil)
+}
+
+// 10.3 dispatch 随送 est_tokens：缓存目标窗口不足绕过落评估，候选仍
+// 全被窗口排除时返回 context_too_large（HTTP 413）；est_tokens 未送不过滤。
+func TestDispatchFiltersByEstTokens(t *testing.T) {
+	server, _, upstream := newTestServer(t)
+	upstream.target = upstreamv1.ResolvedTarget{Protocol: "openai-chat", NativeModel: "native", BaseURL: "https://example.test", APIKey: "secret", Runtime: upstreamv1.RuntimeMetadata{MaxInputTokens: 64000}}
+	upstream.candidates = []upstreamv1.CandidateEvaluation{{ID: "a/model", Available: true, ContextWindow: 64000}}
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	// est_tokens 未送：不过滤，正常选中（并写缓存）
+	dispatch := replayv1.DispatchRequest{Model: "public", InboundProtocol: "openai-chat", ClientKey: "client-key", RequestID: "req-est-1"}
+	var lease replayv1.TargetLease
+	doJSON(t, ts.URL+replayv1.BasePath+"/dispatch", "agent-key", dispatch, http.StatusOK, &lease)
+	if lease.TargetID != "a/model" {
+		t.Fatalf("lease=%+v", lease)
+	}
+
+	// est_tokens 超窗口：缓存绕过 → 评估全排除 → context_too_large（413）
+	dispatch.RequestID = "req-est-2"
+	dispatch.EstTokens = 100000
+	resp := postDispatch(t, ts.URL, dispatch)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d, want 413", resp.StatusCode)
+	}
+	var env struct {
+		Error replayv1.Error `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Error.Code != replayv1.CodeContextTooLarge || env.Error.Retryable {
+		t.Fatalf("error=%+v, want context_too_large non-retryable", env.Error)
+	}
+}
+
+func postDispatch(t *testing.T, base string, dispatch replayv1.DispatchRequest) *http.Response {
+	t.Helper()
+	body, _ := json.Marshal(dispatch)
+	req, _ := http.NewRequest(http.MethodPost, base+replayv1.BasePath+"/dispatch", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
 }
 
 func TestDispatchRejectsGeminiAndUnknownTargetsButAcceptsGeminiInbound(t *testing.T) {

@@ -253,6 +253,63 @@ func TestImportLegacyFailureRollsBackEverything(t *testing.T) {
 	}
 }
 
+// 6.3 存量库（upstream_models 无 context_window 列）Open 后补列：
+// 旧行读出 0（未知），物化带 model_limits 的账号可写窗口值。
+func TestOpenMigratesContextWindowColumn(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-upstream.db")
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE upstream_models (
+	 id TEXT PRIMARY KEY, account TEXT NOT NULL, display_name TEXT NOT NULL,
+	 protocol TEXT NOT NULL, native_model TEXT NOT NULL, base_url TEXT NOT NULL,
+	 headers TEXT NOT NULL DEFAULT '{}', request_overrides TEXT NOT NULL DEFAULT '{}',
+	 enabled INTEGER NOT NULL DEFAULT 1, updated_at BIGINT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO upstream_models(id,account,display_name,protocol,native_model,base_url,headers,request_overrides,enabled,updated_at)
+		VALUES('old/m','old','m','openai-chat','native','https://example.test','{}','null',1,0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dialect.SQLite, path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	defer s.Close()
+	m, err := s.GetModel(ctx, "old/m")
+	if err != nil || m == nil {
+		t.Fatalf("m=%+v err=%v", m, err)
+	}
+	if m.ContextWindow != 0 {
+		t.Fatalf("legacy row window=%d, want 0", m.ContextWindow)
+	}
+
+	if err := s.Accounts.InsertAccount(&account.Account{
+		Name: "old", Type: account.TypeAPIKey, Enabled: true, Protocol: "openai-chat",
+		BaseURL: "https://example.test", APIKey: "secret",
+		Models: map[string]string{"m": "native"}, ModelLimits: map[string]int{"m": 128000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MaterializeAccounts(); err != nil {
+		t.Fatal(err)
+	}
+	m, err = s.GetModel(ctx, "old/m")
+	if err != nil || m == nil {
+		t.Fatalf("m=%+v err=%v", m, err)
+	}
+	if m.ContextWindow != 128000 {
+		t.Fatalf("window=%d, want 128000", m.ContextWindow)
+	}
+}
+
 // 超限是请求侧问题：ApplyReport(context_exceeded) 不动 model_state
 // （failures/cooldown/last_error_class 原样），report 幂等记录仍写。
 func TestContextExceededKeepsModelState(t *testing.T) {

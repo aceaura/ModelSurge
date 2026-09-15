@@ -210,6 +210,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 			status = http.StatusServiceUnavailable
 		case replayv1.CodeConflict:
 			status = http.StatusConflict
+		case replayv1.CodeContextTooLarge:
+			status = http.StatusRequestEntityTooLarge
 		}
 		writeError(w, status, typed)
 		return

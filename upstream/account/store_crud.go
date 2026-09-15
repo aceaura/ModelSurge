@@ -22,10 +22,10 @@ func (s *Store) InsertAccount(a *Account) error {
 		disabled = 1
 	}
 	if _, err := s.db.Exec(s.q(`INSERT INTO accounts
-		(name, type, enabled, protocol, base_url, api_key, models, headers, models_allowlist, kiro, overrides, disabled, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`),
+		(name, type, enabled, protocol, base_url, api_key, models, headers, model_limits, models_allowlist, kiro, overrides, disabled, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		a.Name, a.Type, enabled, a.Protocol, a.BaseURL, a.APIKey,
-		string(models), marshalHeaders(a.Headers), string(allowlist), kiro, encodeOverrides(a.Overrides), disabled, time.Now().Unix()); err != nil {
+		string(models), marshalHeaders(a.Headers), marshalModelLimits(a.ModelLimits), string(allowlist), kiro, encodeOverrides(a.Overrides), disabled, time.Now().Unix()); err != nil {
 		return fmt.Errorf("account: insert %q: %w", a.Name, err)
 	}
 	return nil
@@ -43,9 +43,9 @@ func (s *Store) UpdateAccount(a *Account) error {
 	}
 	res, err := s.db.Exec(s.q(`UPDATE accounts SET
 		type=?, enabled=?, protocol=?, base_url=?, api_key=?, models=?,
-		headers=?, models_allowlist=?, kiro=?, overrides=?, updated_at=? WHERE name=?`),
+		headers=?, model_limits=?, models_allowlist=?, kiro=?, overrides=?, updated_at=? WHERE name=?`),
 		a.Type, enabled, a.Protocol, a.BaseURL, a.APIKey, string(models),
-		marshalHeaders(a.Headers), string(allowlist), kiro, encodeOverrides(a.Overrides), time.Now().Unix(), a.Name)
+		marshalHeaders(a.Headers), marshalModelLimits(a.ModelLimits), string(allowlist), kiro, encodeOverrides(a.Overrides), time.Now().Unix(), a.Name)
 	if err != nil {
 		return fmt.Errorf("account: update %q: %w", a.Name, err)
 	}
@@ -117,5 +117,14 @@ func marshalHeaders(h map[string]string) string {
 		return ""
 	}
 	b, _ := json.Marshal(h)
+	return string(b)
+}
+
+// marshalModelLimits canonical→窗口 -> JSON 列值（nil/空 -> 空串）。
+func marshalModelLimits(m map[string]int) string {
+	if len(m) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(m)
 	return string(b)
 }

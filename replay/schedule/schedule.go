@@ -27,6 +27,10 @@ type Upstream interface {
 
 var ErrUnsupportedPolicy = errors.New("unsupported relay policy")
 
+// ErrContextTooLarge 估算 token 超过全部可用候选的上下文窗口（调度层
+// 前置过滤；Agent 映射 413 给客户端）。
+var ErrContextTooLarge = errors.New("context too large")
+
 type Scheduler struct {
 	Store               *relaystore.Store
 	Upstream            Upstream
@@ -46,7 +50,7 @@ type Selection struct {
 
 func (s *Scheduler) accessLog() bool { return !s.AccessLogConfigured || s.AccessLogEnabled }
 
-func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]bool) (Selection, error) {
+func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]bool, estTokens int) (Selection, error) {
 	requestID := replayv1.RequestIDFromContext(ctx)
 	g, err := s.Store.GroupForModel(ctx, model)
 	if err != nil {
@@ -76,13 +80,22 @@ func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]b
 			log.Printf("replay phase=resolve_in request_id=%s target=%s protocol=%s native_model=%s latency=%s error=%t", requestID, g.CachedTarget, t.Protocol, t.NativeModel, time.Since(started), err != nil)
 		}
 		if err == nil {
-			if s.accessLog() {
-				log.Printf("replay phase=selected request_id=%s group=%s target=%s policy=%s protocol=%s native_model=%s", requestID, g.ID, t.ID, g.PolicyType, t.Protocol, t.NativeModel)
+			// 窗口装不下时本次绕过缓存落评估（不清缓存：目标本身健康，
+			// 只是这个请求太大）。
+			if t.Runtime.MaxInputTokens > 0 && estTokens > t.Runtime.MaxInputTokens {
+				if s.accessLog() {
+					log.Printf("replay phase=cache_bypass request_id=%s target=%s reason=context_window est_tokens=%d max_input_tokens=%d", requestID, g.CachedTarget, estTokens, t.Runtime.MaxInputTokens)
+				}
+			} else {
+				if s.accessLog() {
+					log.Printf("replay phase=selected request_id=%s group=%s target=%s policy=%s protocol=%s native_model=%s", requestID, g.ID, t.ID, g.PolicyType, t.Protocol, t.NativeModel)
+				}
+				return Selection{g.ID, t}, nil
 			}
-			return Selection{g.ID, t}, nil
-		}
-		if cacheErr := s.Store.SetCache(ctx, g.ID, g.CachedTarget, "abnormal"); cacheErr != nil {
-			return Selection{}, fmt.Errorf("mark unresolved cache abnormal: %w", cacheErr)
+		} else {
+			if cacheErr := s.Store.SetCache(ctx, g.ID, g.CachedTarget, "abnormal"); cacheErr != nil {
+				return Selection{}, fmt.Errorf("mark unresolved cache abnormal: %w", cacheErr)
+			}
 		}
 	}
 	ids := make([]string, 0, len(g.Members))
@@ -115,8 +128,16 @@ func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]b
 	if err != nil {
 		return Selection{}, err
 	}
+	excludedByWindow := 0
 	for _, e := range ordered {
 		if !e.Available || tried[e.ID] {
+			continue
+		}
+		if e.ContextWindow > 0 && estTokens > e.ContextWindow {
+			excludedByWindow++
+			if s.accessLog() {
+				log.Printf("replay phase=excluded request_id=%s target=%s reason=context_window est_tokens=%d context_window=%d", requestID, e.ID, estTokens, e.ContextWindow)
+			}
 			continue
 		}
 		resolveStarted := time.Now()
@@ -140,6 +161,11 @@ func (s *Scheduler) Select(ctx context.Context, model string, tried map[string]b
 			log.Printf("replay phase=selected request_id=%s group=%s target=%s policy=%s protocol=%s native_model=%s", requestID, g.ID, t.ID, g.PolicyType, t.Protocol, t.NativeModel)
 		}
 		return Selection{g.ID, t}, nil
+	}
+	// 有可用候选但全被窗口排除：报超限（比笼统 no available target 更可诊断；
+	// 无可用候选维持现状）。
+	if excludedByWindow > 0 {
+		return Selection{}, fmt.Errorf("estimated %d tokens exceed all candidate context windows: %w", estTokens, ErrContextTooLarge)
 	}
 	return Selection{}, fmt.Errorf("no available target")
 }

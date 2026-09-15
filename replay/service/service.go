@@ -71,10 +71,13 @@ func (s *Service) Dispatch(ctx context.Context, req replayv1.DispatchRequest) (r
 	if s.accessLog() {
 		log.Printf("replay phase=select_start request_id=%s model=%s tried=%d", req.RequestID, req.Model, len(tried))
 	}
-	selection, err := s.Scheduler.Select(ctx, req.Model, tried)
+	selection, err := s.Scheduler.Select(ctx, req.Model, tried, req.EstTokens)
 	if err != nil {
 		if errors.Is(err, schedule.ErrUnsupportedPolicy) {
 			return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeInvalidRequest, Message: err.Error()}
+		}
+		if errors.Is(err, schedule.ErrContextTooLarge) {
+			return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeContextTooLarge, Message: err.Error()}
 		}
 		return replayv1.TargetLease{}, replayv1.Error{Code: replayv1.CodeTargetUnavailable, Message: err.Error(), Retryable: true}
 	}

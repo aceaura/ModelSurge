@@ -214,6 +214,88 @@ func testKiroService(t *testing.T) (*Service, *upstreamstore.Store) {
 	return NewService(store, mgr), store
 }
 
+// 8.6 Evaluate 候选窗口：物化列直读；kiro 账号 0 时回落动态模型缓存；
+// 缓存未命中仍 0（不过滤）。Resolve 的 Runtime.MaxInputTokens 同步填充。
+func TestEvaluateFillsContextWindow(t *testing.T) {
+	ctx := context.Background()
+	store, err := upstreamstore.Open(dialect.SQLite, filepath.Join(t.TempDir(), "upstream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Accounts.InsertAccount(&account.Account{
+		Name: "a", Type: account.TypeAPIKey, Enabled: true, Protocol: "openai-chat",
+		BaseURL: "https://example.test", APIKey: "secret",
+		Models: map[string]string{"m1": "n1", "m2": "n2"}, ModelLimits: map[string]int{"m1": 128000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MaterializeAccounts(); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := account.NewManager(store.Accounts, account.Cooldowns{}, account.ManagerDeps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, mgr)
+
+	cands, err := svc.Evaluate(ctx, []string{"a/m1", "a/m2", "a/missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 3 {
+		t.Fatalf("candidates=%d", len(cands))
+	}
+	if !cands[0].Available || cands[0].ContextWindow != 128000 {
+		t.Fatalf("m1=%+v", cands[0])
+	}
+	if !cands[1].Available || cands[1].ContextWindow != 0 {
+		t.Fatalf("m2=%+v", cands[1])
+	}
+	if cands[2].Available || cands[2].ExclusionReason != "not_found" {
+		t.Fatalf("missing=%+v", cands[2])
+	}
+
+	target, rerr := svc.Resolve(ctx, "a/m1")
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if target.Runtime.MaxInputTokens != 128000 {
+		t.Fatalf("resolve runtime max_input_tokens=%d, want 128000", target.Runtime.MaxInputTokens)
+	}
+}
+
+// kiro 候选窗口来自动态模型缓存（model_limits 未配置时）；缓存未命中为 0。
+func TestEvaluateKiroWindowFromModelCache(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := testKiroService(t)
+	rt := svc.Manager.KiroRuntimeOf("kiro")
+	if rt == nil || rt.Models == nil {
+		t.Fatal("kiro runtime or model cache missing")
+	}
+	seeded := account.KiroModel{ModelID: "*"}
+	seeded.TokenLimits.MaxInputTokens = 175000
+	rt.Models.Update([]account.KiroModel{seeded})
+
+	cands, err := svc.Evaluate(ctx, []string{"kiro/*"})
+	if err != nil || len(cands) != 1 {
+		t.Fatalf("candidates=%+v err=%v", cands, err)
+	}
+	if !cands[0].Available || cands[0].ContextWindow != 175000 {
+		t.Fatalf("kiro candidate=%+v, want window 175000", cands[0])
+	}
+
+	// 缓存换成不含该模型的列表：LookupMaxInputTokens 0（缺省不算已知）
+	rt.Models.Update([]account.KiroModel{{ModelID: "other"}})
+	cands, err = svc.Evaluate(ctx, []string{"kiro/*"})
+	if err != nil || len(cands) != 1 {
+		t.Fatalf("candidates=%+v err=%v", cands, err)
+	}
+	if !cands[0].Available || cands[0].ContextWindow != 0 {
+		t.Fatalf("kiro candidate after cache miss=%+v, want window 0", cands[0])
+	}
+}
+
 // 超限是请求侧问题：Report 建议直接停止（不落入 Attempt==0 的
 // retry_target 默认分支），且目标不进熔断计数。
 func TestContextExceededReportsStopWithoutPenalty(t *testing.T) {

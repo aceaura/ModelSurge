@@ -97,6 +97,7 @@ type accountDTO struct {
 	APIKey           string               `json:"api_key"`
 	Models           map[string]string    `json:"models"`
 	Headers          map[string]string    `json:"headers"`
+	ModelLimits      map[string]int       `json:"model_limits"`
 	ModelsAllowlist  []string             `json:"models_allowlist"`
 	RequestOverrides *ir.Overrides        `json:"request_overrides"`
 	Kiro             *account.KiroAccount `json:"kiro"`
@@ -143,6 +144,14 @@ func (d *accountDTO) validate() error {
 			return errors.New("headers: keys must be non-empty")
 		}
 	}
+	for k, v := range d.ModelLimits {
+		if k == "" {
+			return errors.New("model_limits: keys must be non-empty")
+		}
+		if v < 0 {
+			return errors.New("model_limits: values must be >= 0")
+		}
+	}
 	return nil
 }
 
@@ -157,6 +166,7 @@ func (d *accountDTO) toAccount() *account.Account {
 		APIKey:          d.APIKey,
 		Models:          d.Models,
 		Headers:         d.Headers,
+		ModelLimits:     d.ModelLimits,
 		ModelsAllowlist: d.ModelsAllowlist,
 		Overrides:       d.RequestOverrides,
 		Kiro:            d.Kiro,
@@ -347,6 +357,9 @@ func (s *Admin) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if d.Models == nil {
 		d.Models = existing.Models
+	}
+	if d.ModelLimits == nil {
+		d.ModelLimits = existing.ModelLimits
 	}
 	if d.Headers == nil {
 		d.Headers = existing.Headers

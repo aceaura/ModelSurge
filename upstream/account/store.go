@@ -30,10 +30,13 @@ type Account struct {
 	Enabled bool   `json:"enabled"` // false=人工停用（区别于熔断禁用 Disabled）
 
 	// api-key 型
-	Protocol string            `json:"protocol,omitempty"`
-	BaseURL  string            `json:"base_url,omitempty"`
-	APIKey   string            `json:"api_key,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
+	APIKey   string `json:"api_key,omitempty"`
 	Models   map[string]string `json:"models,omitempty"` // canonical -> native
+	// ModelLimits canonical 模型名 → 上下文窗口 token 数（0/缺省=未知）。
+	// materialize 时写入 upstream_models.context_window，贯通到调度过滤。
+	ModelLimits map[string]int `json:"model_limits,omitempty"`
 	// Headers api-key 型账号追加到上游请求的自定义头（如网关要求的
 	// 会话/UA 头）；键为标准 MIME 键。值按凭据口径脱敏回显。
 	Headers map[string]string `json:"headers,omitempty"`
@@ -182,6 +185,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 	api_key          TEXT NOT NULL DEFAULT '',
 	models           TEXT NOT NULL DEFAULT '{}',
 	headers          TEXT NOT NULL DEFAULT '',
+	model_limits     TEXT NOT NULL DEFAULT '',
 	models_allowlist TEXT NOT NULL DEFAULT '',
 	kiro             TEXT NOT NULL DEFAULT '',
 	token_state      TEXT NOT NULL DEFAULT '',
@@ -225,6 +229,11 @@ var v3Columns = []string{
 	`ALTER TABLE accounts ADD COLUMN headers TEXT NOT NULL DEFAULT ''`,
 }
 
+// v4 迁移：canonical 模型 → 上下文窗口（调度过滤元数据）。
+var v4Columns = []string{
+	`ALTER TABLE accounts ADD COLUMN model_limits TEXT NOT NULL DEFAULT ''`,
+}
+
 // Open 打开（必要时创建）数据库并建表/迁移。driver 见 dialect 包；
 // sqlite 的 dsn 为裸文件路径（自动补 pragma DSN），postgres 为连接串。
 func Open(driver, dsn string) (*Store, error) {
@@ -258,6 +267,9 @@ func OpenDB(db *sql.DB, driver string) (*Store, error) {
 	}
 	if err := migrateColumns(db, driver, "v3", v3Columns); err != nil {
 		return nil, fmt.Errorf("account: migrate v3: %w", err)
+	}
+	if err := migrateColumns(db, driver, "v4", v4Columns); err != nil {
+		return nil, fmt.Errorf("account: migrate v4: %w", err)
 	}
 	return &Store{db: db, driver: driver}, nil
 }
@@ -335,17 +347,17 @@ func (s *Store) DB() *sql.DB { return s.db }
 
 // accountSelect 全字段读取（与 scanAccount 对应）。
 const accountSelect = `SELECT name, type, enabled, protocol, base_url, api_key, models,
-	headers, models_allowlist, kiro, token_state, overrides, disabled, limit_kind, cooldown_until,
+	headers, model_limits, models_allowlist, kiro, token_state, overrides, disabled, limit_kind, cooldown_until,
 	failures, last_failure, stats, updated_at FROM accounts`
 
 // scanAccount 一行 -> Account。
 func scanAccount(s interface{ Scan(...any) error }) (Account, error) {
 	var a Account
-	var typ, protocol, baseURL, apiKey, models, headers, allowlist, kiroJSON, tokenJSON, overridesJSON, statsJSON string
+	var typ, protocol, baseURL, apiKey, models, headers, limits, allowlist, kiroJSON, tokenJSON, overridesJSON, statsJSON string
 	var enabled, disabled, failures int
 	var cooldown, lastFailure, updatedAt int64
 	if err := s.Scan(&a.Name, &typ, &enabled, &protocol, &baseURL, &apiKey, &models,
-		&headers, &allowlist, &kiroJSON, &tokenJSON, &overridesJSON, &disabled, &a.LimitKind, &cooldown,
+		&headers, &limits, &allowlist, &kiroJSON, &tokenJSON, &overridesJSON, &disabled, &a.LimitKind, &cooldown,
 		&failures, &lastFailure, &statsJSON, &updatedAt); err != nil {
 		return a, err
 	}
@@ -354,6 +366,7 @@ func scanAccount(s interface{ Scan(...any) error }) (Account, error) {
 	a.Protocol, a.BaseURL, a.APIKey = protocol, baseURL, apiKey
 	_ = json.Unmarshal([]byte(models), &a.Models)
 	_ = json.Unmarshal([]byte(headers), &a.Headers)
+	_ = json.Unmarshal([]byte(limits), &a.ModelLimits)
 	_ = json.Unmarshal([]byte(allowlist), &a.ModelsAllowlist)
 	_ = json.Unmarshal([]byte(statsJSON), &a.Stats)
 	if overridesJSON != "" {

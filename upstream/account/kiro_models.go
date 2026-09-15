@@ -101,6 +101,17 @@ func (c *ModelInfoCache) MaxInputTokens(modelID string) int64 {
 	return 200000
 }
 
+// LookupMaxInputTokens 已知窗口才返回（缓存确有该模型且限值>0），否则 0——
+// MaxInputTokens 的 200000 缺省不能当未知用于调度过滤。
+func (c *ModelInfoCache) LookupMaxInputTokens(modelID string) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if m, ok := c.models[modelID]; ok && m.TokenLimits.MaxInputTokens > 0 {
+		return m.TokenLimits.MaxInputTokens
+	}
+	return 0
+}
+
 // Stale 缓存是否超过 TTL（从未更新视为过期）。
 func (c *ModelInfoCache) Stale() bool {
 	c.mu.Lock()

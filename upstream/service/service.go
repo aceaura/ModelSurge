@@ -84,11 +84,27 @@ func (s *Service) Resolve(ctx context.Context, id string) (upstreamv1.ResolvedTa
 	if len(m.RequestOverrides) > 0 && string(m.RequestOverrides) != "null" {
 		_ = json.Unmarshal(m.RequestOverrides, &ov)
 	}
-	t := upstreamv1.ResolvedTarget{ID: m.ID, Account: m.Account, Protocol: m.Protocol, NativeModel: native, BaseURL: m.BaseURL, APIKey: acc.APIKey, Headers: cloneHeaders(m.Headers), RequestOverrides: ov, Runtime: upstreamv1.RuntimeMetadata{AccountType: acc.Type}}
+	t := upstreamv1.ResolvedTarget{ID: m.ID, Account: m.Account, Protocol: m.Protocol, NativeModel: native, BaseURL: m.BaseURL, APIKey: acc.APIKey, Headers: cloneHeaders(m.Headers), RequestOverrides: ov, Runtime: upstreamv1.RuntimeMetadata{AccountType: acc.Type, MaxInputTokens: m.ContextWindow}}
 	if err := upstreamv1.ValidateResolvedTarget(t); err != nil {
 		return upstreamv1.ResolvedTarget{}, &upstreamv1.Error{Code: upstreamv1.CodeInternal, Message: "invalid target configuration"}
 	}
 	return t, nil
+}
+
+// windowOf 候选上下文窗口：物化列（model_limits 配置）优先；0=未知时 kiro
+// 账号回落动态模型缓存（非 kiro 或缓存未命中仍为 0，调度不过滤）。
+func (s *Service) windowOf(e stateCacheEntry) int {
+	if e.Window > 0 {
+		return e.Window
+	}
+	rt := s.Manager.KiroRuntimeOf(e.Account)
+	if rt == nil || rt.Models == nil || e.Native == "" {
+		return 0
+	}
+	if w := rt.Models.LookupMaxInputTokens(e.Native); w > 0 {
+		return int(w)
+	}
+	return 0
 }
 
 func (s *Service) Evaluate(ctx context.Context, ids []string) ([]upstreamv1.CandidateEvaluation, error) {
@@ -104,7 +120,8 @@ func (s *Service) Evaluate(ctx context.Context, ids []string) ([]upstreamv1.Cand
 	}
 	for i, id := range ids {
 		e := entries[i]
-		c := upstreamv1.CandidateEvaluation{ID: id}
+		window := s.windowOf(e)
+		c := upstreamv1.CandidateEvaluation{ID: id, ContextWindow: window}
 		switch {
 		case !e.Found:
 			c.ExclusionReason = "not_found"
@@ -114,7 +131,7 @@ func (s *Service) Evaluate(ctx context.Context, ids []string) ([]upstreamv1.Cand
 			c.ExclusionReason = "cooling_down"
 			// Half-Open：熔断退避类冷却经全局试探锁收敛放行（设计 2.4/2.5）。
 			if probeEligible(e) && s.acquireProbe(ctx, id) {
-				c = upstreamv1.CandidateEvaluation{ID: id, Available: true, Score: float64(accountRequests[e.Account])}
+				c = upstreamv1.CandidateEvaluation{ID: id, Available: true, Score: float64(accountRequests[e.Account]), ContextWindow: window}
 			}
 		default:
 			c.Available = true

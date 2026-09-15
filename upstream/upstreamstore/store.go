@@ -34,8 +34,10 @@ type Model struct {
 	Headers          map[string]string
 	RequestOverrides json.RawMessage
 	Enabled          bool
-	CooldownUntil    time.Time
-	Failures         int
+	// ContextWindow 上下文窗口 token 数；0=未知（调度不过滤）。
+	ContextWindow int
+	CooldownUntil time.Time
+	Failures      int
 	// LastErrorClass 最近一次错误的归类（auth/rate_limit/cooldown_until/
 	// outcome）：Half-Open 试探只对熔断退避类放行，配额/限流/鉴权类严格跳过。
 	LastErrorClass string
@@ -47,7 +49,7 @@ CREATE TABLE IF NOT EXISTS upstream_models (
  id TEXT PRIMARY KEY, account TEXT NOT NULL, display_name TEXT NOT NULL,
  protocol TEXT NOT NULL, native_model TEXT NOT NULL, base_url TEXT NOT NULL,
  headers TEXT NOT NULL DEFAULT '{}', request_overrides TEXT NOT NULL DEFAULT '{}',
- enabled INTEGER NOT NULL DEFAULT 1, updated_at BIGINT NOT NULL
+ enabled INTEGER NOT NULL DEFAULT 1, context_window INTEGER NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS model_state (
  upstream_model_id TEXT PRIMARY KEY REFERENCES upstream_models(id) ON DELETE CASCADE,
@@ -87,12 +89,25 @@ func Open(driver, dsn string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("upstreamstore: migrate: %w", err)
 	}
+	// CREATE TABLE IF NOT EXISTS 不改已存在表：存量库补 context_window 列。
+	if _, err := db.Exec(`ALTER TABLE upstream_models ADD COLUMN context_window INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !columnExists(err) {
+			db.Close()
+			return nil, fmt.Errorf("upstreamstore: add context_window: %w", err)
+		}
+	}
 	path := dialect.SQLitePath(driver, dsn)
 	return &Store{DB: db, Accounts: accounts, driver: driver, path: path}, nil
 }
 
 // q 按方言重写占位符（postgres ? → $n）。
 func (s *Store) q(query string) string { return dialect.Rebind(s.driver, query) }
+
+// columnExists 判定 ALTER ADD COLUMN 的「列已存在」错误（sqlite/pg 方言串不同）。
+func columnExists(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate column name") || strings.Contains(msg, "already exists")
+}
 
 func (s *Store) Close() error { return s.DB.Close() }
 
@@ -143,13 +158,14 @@ func materializeAccount(s *Store, tx *sql.Tx, a account.Account) error {
 			native = display
 		}
 		keep = append(keep, id)
+		window := a.ModelLimits[display]
 		if _, err := tx.Exec(s.q(`INSERT INTO upstream_models
-			(id,account,display_name,protocol,native_model,base_url,headers,request_overrides,enabled,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+			(id,account,display_name,protocol,native_model,base_url,headers,request_overrides,enabled,context_window,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
 			account=excluded.account,display_name=excluded.display_name,protocol=excluded.protocol,
 			native_model=excluded.native_model,base_url=excluded.base_url,headers=excluded.headers,
-			request_overrides=excluded.request_overrides,enabled=excluded.enabled,updated_at=excluded.updated_at`),
-			id, a.Name, display, protocol, native, a.BaseURL, string(headers), string(overrides), enabled, time.Now().Unix()); err != nil {
+			request_overrides=excluded.request_overrides,enabled=excluded.enabled,context_window=excluded.context_window,updated_at=excluded.updated_at`),
+			id, a.Name, display, protocol, native, a.BaseURL, string(headers), string(overrides), enabled, window, time.Now().Unix()); err != nil {
 			return fmt.Errorf("materialize %s: %w", id, err)
 		}
 		if _, err := tx.Exec(s.q(`INSERT INTO model_state(upstream_model_id,updated_at) VALUES(?,?) ON CONFLICT(upstream_model_id) DO NOTHING`), id, time.Now().Unix()); err != nil {
@@ -193,7 +209,7 @@ func materializableProtocol(protocol string) bool {
 }
 
 func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
-	rows, err := s.DB.QueryContext(ctx, s.q(`SELECT m.id,m.account,m.display_name,m.protocol,m.native_model,m.base_url,m.headers,m.request_overrides,m.enabled,
+	rows, err := s.DB.QueryContext(ctx, s.q(`SELECT m.id,m.account,m.display_name,m.protocol,m.native_model,m.base_url,m.headers,m.request_overrides,m.enabled,m.context_window,
 		COALESCE(st.cooldown_until,0),COALESCE(st.failures,0),COALESCE(st.last_error_class,'') FROM upstream_models m LEFT JOIN model_state st ON st.upstream_model_id=m.id ORDER BY m.id`))
 	if err != nil {
 		return nil, err
@@ -205,7 +221,7 @@ func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
 		var headers, overrides string
 		var enabled int
 		var cooldown int64
-		if err := rows.Scan(&m.ID, &m.Account, &m.DisplayName, &m.Protocol, &m.NativeModel, &m.BaseURL, &headers, &overrides, &enabled, &cooldown, &m.Failures, &m.LastErrorClass); err != nil {
+		if err := rows.Scan(&m.ID, &m.Account, &m.DisplayName, &m.Protocol, &m.NativeModel, &m.BaseURL, &headers, &overrides, &enabled, &m.ContextWindow, &cooldown, &m.Failures, &m.LastErrorClass); err != nil {
 			return nil, err
 		}
 		m.Enabled = enabled != 0

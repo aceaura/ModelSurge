@@ -48,11 +48,17 @@ func TestClassifyContextError(t *testing.T) {
 }
 
 type reportCaptureReplay struct {
-	lease   replayv1.TargetLease
-	reports []replayv1.ResultReport
+	lease    replayv1.TargetLease
+	reports  []replayv1.ResultReport
+	dispatch []replayv1.DispatchRequest
+	dispatchErr error
 }
 
-func (r *reportCaptureReplay) Dispatch(context.Context, replayv1.DispatchRequest) (replayv1.TargetLease, error) {
+func (r *reportCaptureReplay) Dispatch(_ context.Context, req replayv1.DispatchRequest) (replayv1.TargetLease, error) {
+	r.dispatch = append(r.dispatch, req)
+	if r.dispatchErr != nil {
+		return replayv1.TargetLease{}, r.dispatchErr
+	}
 	return r.lease, nil
 }
 func (r *reportCaptureReplay) Report(_ context.Context, report replayv1.ResultReport) (replayv1.ResultResponse, error) {
@@ -136,4 +142,57 @@ func TestNonContextErrorStillReportsAbnormal(t *testing.T) {
 		t.Fatalf("client status=%d, want 400", w.Code)
 	}
 	_ = upstreamCalls.Load()
+}
+
+// 9.3 dispatch 随送估算 token：EstTokens = EstimateRequestTokens + MaxTokens。
+func TestDispatchSendsEstTokens(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	replay := &reportCaptureReplay{lease: replayv1.TargetLease{
+		RequestID: "req", GroupID: "group", TargetID: "acct/m1", Protocol: "openai-chat",
+		NativeModel: "m1", BaseURL: upstream.URL, Credential: "sk-up",
+	}}
+	f := NewForwarder(&config.Config{}, replay, nil)
+	w := httptest.NewRecorder()
+	req := &ir.Request{
+		Model: "public", MaxTokens: 4096,
+		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: strings.Repeat("token ", 2000)}}}},
+	}
+	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), req, "client-key")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(replay.dispatch) != 1 {
+		t.Fatalf("dispatches=%d, want 1", len(replay.dispatch))
+	}
+	want := ir.EstimateRequestTokens(req) + req.MaxTokens
+	if got := replay.dispatch[0].EstTokens; got != want || got <= req.MaxTokens {
+		t.Fatalf("est_tokens=%d, want %d (estimate+max_tokens)", got, want)
+	}
+}
+
+// 9.3 replay 报 context_too_large：客户端映射 413（invalid_request）。
+func TestReplayDispatchErrorContextTooLarge(t *testing.T) {
+	e := replayDispatchError(replayv1.Error{Code: replayv1.CodeContextTooLarge, Message: "estimated 300000 tokens exceed all candidate context windows"})
+	if e.StatusCode != http.StatusRequestEntityTooLarge || e.Type != ir.ErrTypeInvalidReq {
+		t.Fatalf("mapped=%+v, want 413 invalid_request", e)
+	}
+
+	// 端到端：dispatch 失败直通客户端
+	replay := &reportCaptureReplay{dispatchErr: replayv1.Error{Code: replayv1.CodeContextTooLarge, Message: "estimated 300000 tokens exceed all candidate context windows"}}
+	f := NewForwarder(&config.Config{}, replay, nil)
+	w := httptest.NewRecorder()
+	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
+		Model: "public", Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+	}, "client-key")
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("client status=%d, want 413", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "context windows") {
+		t.Fatalf("client body=%s", w.Body.String())
+	}
 }

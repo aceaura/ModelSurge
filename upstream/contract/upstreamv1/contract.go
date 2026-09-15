@@ -121,6 +121,8 @@ type CandidateEvaluation struct {
 	Score           float64 `json:"score"`
 	QuotaClass      string  `json:"quota_class,omitempty"`
 	ExclusionReason string  `json:"exclusion_reason,omitempty"`
+	// ContextWindow 输入窗口 token 数；0=未知（调度不过滤）。
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 type EvaluateResponse struct {

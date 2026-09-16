@@ -143,6 +143,18 @@ curl -X POST http://upstream:18100/admin/accounts \
   -d '{"name":"provider","type":"api-key","protocol":"anthropic","base_url":"https://api.anthropic.com","api_key":"replace-locally","models":{"claude-sonnet":"claude-sonnet"}}'
 ```
 
+kiro 型账号的凭据有三种 `source`，每种都可用路径或内联两种载体提供：
+
+| source | 路径载体 | 内联替代 |
+| --- | --- | --- |
+| `refresh_token` | `kiro.refresh_token` | `kiro.creds_text` / `kiro.creds_b64` |
+| `creds_file` | `kiro.creds_file`（credentials.json 路径） | 同上 |
+| `cli_db` | `kiro.cli_db`（kiro cli SQLite 路径） | 同上 |
+
+内联形态供只有文本区、无法提供服务器文件路径的录入界面使用：`creds_text` 粘贴原文，`creds_b64` 粘贴 base64（解码前自动剥除换行与空格）。
+
+三种载体互斥，同一 source 下给出两个及以上返回 400 并列出冲突字段。内联内容解码后上限 8MB，`cli_db` 的 base64 形态会校验 SQLite 文件头魔数。
+
 Replay 管理 UserModel、Group、成员、Policy 和缓存，接口位于 `http://replay:18101/admin/*`，使用 `MODELSURGE_REPLAY_ADMIN_KEY`。
 
 不要把上游真实 key、admin key 或内部 service key 写入 YAML、命令历史或版本库。

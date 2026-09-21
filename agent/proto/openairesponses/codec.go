@@ -26,6 +26,8 @@ func (codec) Caps() proto.Capabilities {
 		ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 		// TopK 留假：Responses 协议原生没有这一维。
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
+		// function_call_output 里没有失败标志位。
+		ToolResultError: false,
 	}
 }
 

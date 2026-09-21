@@ -27,6 +27,7 @@ func (codec) Caps() proto.Capabilities {
 	return proto.Capabilities{
 		ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 		ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true,
+		ToolResultError: true,
 	}
 }
 

@@ -36,6 +36,12 @@ type Capabilities struct {
 	// disable_parallel_tool_use，Chat 与 responses 都是 parallel_tool_calls；
 	// 只有 kiro 的载荷里没有这一维。
 	ParallelToolCalls bool
+
+	// ToolResultError 工具结果能标出「这次调用失败了」。Anthropic 是
+	// is_error，kiro 是 status=error，Gemini 靠 response 里的 error 键约定。
+	// OpenAI 两系的 tool / function_call_output 里没有任何这类标志：失败结果
+	// 与成功结果同形，模型只能从文本自行猜测。
+	ToolResultError bool
 }
 
 // InboundCodec 客户端入口协议编解码器。

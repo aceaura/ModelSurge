@@ -26,6 +26,8 @@ func (codec) Caps() proto.Capabilities {
 		ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
 		// TopK 留假：Chat 协议原生没有这一维，不是能力缺失而是字段不存在。
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
+		// tool 消息里没有失败标志位，失败结果与成功结果同形。
+		ToolResultError: false,
 	}
 }
 

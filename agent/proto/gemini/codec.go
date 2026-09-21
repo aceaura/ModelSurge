@@ -118,6 +118,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 				}
 				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockToolResult, ToolResult: &ir.ToolResult{
 					ToolUseID: id,
+					IsError:   funcResponseIsError(p.FunctionResponse.Response),
 					Content:   []ir.Block{{Type: ir.BlockText, Text: decodeFuncResponseText(p.FunctionResponse.Response)}},
 				}})
 			case p.InlineData != nil:
@@ -164,6 +165,25 @@ func decodeRole(role string) ir.Role {
 
 // decodeFuncResponseText functionResponse.response 是任意 JSON object。
 // 优先提取常见的字符串字段，否则保留原始 JSON 文本，保证不丢信息。
+// funcResponseIsError Gemini 没有 is_error 标志位，官方示例约定把失败写成
+// response 里的 error 键。识别它才能让下游（Anthropic 的 is_error、
+// kiro 的 status=error）把「工具失败」如实传下去——否则模型会把失败读成成功。
+func funcResponseIsError(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return false
+	}
+	v, ok := obj["error"]
+	if !ok {
+		return false
+	}
+	// error: null 与 error: false 是「没出错」，不能当成出错。
+	return string(v) != "null" && string(v) != "false"
+}
+
 func decodeFuncResponseText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""

@@ -179,16 +179,53 @@ func TestDiagnoseDisableParallelPerProtocol(t *testing.T) {
 }
 
 // 能力位矩阵：把四个出站的真实声明钉死，任一 codec 改声明都要在此处显式更新。
+func toolErrReq(isError bool) *ir.Request {
+	return &ir.Request{Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{
+		{Type: ir.BlockToolResult, ToolResult: &ir.ToolResult{
+			ToolUseID: "toolu_1", IsError: isError,
+			Content: []ir.Block{{Type: ir.BlockText, Text: "boom"}},
+		}},
+	}}}}
+}
+
+// 失败标志装不下时必须报出来：OpenAI 两系的载荷里没有这一维，静默丢掉会让
+// 模型把报错当成正常返回值。anthropic 与 kiro 能表达，不得误报。
+func TestDiagnoseToolResultErrorPerProtocol(t *testing.T) {
+	const want = "cannot mark a tool call as failed"
+	for name, shouldWarn := range map[string]bool{
+		"anthropic": false, "kiro": false,
+		"openai-chat": true, "openai-responses": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			notes := strings.Join(Diagnose(toolErrReq(true), name, capsOf(t, name)), "; ")
+			if got := strings.Contains(notes, want); got != shouldWarn {
+				t.Errorf("含失败诊断 = %v, want %v；notes=%q", got, shouldWarn, notes)
+			}
+			if shouldWarn && !strings.Contains(notes, "1 tool result") {
+				t.Errorf("未报出条数：%q", notes)
+			}
+		})
+	}
+}
+
+// 结果没标失败时不得报：恒报会让这条诊断退化成噪声。
+func TestDiagnoseToolResultSuccessNotReported(t *testing.T) {
+	notes := strings.Join(Diagnose(toolErrReq(false), "openai-chat", capsOf(t, "openai-chat")), "; ")
+	if strings.Contains(notes, "cannot mark a tool call as failed") {
+		t.Errorf("成功结果不应触发诊断：%q", notes)
+	}
+}
+
 func TestOutboundCapabilityMatrix(t *testing.T) {
 	want := map[string]proto.Capabilities{
 		"anthropic": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
-			ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true},
+			ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true, ToolResultError: true},
 		"openai-chat": {ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
-			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true},
+			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false},
 		"openai-responses": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
-			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true},
+			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false},
 		"kiro": {ThinkingSignature: false, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
-			ImageURLs: false, Sampling: false, TopK: false, ParallelToolCalls: false},
+			ImageURLs: false, Sampling: false, TopK: false, ParallelToolCalls: false, ToolResultError: true},
 	}
 	for name, exp := range want {
 		if got := capsOf(t, name); got != exp {

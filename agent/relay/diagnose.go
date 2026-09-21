@@ -27,7 +27,7 @@ func writeLossyNotes(w http.ResponseWriter, target string, notes []string) {
 func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []string {
 	var notes []string
 
-	sigs, foreign, images, urlImages := 0, 0, 0, 0
+	sigs, foreign, images, urlImages, errResults := 0, 0, 0, 0, 0
 	for _, m := range req.Messages {
 		for _, b := range m.Content {
 			switch b.Type {
@@ -45,6 +45,10 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 				if b.Image != nil && b.Image.Data == "" && b.Image.URL != "" {
 					urlImages++
 				}
+			case ir.BlockToolResult:
+				if b.ToolResult != nil && b.ToolResult.IsError {
+					errResults++
+				}
 			}
 		}
 	}
@@ -59,6 +63,11 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		// 只有形态装不下：上游收 base64 不收远程 URL（kiro）。与整协议无图片能力
 		// 分开报，是因为读者的下一步动作不同——这里换成 base64 内联即可。
 		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream accepts inline base64 only, not remote URLs", urlImages))
+	}
+	if errResults > 0 && !caps.ToolResultError {
+		// 失败的工具结果在上游看来与成功结果同形，模型会把报错文本当成
+		// 正常返回值继续推理。读者能做的是把失败信息写进结果文本本身。
+		notes = append(notes, fmt.Sprintf("dropped error flag on %d tool result(s): upstream protocol cannot mark a tool call as failed", errResults))
 	}
 	if !caps.Sampling {
 		var params []string

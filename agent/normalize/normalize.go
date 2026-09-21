@@ -122,7 +122,11 @@ func sanitizeNode(v any) any {
 func stripToolContent(req *ir.Request) {
 	for i := range req.Messages {
 		m := &req.Messages[i]
-		out := m.Content[:0]
+		// 不能复用 m.Content 的底层数组：一个 tool_result 会展开成「文本 +
+		// 抽出的媒体」多个块，写头越过读游标后会覆盖同一条消息里尚未读到的
+		// 块。客户端常在同一条 user 消息里先放 tool_result 再放新指令，指令
+		// 会整块消失且上游返回 200。
+		out := make([]ir.Block, 0, len(m.Content))
 		for _, b := range m.Content {
 			switch b.Type {
 			case ir.BlockToolUse:
@@ -187,7 +191,8 @@ func fixOrphanToolResults(req *ir.Request) {
 			}
 			continue
 		}
-		out := m.Content[:0]
+		// 同 stripToolContent：降级是 1->N 展开，复用底层数组会覆盖后续块。
+		out := make([]ir.Block, 0, len(m.Content))
 		for _, b := range m.Content {
 			if b.Type == ir.BlockToolResult && b.ToolResult != nil && !seen[b.ToolResult.ToolUseID] {
 				out = append(out, ir.Block{Type: ir.BlockText, Text: renderToolResult(b.ToolResult)})

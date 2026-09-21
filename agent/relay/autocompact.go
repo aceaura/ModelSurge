@@ -139,6 +139,7 @@ func (f *Forwarder) fetchSummary(ctx context.Context, cand candidate, req *ir.Re
 	upReq.Model = cand.native
 	upReq.Stream = true
 	cand.ov.Apply(upReq)
+	ir.CompleteThinking(upReq) // 推理风格互补，同 attempt（压缩调用亦是一次真实上游请求）
 	if cl, ok := cand.codec.(interface{ ClampThinking(*ir.Request) }); ok {
 		cl.ClampThinking(upReq)
 	}
@@ -183,6 +184,7 @@ func (f *Forwarder) fetchSummary(ctx context.Context, cand candidate, req *ir.Re
 func (f *Forwarder) fetchKiroSummary(ctx context.Context, cand candidate, req *ir.Request) (string, replayv1.Usage, *ir.Error) {
 	upReq := req.Clone()
 	upReq.Stream = true
+	ir.CompleteThinking(upReq) // 推理风格互补，同 attemptKiro（canonical IR 直发 replay）
 	body, err := json.Marshal(upReq)
 	if err != nil {
 		return "", replayv1.Usage{}, &ir.Error{StatusCode: http.StatusBadRequest, Type: ir.ErrTypeUpstream, Message: "encode canonical request: " + err.Error()}

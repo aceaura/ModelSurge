@@ -460,6 +460,11 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	upReq.Model = cand.native
 	upReq.Stream = true
 	cand.ov.Apply(upReq) // 账号级请求覆盖（未配置时 no-op）
+	// 推理风格互补：四个出站各自只读 effort 或 budget 一侧，缺失的那侧若不
+	// 补全会被出站的硬编码缺省顶替（客户端要 high 拿到 4096、要 32768 拿到
+	// medium）。排在 ov.Apply 之后：账号级覆盖可能改 max_tokens 或指定某一侧，
+	// 换算要基于实发值。排在 ClampThinking 之前：补出来的预算同样要受协议夹紧。
+	thinkNotes := ir.CompleteThinking(upReq)
 	if cl, ok := cand.codec.(interface{ ClampThinking(*ir.Request) }); ok {
 		cl.ClampThinking(upReq) // 协议级预算归一/夹紧，日志反映实发值
 	}
@@ -489,7 +494,11 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	defer cancel()
 
 	// 已锁定该上游：落有损转换诊断（日志 + 响应头，须在 WriteHeader 前设置）
-	if notes := Diagnose(req, cand.codec.Name(), cand.codec.Caps()); len(notes) > 0 {
+	notes := Diagnose(req, cand.codec.Name(), cand.codec.Caps())
+	// 推理风格换算的说明来自 upReq（每个目标的 max_tokens 覆盖不同，档位换算
+	// 结果也不同），Diagnose 看的是客户端原请求，两者只能在此处汇合。
+	notes = append(notes, thinkNotes...)
+	if len(notes) > 0 {
 		log.Printf("relay: upstream %s lossy conversion: %s", cand.name, strings.Join(notes, "; "))
 		w.Header().Set("X-ModelSurge-Notes", strings.Join(notes, "; "))
 	}

@@ -19,6 +19,11 @@ import (
 func (f *Forwarder) attemptKiro(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	upReq := req.Clone()
 	upReq.Stream = true
+	// 推理风格互补。这条路径直接把 canonical IR 交给 replay，不经 codec 的
+	// EncodeRequest 也不经 ClampThinking，所以换算只能在这里做一次；
+	// kiro 的 effortFragment 优先读 Effort，客户端只给 budget 时若不补全
+	// 会落进它自己那套与 new-api 不同源的分档阈值。
+	ir.CompleteThinking(upReq)
 	body, err := json.Marshal(upReq)
 	if err != nil {
 		return false, ir.NewHTTPError(http.StatusBadRequest, "encode canonical request: "+err.Error())

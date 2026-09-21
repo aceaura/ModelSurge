@@ -224,19 +224,19 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 		"anthropic": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true, ToolResultError: true,
 			StructuredOutput: false,
-			Documents:        true, Audio: false, Video: false, Refusal: false},
+			Documents:        true, Audio: false, Video: false, Refusal: false, Citations: true},
 		"openai-chat": {ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
 			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
 			StructuredOutput: true,
-			Documents:        true, Audio: true, Video: false, Refusal: true},
+			Documents:        true, Audio: true, Video: false, Refusal: true, Citations: true},
 		"openai-responses": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
 			StructuredOutput: true,
-			Documents:        true, Audio: true, Video: false, Refusal: true},
+			Documents:        true, Audio: true, Video: false, Refusal: true, Citations: true},
 		"kiro": {ThinkingSignature: false, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: false, Sampling: false, TopK: false, ParallelToolCalls: false, ToolResultError: true,
 			StructuredOutput: false,
-			Documents:        false, Audio: false, Video: false, Refusal: false},
+			Documents:        false, Audio: false, Video: false, Refusal: false, Citations: false},
 	}
 	for name, exp := range want {
 		if got := capsOf(t, name); got != exp {

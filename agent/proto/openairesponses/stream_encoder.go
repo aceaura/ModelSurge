@@ -37,6 +37,7 @@ type encBlock struct {
 	toolID, toolName string
 	text             string // text / thinking / arguments 累积
 	sig              string
+	cites            []ir.Citation
 	closed           bool
 }
 
@@ -73,6 +74,27 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return [][]byte{e.frame(streamEvent{Type: "response.refusal.delta", OutputIndex: ev.Index, Delta: ev.Text})}, nil
 		}
 		return [][]byte{e.frame(streamEvent{Type: "response.output_text.delta", OutputIndex: ev.Index, Delta: ev.Text})}, nil
+	case ir.EvCitation:
+		b := e.blocks[ev.Index]
+		if b == nil {
+			return nil, nil
+		}
+		as := encodeAnnotations(b.text, ev.Citations)
+		if len(as) == 0 {
+			return nil, nil
+		}
+		// 同时累到块上：output_item.done 的 part 要带全量 annotations，
+		// 只发增量事件的话读 final response 的 SDK 拿不到任何引用。
+		b.cites = append(b.cites, ev.Citations...)
+		frames := make([][]byte, 0, len(as))
+		for i := range as {
+			a := as[i]
+			frames = append(frames, e.frame(streamEvent{
+				Type: "response.output_text.annotation.added", OutputIndex: ev.Index,
+				ContentIndex: 0, Annotation: &a,
+			}))
+		}
+		return frames, nil
 	case ir.EvThinkingDelta:
 		b := e.blocks[ev.Index]
 		if b == nil {
@@ -192,7 +214,8 @@ func (e *streamEncoder) doneItem(b *encBlock) *inputItem {
 			Content: marshal([]contentPart{{Type: "refusal", Refusal: b.text}})}
 	default:
 		return &inputItem{Type: "message", ID: b.itemID, Role: "assistant",
-			Content: marshal([]contentPart{{Type: "output_text", Text: b.text}})}
+			Content: marshal([]contentPart{{Type: "output_text", Text: b.text,
+				Annotations: encodeAnnotations(b.text, b.cites)}})}
 	}
 }
 

@@ -62,6 +62,13 @@ func (a *Aggregator) Feed(ev Event) bool {
 		if b := a.open[ev.Index]; b != nil && (b.Type == BlockText || b.Type == BlockRefusal) {
 			b.Text += ev.Text
 		}
+	case EvCitation:
+		// 引用随正文之后到达（Anthropic 的 citations_delta、Gemini 的
+		// groundingMetadata 都在文本之后），必须累到已开的块上——落到新块会
+		// 让客户端多出一个空文本块，而标注与正文分离后偏移量全部失效。
+		if b := a.open[ev.Index]; b != nil {
+			b.Citations = DedupeCitations(append(b.Citations, ev.Citations...))
+		}
 	case EvThinkingDelta:
 		if b := a.open[ev.Index]; b != nil && b.Type == BlockThinking && b.Thinking != nil {
 			b.Thinking.Text += ev.Text

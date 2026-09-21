@@ -255,7 +255,13 @@ func ensureThoughtSignature(c *content) {
 // EncodeResponse IR 响应 -> 非流式响应体。
 func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	c := content{Role: "model"}
-	for _, b := range resp.Content {
+	// partIndexOf 块序号 -> parts 下标：groundingSupports 用 partIndex 定位，
+	// 而块与 part 不是一一对应（thinking 也占 part，媒体块可能被跳过）。
+	partIndexOf := map[int]int{}
+	for bi, b := range resp.Content {
+		if b.Type == ir.BlockText {
+			partIndexOf[bi] = len(c.Parts)
+		}
 		switch b.Type {
 		case ir.BlockText, ir.BlockRefusal:
 			// Gemini 没有 refusal part；正文并入文本，拒绝这件事由
@@ -292,7 +298,8 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	}
 	ensureThoughtSignature(&c)
 	return json.Marshal(generateResponse{
-		Candidates:    []candidate{{Content: &c, FinishReason: UnmapFinishReason(resp.StopReason)}},
+		Candidates: []candidate{{Content: &c, FinishReason: UnmapFinishReason(resp.StopReason),
+			GroundingMetadata: encodeGrounding(resp.Content, partIndexOf)}},
 		UsageMetadata: encodeUsage(resp.Usage),
 		ModelVersion:  resp.Model,
 		ResponseID:    resp.ID,

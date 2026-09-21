@@ -34,6 +34,7 @@ func (codec) Caps() proto.Capabilities {
 		Refusal: false,
 		// 载荷里没有 response_format 之类的字段。
 		StructuredOutput: false,
+		Citations:        true, // text.citations
 	}
 }
 
@@ -155,6 +156,7 @@ func decodeBlock(b block) ir.Block {
 	case "text":
 		out.Type = ir.BlockText
 		out.Text = b.Text
+		out.Citations = decodeCitations(b.Citations)
 	case "image":
 		out.Type = ir.BlockImage
 		if b.Source != nil {
@@ -400,6 +402,7 @@ func encodeBlock(b ir.Block) block {
 	case ir.BlockText:
 		out.Type = "text"
 		out.Text = b.Text
+		out.Citations = encodeCitations(b.Text, b.Citations)
 	case ir.BlockImage:
 		out.Type = "image"
 		if b.Image != nil {

@@ -33,6 +33,7 @@ func (codec) Caps() proto.Capabilities {
 		// tool 消息里没有失败标志位，失败结果与成功结果同形。
 		ToolResultError:  false,
 		StructuredOutput: true, // response_format
+		Citations:        true, // message.annotations
 	}
 }
 
@@ -175,7 +176,7 @@ func decodeMessage(req *ir.Request, m message) {
 	case "user":
 		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: contentBlocks(m.Content)})
 	case "assistant":
-		msg := ir.Message{Role: ir.RoleAssistant, Content: contentBlocks(m.Content)}
+		msg := ir.Message{Role: ir.RoleAssistant, Content: attachCitations(contentBlocks(m.Content), decodeAnnotations(m.Annotations))}
 		if m.Refusal != "" {
 			msg.Content = append(msg.Content, ir.Block{Type: ir.BlockRefusal, Text: m.Refusal})
 		}
@@ -411,9 +412,13 @@ func encodeMessages(m ir.Message) []message {
 	case ir.RoleAssistant:
 		msg := message{Role: "assistant"}
 		var text string
+		var cites []ir.Citation
 		for _, b := range m.Content {
 			switch b.Type {
 			case ir.BlockText:
+				// 多个文本块会被拼成一条 content，块内偏移量要整体平移到拼接后
+				// 的位置，否则第二个块的引用会指到第一个块的正文里。
+				cites = append(cites, shiftCitations(b.Citations, text, b.Text)...)
 				text += b.Text
 			case ir.BlockRefusal:
 				// 历史里的拒绝也要带回：上一轮模型拒绝过是下一轮的上下文，
@@ -441,6 +446,7 @@ func encodeMessages(m ir.Message) []message {
 		if text != "" {
 			msg.Content = json.RawMessage(marshalString(text))
 		}
+		msg.Annotations = encodeAnnotations(text, cites)
 		return []message{msg}
 	case ir.RoleUser:
 		var out []message

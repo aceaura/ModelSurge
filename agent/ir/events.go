@@ -11,6 +11,7 @@ const (
 	EvThinkingDelta EventType = "thinking_delta"   // 推理增量
 	EvSigDelta      EventType = "signature_delta"  // thinking 签名增量（BlockThinking 块的 Signature）
 	EvToolInput     EventType = "input_json_delta" // tool_use 参数 JSON 增量，Text 为 JSON 片段
+	EvCitation      EventType = "citation_delta"   // 引用标注增量，Citations 为本次新增的来源
 	EvBlockStop     EventType = "block_stop"       // 内容块结束
 	EvMessageDelta  EventType = "message_delta"    // 携带 StopReason 与最终 Usage
 	EvMessageStop   EventType = "message_stop"     // 流正常结束
@@ -30,6 +31,7 @@ type Event struct {
 	MessageID        string     // EvMessageStart
 	Model            string     // EvMessageStart
 	Err              *Error     // EvError
+	Citations        []Citation // EvCitation
 	TruncatedTools   []TruncatedTool
 	TruncatedContent string
 }

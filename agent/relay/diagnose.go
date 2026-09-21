@@ -145,6 +145,14 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 			notes = append(notes, "dropped sampling parameter(s) "+strings.Join(params, ",")+": upstream payload has no such fields")
 		}
 	}
+	if !caps.Citations {
+		if n := ir.CountCitations(req); n > 0 {
+			// 历史消息里的来源标注会被抹掉。读者能做的是别指望模型在后续轮次里
+			// 复述出处——它看到的正文已经不带任何来源了。
+			notes = append(notes, fmt.Sprintf(
+				"dropped %d citation(s): upstream protocol has no slot for source annotations", n))
+		}
+	}
 	if req.TopK != nil && !caps.TopK {
 		notes = append(notes, "dropped top_k: upstream protocol has no equivalent field")
 	}

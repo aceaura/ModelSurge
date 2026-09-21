@@ -73,11 +73,19 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return nil, nil
 	case "response.content_part.added":
 		return nil, nil // block 已由 output_item.added 开启
-	case "response.output_text.delta", "response.output_text.annotation.added":
+	case "response.output_text.delta":
 		if se.Delta == "" {
 			return nil, nil
 		}
 		return []ir.Event{{Type: ir.EvTextDelta, Index: se.OutputIndex, Text: se.Delta}}, nil
+	case "response.output_text.annotation.added":
+		// 该事件没有 delta 字段：正文在 annotation 之外。此前与文本增量并档，
+		// 于是恒命中 delta 为空的分支被静默丢弃，引用一条都到不了客户端。
+		cs := decodeAnnotations([]annotation{*orEmptyAnnotation(se.Annotation)})
+		if len(cs) == 0 {
+			return nil, nil
+		}
+		return []ir.Event{{Type: ir.EvCitation, Index: se.OutputIndex, Citations: cs}}, nil
 	case "response.refusal.delta":
 		// 拒绝正文另开一块：output_item.added 只给出 message 类型，看不出这条
 		// 是拒绝，所以块在这里补开。并入既有 text 块会让客户端把拒绝渲染成

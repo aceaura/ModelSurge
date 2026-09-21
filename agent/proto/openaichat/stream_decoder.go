@@ -108,6 +108,11 @@ func (d *streamDecoder) feedDelta(m *message) []ir.Event {
 			out = append(out, ir.Event{Type: ir.EvTextDelta, Index: d.textIdx, Text: text})
 		}
 	}
+	// 标注在正文之后到达，落到已开的 text 块上。text 块还没开时丢弃：
+	// 为标注开一个空文本块会让客户端多出一段空正文，而偏移量也无从对应。
+	if cs := decodeAnnotations(m.Annotations); len(cs) > 0 && d.textIdx != -1 {
+		out = append(out, ir.Event{Type: ir.EvCitation, Index: d.textIdx, Citations: cs})
+	}
 	for _, tc := range m.ToolCalls {
 		out = append(out, d.feedToolCall(tc)...)
 	}

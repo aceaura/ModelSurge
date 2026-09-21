@@ -53,7 +53,23 @@ type block struct {
 	IsError   bool            `json:"is_error,omitempty"`
 	Thinking  string          `json:"thinking,omitempty"`
 	Signature string          `json:"signature,omitempty"`
-	CacheCtl  *cacheControl   `json:"cache_control,omitempty"`
+	// Citations text 块的来源标注（托管搜索开启时下发）。
+	Citations []citation    `json:"citations,omitempty"`
+	CacheCtl  *cacheControl `json:"cache_control,omitempty"`
+}
+
+// citation text 块的 citations 元素（web_search_result_location 形态）。
+// CitedText 与 [start, end) 索引都可能只给一半，另一半由 IR 侧反推。
+type citation struct {
+	Type           string `json:"type"`
+	URL            string `json:"url"`
+	Title          string `json:"title,omitempty"`
+	CitedText      string `json:"cited_text,omitempty"`
+	EncryptedIndex string `json:"encrypted_index,omitempty"`
+	// 不可 omitempty：start_char_index=0 是合法值（引用从正文首字起），
+	// 去掉会让客户端把起点当成缺省而落到错误位置。
+	StartCharIndex int `json:"start_char_index"`
+	EndCharIndex   int `json:"end_char_index"`
 }
 
 // webSearchResultBlock web_search_tool_result.content 的子块形态。
@@ -119,6 +135,8 @@ type delta struct {
 	StopReason  string `json:"stop_reason,omitempty"` // message_delta
 	// StopSequence stop_reason 为 stop_sequence 时命中的那条序列原文。
 	StopSequence string `json:"stop_sequence,omitempty"` // message_delta
+	// Citation citations_delta 携带的单条引用。官方一帧一条，故不是数组。
+	Citation *citation `json:"citation,omitempty"`
 }
 
 type usage struct {

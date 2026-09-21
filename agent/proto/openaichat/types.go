@@ -52,11 +52,14 @@ type message struct {
 	ReasoningContent string          `json:"reasoning_content,omitempty"`
 	// Refusal 模型拒绝作答的正文。与 Content 并列而非互斥：官方在拒绝时把
 	// content 置 null、正文放这里，漏读会让拒绝变成一条空消息。
-	Refusal    string     `json:"refusal,omitempty"`
-	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
-	media      bool       // 出站内部标记：tool 结果抽出的图片块消息（不参与 JSON）
+	Refusal string `json:"refusal,omitempty"`
+	// Annotations 正文的来源标注（托管搜索开启时下发）。官方只有
+	// type=url_citation 一种，索引口径是 content 内的字符下标。
+	Annotations []annotation `json:"annotations,omitempty"`
+	ToolCalls   []toolCall   `json:"tool_calls,omitempty"`
+	ToolCallID  string       `json:"tool_call_id,omitempty"`
+	Name        string       `json:"name,omitempty"`
+	media       bool         // 出站内部标记：tool 结果抽出的图片块消息（不参与 JSON）
 }
 
 type part struct {
@@ -82,6 +85,23 @@ type filePart struct {
 
 type imageURL struct {
 	URL string `json:"url"`
+}
+
+// annotation message.annotations 元素。官方把细节包在同名子对象里，
+// 平铺形态（少数兼容上游）在解码时一并接受。
+type annotation struct {
+	Type        string       `json:"type"` // "url_citation"
+	URLCitation *urlCitation `json:"url_citation,omitempty"`
+}
+
+type urlCitation struct {
+	URL   string `json:"url"`
+	Title string `json:"title,omitempty"`
+	// StartIndex/EndIndex 是 content 内的字符下标（半开区间）。
+	// 不可 omitempty：start_index=0 是合法值，去掉会让首字起始的引用丢失起点。
+	StartIndex int    `json:"start_index"`
+	EndIndex   int    `json:"end_index"`
+	CitedText  string `json:"cited_text,omitempty"`
 }
 
 type toolCall struct {

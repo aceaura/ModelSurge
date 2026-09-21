@@ -51,8 +51,34 @@ type Block struct {
 	Thinking            *Thinking            // BlockThinking
 	ServerToolUse       *ServerToolUse       // BlockServerToolUse
 	WebSearchToolResult *WebSearchToolResult // BlockWebSearchToolResult
-	CacheCtl            string               // 如 "ephemeral"，仅 Anthropic 方向保留
+	// Citations 本块正文引用的来源。挂在块上而非消息上，是因为三家协议都把它
+	// 绑到单个文本块：Anthropic 的 text.citations、Chat 的 message.annotations、
+	// Gemini 的 groundingSupports（按 part 定位）。偏移量也只有在单块正文内才
+	// 有意义——跨块累加会在块被重排或降级时全部错位。
+	Citations []Citation
+	CacheCtl  string // 如 "ephemeral"，仅 Anthropic 方向保留
 }
+
+// Citation 正文中一段文字的来源标注。
+//
+// Start/End 是本块 Text 内的 rune 下标（半开区间），零值表示上游没给范围。
+// 用 rune 而非 byte：Anthropic 与 OpenAI 的索引口径都是字符数，按字节算会让
+// 中文引用整体错位。CitedText 是被引用的原文片段；两者互为冗余但都要保留，
+// 因为各协议只给其中一种，缺的那种在编码时按另一种反推（参照 new-api
+// claude_messages/citations.go 与 oai_chat/citations.go 的双向互推）。
+type Citation struct {
+	URL       string
+	Title     string
+	CitedText string
+	Start     int
+	End       int
+	// EncryptedIndex Anthropic 托管搜索回传时用的不透明游标。跨协议无对应槽位，
+	// 但同协议往返必须原样带回，否则上游拒绝续话。
+	EncryptedIndex string
+}
+
+// HasRange 报告该引用是否带可用的正文范围。
+func (c Citation) HasRange() bool { return c.End > c.Start }
 
 // ServerToolUse 服务端托管工具调用（如网关代执行 web_search）。
 // 外形同 ToolUse；结果以 ToolUseID 关联到 BlockWebSearchToolResult。

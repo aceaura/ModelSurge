@@ -13,13 +13,16 @@ import (
 // 维护 block 开合不变式：delta 到达未开启的 index 时自动补 content_block_start；
 // Finish 强制关闭所有打开的 block 并补齐终止事件（幂等）。
 type streamEncoder struct {
-	open             map[int]ir.BlockType
+	open map[int]ir.BlockType
+	// text 各块已下发的正文。citations_delta 的 cited_text 与字符索引只能在
+	// 正文上反推，而引用总在正文之后到达，所以必须逐块累积。
+	text             map[int]string
 	messageDeltaSent bool
 	stopped          bool
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{open: map[int]ir.BlockType{}}
+	return &streamEncoder{open: map[int]ir.BlockType{}, text: map[int]string{}}
 }
 
 func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
@@ -34,7 +37,20 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		return [][]byte{e.blockStartFrame(ev.Index, ev.Block)}, nil
 	case ir.EvTextDelta:
 		frames := e.ensureOpen(ev.Index, ir.BlockText)
+		e.text[ev.Index] += ev.Text
 		return append(frames, e.deltaFrame(ev.Index, delta{Type: "text_delta", Text: ev.Text})), nil
+	case ir.EvCitation:
+		// 不调 ensureOpen：引用不是正文，凭它开一个新块会在客户端多出一个空
+		// 文本块，而引用本身要贴的那段正文根本不在里面。
+		if _, ok := e.open[ev.Index]; !ok {
+			return nil, nil
+		}
+		var frames [][]byte
+		for _, c := range encodeCitations(e.text[ev.Index], ev.Citations) {
+			cc := c
+			frames = append(frames, e.deltaFrame(ev.Index, delta{Type: "citations_delta", Citation: &cc}))
+		}
+		return frames, nil
 	case ir.EvThinkingDelta:
 		frames := e.ensureOpen(ev.Index, ir.BlockThinking)
 		return append(frames, e.deltaFrame(ev.Index, delta{Type: "thinking_delta", Thinking: ev.Text})), nil

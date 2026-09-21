@@ -73,6 +73,8 @@ func (Codec) Caps() proto.Capabilities {
 		// 载荷里只有 images 一个媒体数组，没有任何附件槽位。
 		Documents: false, Audio: false, Video: false,
 		Refusal: false,
+		// 载荷里没有任何来源标注的落点：正文能到，出处到不了。
+		Citations: false,
 	}
 }
 

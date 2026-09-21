@@ -932,6 +932,11 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 				ir.Event{Type: ir.EvBlockStop, Index: i})
 			continue
 		}
+		// 引用改走 EvCitation：流式协议一律在正文之后单独下发标注
+		// （Anthropic 的 citations_delta、Chat 的 delta.annotations），
+		// 留在块开始上会让编码器在正文还没发出时就写出偏移量。
+		cites := blk.Citations
+		blk.Citations = nil
 		// 全块透传（server_tool_use / web_search_tool_result 的载荷在块上）
 		events = append(events, ir.Event{Type: ir.EvBlockStart, Index: i, Block: &blk})
 		switch blk.Type {
@@ -940,6 +945,9 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 			// 这条路径只发出空的块开合，拒绝正文整条不见。
 			if blk.Text != "" {
 				events = append(events, ir.Event{Type: ir.EvTextDelta, Index: i, Text: blk.Text})
+			}
+			if len(cites) > 0 {
+				events = append(events, ir.Event{Type: ir.EvCitation, Index: i, Citations: cites})
 			}
 		case ir.BlockThinking:
 			if blk.Thinking != nil {

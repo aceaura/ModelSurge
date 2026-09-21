@@ -70,6 +70,12 @@ type Capabilities struct {
 	// OpenAI 两系的 tool / function_call_output 里没有任何这类标志：失败结果
 	// 与成功结果同形，模型只能从文本自行猜测。
 	ToolResultError bool
+
+	// Citations 正文的来源标注有槽位。Anthropic 是 text.citations，Chat 是
+	// message.annotations，Responses 是 output_text.annotations，Gemini 是
+	// groundingMetadata；只有 kiro 的载荷里没有任何位置。装不下时正文照常送达，
+	// 丢的是「这句话出自哪里」——客户端会把有出处的结论渲染成模型的自由发挥。
+	Citations bool
 }
 
 // InboundCodec 客户端入口协议编解码器。

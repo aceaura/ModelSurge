@@ -101,6 +101,12 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			return []ir.Event{{Type: ir.EvThinkingDelta, Index: se.Index, Text: se.Delta.Thinking}}, nil
 		case "signature_delta":
 			return []ir.Event{{Type: ir.EvSigDelta, Index: se.Index, Text: se.Delta.Signature}}, nil
+		case "citations_delta":
+			cs := decodeCitations([]citation{*orEmptyCitation(se.Delta.Citation)})
+			if len(cs) == 0 {
+				return nil, nil
+			}
+			return []ir.Event{{Type: ir.EvCitation, Index: se.Index, Citations: cs}}, nil
 		}
 		return nil, nil
 	case "content_block_stop":

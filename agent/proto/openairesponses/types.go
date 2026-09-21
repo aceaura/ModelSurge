@@ -78,6 +78,19 @@ type contentPart struct {
 	InputAudio *inputAudio `json:"input_audio,omitempty"`
 	// Refusal type=refusal 的正文。官方用独立字段而非 text，故不能并入上面。
 	Refusal string `json:"refusal,omitempty"`
+	// Annotations output_text 部分的来源标注（托管搜索开启时下发）。
+	Annotations []annotation `json:"annotations,omitempty"`
+}
+
+// annotation output_text.annotations 元素。Responses 的形态是平铺的
+// （不像 Chat 包在 url_citation 子对象里），索引口径同为字符下标。
+type annotation struct {
+	Type  string `json:"type"` // "url_citation"
+	URL   string `json:"url"`
+	Title string `json:"title,omitempty"`
+	// 不可 omitempty：start_index=0 是合法值。
+	StartIndex int `json:"start_index"`
+	EndIndex   int `json:"end_index"`
 }
 
 type inputAudio struct {
@@ -116,6 +129,9 @@ type streamEvent struct {
 	Part         *contentPart `json:"part,omitempty"`     // content_part.added
 	Delta        string       `json:"delta,omitempty"`    // *.delta
 	Response     *responseObj `json:"response,omitempty"` // response.created / completed / incomplete / failed
+	// Annotation response.output_text.annotation.added 携带的单条引用。
+	// 该事件没有 delta 字段，正文与标注是两个独立事件。
+	Annotation *annotation `json:"annotation,omitempty"`
 }
 
 type responseObj struct {

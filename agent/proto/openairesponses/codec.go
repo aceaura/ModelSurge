@@ -32,6 +32,7 @@ func (codec) Caps() proto.Capabilities {
 		// function_call_output 里没有失败标志位。
 		ToolResultError:  false,
 		StructuredOutput: true, // text.format
+		Citations:        true, // output_text.annotations
 	}
 }
 
@@ -189,7 +190,7 @@ func decodeParts(raw json.RawMessage) []ir.Block {
 	for _, p := range parts {
 		switch p.Type {
 		case "input_text", "output_text", "text":
-			out = append(out, ir.Block{Type: ir.BlockText, Text: p.Text})
+			out = append(out, ir.Block{Type: ir.BlockText, Text: p.Text, Citations: decodeAnnotations(p.Annotations)})
 		case "refusal":
 			// 拒绝正文是可见内容，不是元数据。漏读会让拒绝响应变成一条空消息，
 			// 客户端看到 200 + 空 content 会误判成成功（cc-switch handlers.rs
@@ -350,7 +351,8 @@ func encodeMessageItems(m ir.Message) []inputItem {
 		for _, b := range m.Content {
 			switch b.Type {
 			case ir.BlockText:
-				parts = append(parts, contentPart{Type: "output_text", Text: b.Text})
+				parts = append(parts, contentPart{Type: "output_text", Text: b.Text,
+					Annotations: encodeAnnotations(b.Text, b.Citations)})
 			case ir.BlockRefusal:
 				parts = append(parts, contentPart{Type: "refusal", Refusal: b.Text})
 			case ir.BlockThinking:

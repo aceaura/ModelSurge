@@ -20,13 +20,15 @@ type streamEncoder struct {
 	toolIdx    map[int]int  // block index -> dense tool index
 	skipIdx    map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
 	refusalIdx map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
-	nextTool   int
-	stopped    bool
+	// text 各块已下发的正文，供 annotations 反推 cited_text 与字符索引。
+	text     map[int]string
+	nextTool int
+	stopped  bool
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
 	return &streamEncoder{created: time.Now().Unix(), toolIdx: map[int]int{},
-		skipIdx: map[int]bool{}, refusalIdx: map[int]bool{}}
+		skipIdx: map[int]bool{}, refusalIdx: map[int]bool{}, text: map[int]string{}}
 }
 
 func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
@@ -65,7 +67,14 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if e.refusalIdx[ev.Index] {
 			return [][]byte{e.chunk(&message{Refusal: ev.Text}, "")}, nil
 		}
+		e.text[ev.Index] += ev.Text
 		return [][]byte{e.chunk(&message{Content: json.RawMessage(marshalString(ev.Text))}, "")}, nil
+	case ir.EvCitation:
+		as := encodeAnnotations(e.text[ev.Index], ev.Citations)
+		if len(as) == 0 {
+			return nil, nil
+		}
+		return [][]byte{e.chunk(&message{Annotations: as}, "")}, nil
 	case ir.EvThinkingDelta:
 		return [][]byte{e.chunk(&message{ReasoningContent: ev.Text}, "")}, nil
 	case ir.EvSigDelta:
@@ -168,7 +177,7 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 		if m.ReasoningContent != "" {
 			out.Content = append(out.Content, ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{Text: m.ReasoningContent}})
 		}
-		out.Content = append(out.Content, contentBlocks(m.Content)...)
+		out.Content = append(out.Content, attachCitations(contentBlocks(m.Content), decodeAnnotations(m.Annotations))...)
 		if m.Refusal != "" {
 			out.Content = append(out.Content, ir.Block{Type: ir.BlockRefusal, Text: m.Refusal})
 		}
@@ -190,9 +199,11 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	msg := &message{Role: "assistant"}
 	var text string
+	var cites []ir.Citation
 	for _, b := range resp.Content {
 		switch b.Type {
 		case ir.BlockText:
+			cites = append(cites, shiftCitations(b.Citations, text, b.Text)...)
 			text += b.Text
 		case ir.BlockRefusal:
 			msg.Refusal += b.Text
@@ -218,6 +229,7 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	if text != "" {
 		msg.Content = json.RawMessage(marshalString(text))
 	}
+	msg.Annotations = encodeAnnotations(text, cites)
 	return json.Marshal(response{
 		ID:      resp.ID,
 		Object:  "chat.completion",

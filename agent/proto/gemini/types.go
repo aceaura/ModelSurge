@@ -107,6 +107,37 @@ type generateResponse struct {
 type candidate struct {
 	Content      *content `json:"content,omitempty"`
 	FinishReason string   `json:"finishReason,omitempty"`
+	// GroundingMetadata 托管搜索的来源与正文对应关系。Gemini 不把引用挂在
+	// part 上，而是用 chunk 数组 + support 数组按字节区间指回 part 正文。
+	GroundingMetadata *groundingMetadata `json:"groundingMetadata,omitempty"`
+}
+
+type groundingMetadata struct {
+	GroundingChunks   []groundingChunk   `json:"groundingChunks,omitempty"`
+	GroundingSupports []groundingSupport `json:"groundingSupports,omitempty"`
+}
+
+type groundingChunk struct {
+	Web *groundingWeb `json:"web,omitempty"`
+}
+
+type groundingWeb struct {
+	URI   string `json:"uri,omitempty"`
+	Title string `json:"title,omitempty"`
+}
+
+type groundingSupport struct {
+	Segment               groundingSegment `json:"segment"`
+	GroundingChunkIndices []int            `json:"groundingChunkIndices,omitempty"`
+}
+
+// groundingSegment 区间口径是**字节**下标（Gemini 与 OpenAI/Anthropic 不同），
+// 转换时必须按字节而非字符换算，否则中文正文的区间整体错位。
+type groundingSegment struct {
+	PartIndex  int    `json:"partIndex,omitempty"`
+	StartIndex int    `json:"startIndex"`
+	EndIndex   int    `json:"endIndex"`
+	Text       string `json:"text,omitempty"`
 }
 
 type usageMetadata struct {

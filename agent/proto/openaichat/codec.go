@@ -26,6 +26,8 @@ func (codec) Caps() proto.Capabilities {
 		ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
 		// TopK 留假：Chat 协议原生没有这一维，不是能力缺失而是字段不存在。
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
+		// 调参维度最全的一家：penalties / seed / n / logprobs / logit_bias 全有。
+		Penalties: true, Seed: true, Candidates: true, LogProbs: true, LogitBias: true,
 		// file 是不透明容器（文档与其他都能塞），input_audio 是音频专属槽位；
 		// 视频没有任何专属入口，只能借 file 透传，故不声明能力。
 		Documents: true, Audio: true, Video: false,
@@ -81,10 +83,17 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		return nil, fmt.Errorf("openai-chat: decode request: %w", err)
 	}
 	out := &ir.Request{
-		Model:       req.Model,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		Stream:      req.Stream,
+		Model:            req.Model,
+		Temperature:      req.Temperature,
+		TopP:             req.TopP,
+		Stream:           req.Stream,
+		PresencePenalty:  req.PresencePenalty,
+		FrequencyPenalty: req.FrequencyPenalty,
+		Seed:             req.Seed,
+		Candidates:       req.N,
+		LogProbs:         req.LogProbs,
+		TopLogProbs:      req.TopLogProbs,
+		LogitBias:        req.LogitBias,
 	}
 	out.MaxTokens = req.MaxCompletionTokens
 	if out.MaxTokens == 0 {
@@ -337,11 +346,18 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		return nil, err
 	}
 	out := request{
-		Model:       r.Model,
-		MaxTokens:   r.MaxTokens,
-		Temperature: r.Temperature,
-		TopP:        r.TopP,
-		Stream:      r.Stream,
+		Model:            r.Model,
+		MaxTokens:        r.MaxTokens,
+		Temperature:      r.Temperature,
+		TopP:             r.TopP,
+		Stream:           r.Stream,
+		PresencePenalty:  r.PresencePenalty,
+		FrequencyPenalty: r.FrequencyPenalty,
+		Seed:             r.Seed,
+		N:                r.Candidates,
+		LogProbs:         r.LogProbs,
+		TopLogProbs:      r.TopLogProbs,
+		LogitBias:        r.LogitBias,
 	}
 	if len(r.StopSequences) == 1 {
 		out.Stop = r.StopSequences[0]

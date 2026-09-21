@@ -27,6 +27,8 @@ type request struct {
 	Text               *textConfig     `json:"text,omitempty"`
 	Metadata           json.RawMessage `json:"metadata,omitempty"`
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	// TopLogProbs 兼任开关与档位：Responses 没有独立的 logprobs 布尔。
+	TopLogProbs *int `json:"top_logprobs,omitempty"`
 }
 
 type reasoning struct {

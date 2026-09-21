@@ -73,6 +73,14 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		out.TopP = gc.TopP
 		out.TopK = gc.TopK
 		out.StopSequences = gc.StopSequences
+		out.PresencePenalty = gc.PresencePenalty
+		out.FrequencyPenalty = gc.FrequencyPenalty
+		out.Seed = gc.Seed
+		out.Candidates = gc.CandidateCount
+		// Gemini 的 responseLogprobs 是开关、logprobs 是档位，
+		// 分别对应 IR 的 LogProbs 与 TopLogProbs。
+		out.LogProbs = gc.ResponseLogprobs
+		out.TopLogProbs = gc.Logprobs
 		if tc := gc.ThinkingConfig; tc != nil {
 			// thinkingBudget=0 是官方的「关闭思考」，-1 是动态思考；
 			// 一律 Enabled=true 会把显式关闭翻成开启。

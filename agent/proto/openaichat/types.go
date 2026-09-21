@@ -27,6 +27,15 @@ type request struct {
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
 	ResponseFormat      *responseFormat `json:"response_format,omitempty"`
 	Metadata            json.RawMessage `json:"metadata,omitempty"`
+	// 调参维度全用指针：penalty 的 0 是「不惩罚」、seed 的 0 是一个具体种子、
+	// logprobs 的 false 是「明确不要」，与「没给」语义不同。
+	PresencePenalty  *float64           `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64           `json:"frequency_penalty,omitempty"`
+	Seed             *int               `json:"seed,omitempty"`
+	N                *int               `json:"n,omitempty"`
+	LogProbs         *bool              `json:"logprobs,omitempty"`
+	TopLogProbs      *int               `json:"top_logprobs,omitempty"`
+	LogitBias        map[string]float64 `json:"logit_bias,omitempty"`
 }
 
 // responseFormat 结构化输出：type 为 text / json_object / json_schema。

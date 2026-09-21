@@ -76,6 +76,33 @@ type Capabilities struct {
 	// groundingMetadata；只有 kiro 的载荷里没有任何位置。装不下时正文照常送达，
 	// 丢的是「这句话出自哪里」——客户端会把有出处的结论渲染成模型的自由发挥。
 	Citations bool
+
+	// 以下是调参维度的承载能力。为假时照常发请求、只出诊断说明：拒绝会把一个
+	// 能用的回答换成零回答，而目标协议是调度层按策略选的、客户端无从预知，
+	// 让它为一个自己控制不了的路由结果吃 400，故障归因方向是错的。
+
+	// Penalties presence_penalty / frequency_penalty。Chat 与 Gemini 有，
+	// Anthropic、Responses 与 kiro 的载荷里没有这一维。
+	Penalties bool
+
+	// Seed 确定性种子。只有 Chat 与 Gemini 有。
+	Seed bool
+
+	// Candidates 多候选（Chat 的 n、Gemini 的 candidateCount）。
+	// 装不下时上游只回一路，客户端按数组取第二个候选会越界。
+	Candidates bool
+
+	// LogProbs 对数概率。Chat 有独立开关 + top_logprobs，Responses 只有
+	// top_logprobs，Gemini 是 responseLogprobs + logprobs。
+	LogProbs bool
+
+	// LogProbsViaTopN 为真表示本协议没有独立的 logprobs 开关，top_logprobs
+	// 兼任开关与档位（Responses 是这样）。此时客户端只给 logprobs 会什么都
+	// 拿不到，出站须补一个档位——目标满足得了的请求不该因字段形状不同而落空。
+	LogProbsViaTopN bool
+
+	// LogitBias token 偏置。只有 Chat 有这一维。
+	LogitBias bool
 }
 
 // InboundCodec 客户端入口协议编解码器。

@@ -26,6 +26,9 @@ func (codec) Caps() proto.Capabilities {
 		ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 		// TopK 留假：Responses 协议原生没有这一维。
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
+		// 调参维度只有对数概率一项，且没有独立开关：top_logprobs 兼任。
+		// penalties / seed / n / logit_bias 在这一族的请求体里不存在。
+		LogProbs: true, LogProbsViaTopN: true,
 		// input_file 是不透明容器，input_audio 是音频专属槽位；无视频入口。
 		Documents: true, Audio: true, Video: false,
 		Refusal: true, // type=refusal content part
@@ -49,6 +52,13 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
 		Stream:      req.Stream,
+		TopLogProbs: req.TopLogProbs,
+	}
+	// top_logprobs 在这一族兼任开关：给了档位就等于要对数概率。
+	// 不顺手置上 LogProbs，转去 Chat 时只带档位不带开关，上游什么都不会算。
+	if req.TopLogProbs != nil {
+		yes := true
+		out.LogProbs = &yes
 	}
 	if req.Instructions != "" {
 		out.System = append(out.System, ir.Block{Type: ir.BlockText, Text: req.Instructions})
@@ -287,6 +297,13 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		Temperature:     r.Temperature,
 		TopP:            r.TopP,
 		Stream:          r.Stream,
+		TopLogProbs:     r.TopLogProbs,
+	}
+	// 客户端只给了开关没给档位：这一族没有独立开关，不补档位就什么都拿不到。
+	// 目标协议满足得了的请求不该因为字段形状不同而落空（Caps.LogProbsViaTopN）。
+	if out.TopLogProbs == nil && r.LogProbs != nil && *r.LogProbs {
+		n := 1
+		out.TopLogProbs = &n
 	}
 	out.Instructions = joinSystem(r.System)
 	var items []inputItem

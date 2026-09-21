@@ -317,6 +317,22 @@ type Request struct {
 	// input 含 compaction_trigger 条目。客户端自述压缩语义（如 Codex CLI），
 	// 原模型失败时 Agent 可换 compress_model 兜底（第一档）。
 	Compact bool
+
+	// 以下调参维度一律用指针/空值表达「客户端没给」。不能用零值表达：
+	// penalty 的 0 是「不惩罚」、seed 的 0 是一个具体种子、logprobs 的
+	// false 是「明确不要」——都与「没提」不同，混起来就是替客户端表态。
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
+	Seed             *int
+	// Candidates 候选数（Chat 的 n、Gemini 的 candidateCount）。
+	Candidates *int
+	// LogProbs 是否要对数概率；TopLogProbs 每个 token 返回几个候选。
+	// 两维分开：Chat 有独立开关，Responses 只有 top_logprobs 兼任开关。
+	LogProbs    *bool
+	TopLogProbs *int
+	// LogitBias token id -> 偏置。键是 token id，词表随模型而变，跨模型
+	// 重映射没有正确答案，所以只在目标协议有这一维时原样透传，否则报丢弃。
+	LogitBias map[string]float64
 }
 
 // Clone 深拷贝请求，用于重试隔离（参考 new-api 的 DeepCopy 惯例）。

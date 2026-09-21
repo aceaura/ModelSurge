@@ -156,6 +156,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	if req.TopK != nil && !caps.TopK {
 		notes = append(notes, "dropped top_k: upstream protocol has no equivalent field")
 	}
+	notes = append(notes, samplingNotes(req, caps)...)
 	if req.ResponseFormat != nil && !caps.StructuredOutput {
 		// 这一条比别的更要紧：客户端会直接 JSON.parse 响应，拿到自由文本就是
 		// 硬失败而非降级。读者能做的是把 schema 写进 system 提示自行约束。
@@ -191,6 +192,38 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	}
 	if len(unmapped) > 0 {
 		notes = append(notes, "no cross-protocol mapping for hosted tool(s) "+strings.Join(unmapped, ","))
+	}
+	return notes
+}
+
+// samplingNotes 调参维度装不下时的说明。这一批一律只报不拒：拒绝会把一个能用
+// 的回答换成零回答，而上游协议是调度层按策略选的、客户端无从预知，让它为一个
+// 自己控制不了的路由结果吃 400，故障归因方向是错的。要强制可用 request_overrides。
+//
+// 措辞要说清后果而不只是字段名：读者看到 "dropped n" 读不出「按数组取第二个
+// 候选会越界」，而那才是它要改的代码。
+func samplingNotes(req *ir.Request, caps proto.Capabilities) []string {
+	var notes []string
+	if !caps.Penalties {
+		if req.PresencePenalty != nil {
+			notes = append(notes, "dropped presence_penalty: upstream protocol has no penalty parameter")
+		}
+		if req.FrequencyPenalty != nil {
+			notes = append(notes, "dropped frequency_penalty: upstream protocol has no penalty parameter")
+		}
+	}
+	if req.Seed != nil && !caps.Seed {
+		notes = append(notes, "dropped seed: upstream protocol has no seed parameter, results are not reproducible")
+	}
+	if req.Candidates != nil && !caps.Candidates {
+		notes = append(notes, "dropped n: upstream protocol has no multi-candidate parameter, only one candidate will be returned")
+	}
+	if !caps.LogProbs && (req.LogProbs != nil || req.TopLogProbs != nil) {
+		notes = append(notes, "dropped logprobs: upstream protocol has no log probability parameter")
+	}
+	if len(req.LogitBias) > 0 && !caps.LogitBias {
+		// 不翻译：偏置的键是 token id，词表随模型而变，跨模型重映射没有正确答案。
+		notes = append(notes, "dropped logit_bias: upstream protocol has no logit bias parameter")
 	}
 	return notes
 }

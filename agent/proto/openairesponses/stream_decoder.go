@@ -179,7 +179,7 @@ func mapIncompleteReason(r *responseObj) ir.StopReason {
 // 知道输出不完整（对齐 chat 侧把它映射成 length 的判据）。
 func unmapIncompleteReason(s ir.StopReason) string {
 	switch s {
-	case ir.StopMaxTokens, ir.StopPauseTurn:
+	case ir.StopMaxTokens, ir.StopPauseTurn, ir.StopAborted:
 		return "max_output_tokens"
 	case ir.StopRefusal:
 		return "content_filter"
@@ -210,9 +210,9 @@ func (d *streamDecoder) Finish() []ir.Event {
 		return nil
 	}
 	d.finished = true
-	if d.stopReason == "" {
-		d.stopReason = ir.StopEndTurn
-	}
+	// 走到这里必然没收到 response.completed / incomplete / failed——那三个分支
+	// 都会置 finished，上面已提前返回。所以停止原因只能是中断档。
+	d.stopReason = ir.StopAborted
 	return d.terminalEvents()
 }
 

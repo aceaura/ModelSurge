@@ -96,9 +96,11 @@ func (e *streamEncoder) Finish() [][]byte {
 		delete(e.open, i)
 	}
 	if !e.messageDeltaSent {
+		// 走到这里说明上游没给出终止事件（EvMessageDelta 会置位）。按中断档
+		// 收尾，而不是伪造 end_turn 让客户端以为模型说完了。
 		out = append(out, sseFrame("message_delta", marshal(streamEvent{
 			Type:  "message_delta",
-			Delta: &delta{StopReason: "end_turn"},
+			Delta: &delta{StopReason: UnmapStopReason(ir.StopAborted)},
 		})))
 		e.messageDeltaSent = true
 	}

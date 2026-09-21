@@ -500,6 +500,11 @@ func (d *streamDecoder) Finish() []ir.Event {
 		stop = ir.StopMaxTokens // 无完成信号且有正文：上游截断
 	case len(d.tools) > 0:
 		stop = ir.StopToolUse
+	case !d.usageSeen && d.contextPct == nil:
+		// 没有任何完成信号：流在上游把话说完之前就断了。报 end_turn 会让客户端
+		// 把半截（或空）回答当成模型的最终答复，而正确动作是重试。
+		// 有正文的截断已被上面两档接走，走到这里正文必然为空。
+		stop = ir.StopAborted
 	}
 
 	u := ir.Usage{

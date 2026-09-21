@@ -133,7 +133,8 @@ func (e *streamEncoder) Finish() [][]byte {
 	}
 	if !e.finished {
 		e.finished = true
-		out = append(out, e.finishChunk(ir.StopEndTurn, nil)...)
+		// 上游没给终止 chunk 就断了：按中断档收尾，不伪造 STOP。
+		out = append(out, e.finishChunk(ir.StopAborted, nil)...)
 	}
 	return out
 }

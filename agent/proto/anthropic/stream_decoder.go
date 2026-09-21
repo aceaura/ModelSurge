@@ -41,6 +41,10 @@ func UnmapStopReason(s ir.StopReason) string {
 		return "stop_sequence"
 	case ir.StopPauseTurn:
 		return "pause_turn"
+	case ir.StopAborted:
+		// Anthropic 没有「中断」档。取 max_tokens 而非 end_turn：两者都表示
+		// 输出不完整，客户端至少不会把半截结果当成最终答案（end_turn 会）。
+		return "max_tokens"
 	default:
 		return "end_turn"
 	}
@@ -146,7 +150,9 @@ func (d *streamDecoder) Finish() []ir.Event {
 	var out []ir.Event
 	if d.started && !d.messageDeltaSent {
 		u := d.usage
-		out = append(out, ir.Event{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn, Usage: &u})
+		// 上游一个 message_delta 都没给就断了：这是异常中断，不是说完了。
+		// 报 end_turn 会让客户端把半截输出当成最终答案而不重试。
+		out = append(out, ir.Event{Type: ir.EvMessageDelta, StopReason: ir.StopAborted, Usage: &u})
 	}
 	if d.started && !d.stopped {
 		out = append(out, ir.Event{Type: ir.EvMessageStop})

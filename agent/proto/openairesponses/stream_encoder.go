@@ -255,6 +255,10 @@ func (e *streamEncoder) Finish() [][]byte {
 		out = append(out, e.blockStop(idx)...)
 	}
 	if !e.completed {
+		// 唯一置 stopReason 的地方是 EvMessageDelta，而它同时发出终止帧置
+		// completed——所以走到这里必然没收到终止事件，流是被中断的。留空会让
+		// completedFrame 发出 response.completed，客户端读成正常完成。
+		e.stopReason = ir.StopAborted
 		out = append(out, e.completedFrame())
 	}
 	return out

@@ -118,8 +118,10 @@ func (e *streamEncoder) Finish() [][]byte {
 		return nil
 	}
 	e.stopped = true
+	// 上游没走到 message_stop 就断了：按中断档收尾（"stop" 会让客户端把
+	// 半截输出当成最终答案而不重试）。
 	return [][]byte{
-		e.chunk(&message{}, "stop"),
+		e.chunk(&message{}, UnmapFinishReason(ir.StopAborted)),
 		[]byte("data: [DONE]\n\n"),
 	}
 }

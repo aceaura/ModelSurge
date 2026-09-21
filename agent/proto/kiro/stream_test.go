@@ -625,9 +625,11 @@ func TestDecoder_BracketToolCallsExtracted(t *testing.T) {
 	t.Fatalf("bracket tool call not extracted: %v (stop_reason tool_use=%v)", evs, found)
 }
 
+// 空流：上游一个字节都没说就关了。骨架仍要发全（下游编码器依赖成对事件），
+// 但停止原因必须是中断档——报 end_turn 会让客户端把空回答当成最终答复。
 func TestDecoder_EmptyStreamProducesSkeleton(t *testing.T) {
 	evs := summary(driveDecoder(t))
-	wantEvents(t, evs, "start", "delta:end_turn", "stop")
+	wantEvents(t, evs, "start", "delta:aborted", "stop")
 }
 
 func TestDecoder_FinishIdempotent(t *testing.T) {

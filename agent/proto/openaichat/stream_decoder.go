@@ -194,8 +194,13 @@ func (d *streamDecoder) Finish() []ir.Event {
 	}
 	d.openBlocks = nil
 	u := d.usage
+	// 一个 finish_reason 都没收到就断了：异常中断，不能报成 stop 档。
+	stop := ir.StopAborted
+	if d.gotFinish {
+		stop = MapFinishReason(d.finishReason)
+	}
 	out = append(out,
-		ir.Event{Type: ir.EvMessageDelta, StopReason: MapFinishReason(d.finishReason), Usage: &u},
+		ir.Event{Type: ir.EvMessageDelta, StopReason: stop, Usage: &u},
 		ir.Event{Type: ir.EvMessageStop},
 	)
 	return out

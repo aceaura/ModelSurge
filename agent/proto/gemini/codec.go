@@ -25,9 +25,9 @@ func UnmapFinishReason(s ir.StopReason) string {
 		return "MAX_TOKENS"
 	case ir.StopRefusal:
 		return "SAFETY"
-	case ir.StopPauseTurn:
-		// Gemini 没有续跑语义。与 chat 侧同理取 MAX_TOKENS 而非 STOP：
-		// 宁可让客户端知道输出不完整，也别让它把半截结果当成说完了。
+	case ir.StopPauseTurn, ir.StopAborted:
+		// Gemini 既没有续跑也没有中断语义。与 chat 侧同理取 MAX_TOKENS 而非
+		// STOP：宁可让客户端知道输出不完整，也别让它把半截结果当成说完了。
 		return "MAX_TOKENS"
 	default: // end_turn / tool_use / stop_sequence 都以 STOP 收尾
 		return "STOP"

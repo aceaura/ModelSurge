@@ -59,4 +59,20 @@ const (
 	// StopPauseTurn Anthropic 的长任务暂停：一轮没做完，客户端应把当前对话
 	// 原样回传以继续。塌成 end_turn 会让客户端把半截结果当成最终答案。
 	StopPauseTurn StopReason = "pause_turn"
+	// StopAborted 流在上游给出任何完成信号之前就断了（连接被切、读出错、
+	// 上游直接关流）。没有任何协议有原生的「中断」档，但也不能塌成 end_turn：
+	// 客户端看到干净收尾就会把半截输出当成最终答案提交，而正确动作是重试。
+	// 各协议按「输出不完整」的最近档表达（max_tokens / length / MAX_TOKENS /
+	// incomplete），语义偏差由诊断说明。
+	StopAborted StopReason = "aborted"
 )
+
+// Incomplete 报告该停止原因是否意味着输出不完整——客户端不应把正文当成
+// 最终答案。供编码器与诊断统一判据，避免各处各写一份枚举清单。
+func (s StopReason) Incomplete() bool {
+	switch s {
+	case StopMaxTokens, StopPauseTurn, StopAborted:
+		return true
+	}
+	return false
+}

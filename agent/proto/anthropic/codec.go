@@ -401,11 +401,7 @@ func encodeCacheCtl(s string) *cacheControl {
 // ---- 错误渲染 ----
 
 func (codec) RenderError(e *ir.Error) (int, []byte) {
-	status := e.StatusCode
-	if status == 0 {
-		status = 500
-	}
-	return status, marshal(errorResponse{
+	return e.HTTPStatus(), marshal(errorResponse{
 		Type:  "error",
 		Error: errorBody{Type: e.Type, Message: e.Message},
 	})

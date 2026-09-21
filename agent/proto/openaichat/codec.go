@@ -492,11 +492,7 @@ func encodeToolChoice(tc *ir.ToolChoice) any {
 // ---- 错误渲染 ----
 
 func (codec) RenderError(e *ir.Error) (int, []byte) {
-	status := e.StatusCode
-	if status == 0 {
-		status = 500
-	}
-	return status, marshal(errorResponse{Error: errorBody{Type: e.Type, Code: e.Code, Message: e.Message}})
+	return e.HTTPStatus(), marshal(errorResponse{Error: errorBody{Type: e.Type, Code: e.Code, Message: e.Message}})
 }
 
 func (codec) RenderStreamError(e *ir.Error) []byte {

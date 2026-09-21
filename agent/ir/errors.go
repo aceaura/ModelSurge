@@ -50,6 +50,35 @@ func ClassifyStatus(status int) (typ string, retryable bool) {
 	}
 }
 
+// HTTPStatus 取错误的对客户端状态码。StatusCode 为零时（流内错误一律如此，
+// 见 relay 里以 EvError 形式构造的那几处）按 Type 反推，而不是一律 500：
+// 内容过滤与非法请求不可重试，退化成 500 会让客户端与 SDK 把它当成瞬时故障
+// 反复重试，每次都被同样拒绝。
+func (e *Error) HTTPStatus() int {
+	if e == nil {
+		return 500
+	}
+	if e.StatusCode != 0 {
+		return e.StatusCode
+	}
+	switch e.Type {
+	case ErrTypeInvalidReq, ErrTypeContentFilter:
+		return 400
+	case ErrTypeAuth:
+		return 401
+	case ErrTypePermission:
+		return 403
+	case ErrTypeNotFound:
+		return 404
+	case ErrTypeRateLimit:
+		return 429
+	case ErrTypeOverloaded:
+		return 503
+	default:
+		return 500
+	}
+}
+
 // NewHTTPError 由状态码与消息构造统一错误。
 func NewHTTPError(status int, message string) *Error {
 	typ, retry := ClassifyStatus(status)

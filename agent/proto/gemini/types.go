@@ -122,6 +122,17 @@ type geminiError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Status  string `json:"status"`
+	// Details 规范错误类型与上游错误码的落点：三字段的错误体装不下它们，
+	// 而 status 是从状态码反推的粗粒度值，无法区分过滤拒绝与上游抖动。
+	Details []errorDetail `json:"details,omitempty"`
+}
+
+// errorDetail google.rpc.ErrorInfo 外形。
+type errorDetail struct {
+	Type     string            `json:"@type"`
+	Reason   string            `json:"reason,omitempty"`
+	Domain   string            `json:"domain,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 func marshal(v any) []byte {

@@ -254,23 +254,29 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 // ---- 错误渲染 ----
 
 func (codec) RenderError(e *ir.Error) (int, []byte) {
-	status := e.StatusCode
-	if status == 0 {
-		status = 500
-	}
-	return status, marshal(errorResponse{Error: &geminiError{
-		Code: status, Message: e.Message, Status: rpcStatus(status),
-	}})
+	status := e.HTTPStatus()
+	return status, marshal(errorResponse{Error: geminiErrorOf(e, status)})
 }
 
 func (codec) RenderStreamError(e *ir.Error) []byte {
-	status := e.StatusCode
-	if status == 0 {
-		status = 500
+	return sseFrame(marshal(errorResponse{Error: geminiErrorOf(e, e.HTTPStatus())}))
+}
+
+// geminiErrorOf Gemini 的错误体只有 code/message/status 三个字段，没有放
+// 规范类型与上游错误码的位置。两者进 details：Google 的错误契约就是把
+// 额外结构塞在这里，客户端（尤其重试逻辑）需要它们区分「过滤拒绝」与
+// 「上游抖动」，塞不进去就只能看 status，而 status 是从状态码反推的粗粒度值。
+func geminiErrorOf(e *ir.Error, status int) *geminiError {
+	out := &geminiError{Code: status, Message: e.Message, Status: rpcStatus(status)}
+	if e.Type == "" && e.Code == "" {
+		return out
 	}
-	return sseFrame(marshal(errorResponse{Error: &geminiError{
-		Code: status, Message: e.Message, Status: rpcStatus(status),
-	}}))
+	d := errorDetail{Type: "type.googleapis.com/google.rpc.ErrorInfo", Domain: "modelsurge.agent", Reason: e.Type}
+	if e.Code != "" {
+		d.Metadata = map[string]string{"upstream_code": e.Code}
+	}
+	out.Details = []errorDetail{d}
+	return out
 }
 
 // rpcStatus HTTP 状态码 -> Google RPC status 名。

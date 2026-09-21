@@ -30,12 +30,8 @@ type kiroErrorResponse struct {
 
 // RenderError 按通用 JSON 外形渲染错误。
 func (Codec) RenderError(e *ir.Error) (int, []byte) {
-	status := e.StatusCode
-	if status == 0 {
-		status = 500
-	}
 	body := kiroErrorResponse{Error: kiroErrorBody{Type: e.Type, Code: e.Code, Message: e.Message}}
-	return status, marshalJSON(body)
+	return e.HTTPStatus(), marshalJSON(body)
 }
 
 // RenderStreamError 渲染流内错误事件（SSE 字节）。

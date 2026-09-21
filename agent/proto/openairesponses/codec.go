@@ -392,11 +392,7 @@ func nativeHosted(canonical string) string {
 // ---- 错误渲染 ----
 
 func (codec) RenderError(e *ir.Error) (int, []byte) {
-	status := e.StatusCode
-	if status == 0 {
-		status = 500
-	}
-	return status, marshal(errorResponse{Error: errorBody{Code: e.Code, Type: e.Type, Message: e.Message}})
+	return e.HTTPStatus(), marshal(errorResponse{Error: errorBody{Code: e.Code, Type: e.Type, Message: e.Message}})
 }
 
 func (codec) RenderStreamError(e *ir.Error) []byte {

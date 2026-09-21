@@ -27,7 +27,8 @@ func (codec) Caps() proto.Capabilities {
 		// TopK 留假：Responses 协议原生没有这一维。
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
 		// function_call_output 里没有失败标志位。
-		ToolResultError: false,
+		ToolResultError:  false,
+		StructuredOutput: true, // text.format
 	}
 }
 
@@ -81,7 +82,42 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	if req.Reasoning != nil && req.Reasoning.Effort != "" {
 		out.Thinking = &ir.ThinkingConfig{Enabled: req.Reasoning.Effort != "none" && req.Reasoning.Effort != "minimal", Effort: req.Reasoning.Effort}
 	}
+	if req.Text != nil {
+		out.ResponseFormat = decodeResponseFormat(req.Text.Format)
+	}
 	return out, nil
+}
+
+// decodeResponseFormat text.format -> IR。type:"text" 是默认值，
+// 等同于「没提要求」，不进 IR。
+func decodeResponseFormat(f *textFormat) *ir.ResponseFormat {
+	if f == nil || f.Type == "" || f.Type == "text" {
+		return nil
+	}
+	return &ir.ResponseFormat{
+		Name:   f.Name,
+		Schema: f.Schema,
+		Strict: f.Strict != nil && *f.Strict,
+	}
+}
+
+// encodeResponseFormat IR -> text.format。无 schema 时退回 json_object。
+func encodeResponseFormat(f *ir.ResponseFormat) *textConfig {
+	if f == nil {
+		return nil
+	}
+	if !f.IsSchema() {
+		return &textConfig{Format: &textFormat{Type: "json_object"}}
+	}
+	out := &textFormat{Type: "json_schema", Name: f.Name, Schema: f.Schema}
+	if out.Name == "" {
+		out.Name = "response" // name 是 json_schema 的必填字段
+	}
+	if f.Strict {
+		strict := true
+		out.Strict = &strict
+	}
+	return &textConfig{Format: out}
 }
 
 func decodeItem(req *ir.Request, it inputItem) {
@@ -248,6 +284,7 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		// 要求上游回传 encrypted_content 以便还原 thinking 签名（对齐 sub2api）
 		out.Include = append(out.Include, "reasoning.encrypted_content")
 	}
+	out.Text = encodeResponseFormat(r.ResponseFormat)
 	// 订阅端点（Codex 形态）要求 store=false；对官方 API 无害
 	f := false
 	out.Store = &f

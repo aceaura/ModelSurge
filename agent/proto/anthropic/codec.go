@@ -28,6 +28,8 @@ func (codec) Caps() proto.Capabilities {
 		ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 		ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true,
 		ToolResultError: true,
+		// 载荷里没有 response_format 之类的字段。
+		StructuredOutput: false,
 	}
 }
 

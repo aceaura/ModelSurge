@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -219,13 +220,17 @@ func TestDiagnoseToolResultSuccessNotReported(t *testing.T) {
 func TestOutboundCapabilityMatrix(t *testing.T) {
 	want := map[string]proto.Capabilities{
 		"anthropic": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
-			ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true, ToolResultError: true},
+			ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true, ToolResultError: true,
+			StructuredOutput: false},
 		"openai-chat": {ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
-			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false},
+			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
+			StructuredOutput: true},
 		"openai-responses": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
-			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false},
+			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
+			StructuredOutput: true},
 		"kiro": {ThinkingSignature: false, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
-			ImageURLs: false, Sampling: false, TopK: false, ParallelToolCalls: false, ToolResultError: true},
+			ImageURLs: false, Sampling: false, TopK: false, ParallelToolCalls: false, ToolResultError: true,
+			StructuredOutput: false},
 	}
 	for name, exp := range want {
 		if got := capsOf(t, name); got != exp {
@@ -235,5 +240,61 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 	// codex 是 openai-responses 的同形别名，能力必须一致
 	if capsOf(t, "codex") != want["openai-responses"] {
 		t.Error("codex 别名的能力声明与 openai-responses 不一致")
+	}
+}
+
+// 结构化输出装不下时必须报出来：客户端会直接 JSON.parse 响应，拿到自由文本
+// 是硬失败。anthropic 与 kiro 的载荷里没有这一维，OpenAI 两系有，不得误报。
+func TestDiagnoseStructuredOutputPerProtocol(t *testing.T) {
+	const want = "no structured output field"
+	for name, shouldWarn := range map[string]bool{
+		"anthropic": true, "kiro": true,
+		"openai-chat": false, "openai-responses": false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			notes := strings.Join(Diagnose(formatReq(true), name, capsOf(t, name)), "; ")
+			if got := strings.Contains(notes, want); got != shouldWarn {
+				t.Errorf("含结构化输出诊断 = %v, want %v；notes=%q", got, shouldWarn, notes)
+			}
+		})
+	}
+}
+
+// 两档语义分开报：带 schema 与只要求合法 JSON，读者的补救动作不同
+// （前者要把 schema 写进提示，后者只需一句话要求输出 JSON）。
+func TestDiagnoseDistinguishesSchemaFromJSONMode(t *testing.T) {
+	withSchema := strings.Join(Diagnose(formatReq(true), "anthropic", capsOf(t, "anthropic")), "; ")
+	if !strings.Contains(withSchema, "JSON schema constraint") {
+		t.Errorf("带 schema 未报成 schema 约束：%q", withSchema)
+	}
+	jsonMode := strings.Join(Diagnose(formatReq(false), "anthropic", capsOf(t, "anthropic")), "; ")
+	if !strings.Contains(jsonMode, "JSON output mode") {
+		t.Errorf("无 schema 未报成 JSON 模式：%q", jsonMode)
+	}
+	if strings.Contains(jsonMode, "schema") {
+		t.Errorf("无 schema 却报成 schema 约束：%q", jsonMode)
+	}
+}
+
+// 客户端没要求结构化输出时不得报：恒报会让这条诊断退化成噪声。
+func TestDiagnoseNoStructuredOutputNotReported(t *testing.T) {
+	req := formatReq(true)
+	req.ResponseFormat = nil
+	notes := strings.Join(Diagnose(req, "anthropic", capsOf(t, "anthropic")), "; ")
+	if strings.Contains(notes, "structured output") {
+		t.Errorf("无诉求不应触发诊断：%q", notes)
+	}
+}
+
+func formatReq(withSchema bool) *ir.Request {
+	f := &ir.ResponseFormat{Name: "weather"}
+	if withSchema {
+		f.Schema = json.RawMessage(`{"type":"object"}`)
+	}
+	return &ir.Request{
+		Model:          "m",
+		MaxTokens:      100,
+		Messages:       []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+		ResponseFormat: f,
 	}
 }

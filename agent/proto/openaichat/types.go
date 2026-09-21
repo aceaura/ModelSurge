@@ -25,7 +25,20 @@ type request struct {
 	ToolChoice          any             `json:"tool_choice,omitempty"` // string 或 object
 	ParallelToolCalls   *bool           `json:"parallel_tool_calls,omitempty"`
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
+	ResponseFormat      *responseFormat `json:"response_format,omitempty"`
 	Metadata            json.RawMessage `json:"metadata,omitempty"`
+}
+
+// responseFormat 结构化输出：type 为 text / json_object / json_schema。
+type responseFormat struct {
+	Type       string      `json:"type"`
+	JSONSchema *jsonSchema `json:"json_schema,omitempty"`
+}
+
+type jsonSchema struct {
+	Name   string          `json:"name,omitempty"`
+	Strict *bool           `json:"strict,omitempty"`
+	Schema json.RawMessage `json:"schema,omitempty"`
 }
 
 type streamOptions struct {

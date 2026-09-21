@@ -68,6 +68,8 @@ func (Codec) Caps() proto.Capabilities {
 		ThinkingSignature: false, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 		ImageURLs: false, Sampling: false, TopK: false, ParallelToolCalls: false,
 		ToolResultError: true, // status=error
+		// 载荷里没有结构化输出约束的落点。
+		StructuredOutput: false,
 	}
 }
 

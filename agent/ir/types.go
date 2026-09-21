@@ -160,6 +160,30 @@ type ThinkingConfig struct {
 	HideThoughts bool
 }
 
+// ResponseFormat 结构化输出约束。两档语义：JSON 模式（只要求合法 JSON）与
+// JSON Schema（要求符合给定 schema）。Schema 为空即前者。
+//
+// 各协议形态：Chat 的 response_format、Responses 的 text.format、
+// Gemini 的 generationConfig.responseMimeType + responseSchema。
+// Anthropic 与 kiro 原生没有这一维——官方做法是把 schema 塞进 system 提示或
+// 声明一个单工具后强制调用，两者都是改写请求语义，不在本层做。
+type ResponseFormat struct {
+	// Name schema 名称（OpenAI json_schema.name），无对应形态的协议会丢掉。
+	Name string
+	// Schema JSON Schema 原文；为空表示只要求「输出合法 JSON」。
+	Schema json.RawMessage
+	// Strict OpenAI 的 json_schema.strict：要求严格符合 schema。
+	// 只有 OpenAI 两系有这一维，Gemini 的 responseSchema 恒为严格语义。
+	Strict bool
+}
+
+// IsSchema 是否带 schema（区别于只要求合法 JSON 的 JSON 模式）。
+// 同时排掉 "null"：Clone 走 JSON 往返，空 RawMessage 会被序列化成 null 再读回
+// 成 4 字节，只看长度会把「没给 schema」判成「给了」，进而写出 schema:null。
+func (f *ResponseFormat) IsSchema() bool {
+	return f != nil && len(f.Schema) > 0 && string(f.Schema) != "null"
+}
+
 // Request 统一请求模型。
 type Request struct {
 	Model         string
@@ -174,7 +198,10 @@ type Request struct {
 	StopSequences []string
 	Stream        bool
 	Thinking      *ThinkingConfig
-	Metadata      map[string]string
+	// ResponseFormat 结构化输出约束（JSON 模式 / JSON Schema）。
+	// nil = 客户端没要求，自由文本。
+	ResponseFormat *ResponseFormat
+	Metadata       map[string]string
 	// Compact 显式压缩请求标记：openai-responses 入站 compact 路径或
 	// input 含 compaction_trigger 条目。客户端自述压缩语义（如 Codex CLI），
 	// 原模型失败时 Agent 可换 compress_model 兜底（第一档）。

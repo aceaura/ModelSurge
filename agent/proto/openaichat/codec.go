@@ -27,7 +27,8 @@ func (codec) Caps() proto.Capabilities {
 		// TopK 留假：Chat 协议原生没有这一维，不是能力缺失而是字段不存在。
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
 		// tool 消息里没有失败标志位，失败结果与成功结果同形。
-		ToolResultError: false,
+		ToolResultError:  false,
+		StructuredOutput: true, // response_format
 	}
 }
 
@@ -101,7 +102,43 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	if req.ReasoningEffort != "" {
 		out.Thinking = &ir.ThinkingConfig{Enabled: req.ReasoningEffort != "none", Effort: req.ReasoningEffort}
 	}
+	out.ResponseFormat = decodeResponseFormat(req.ResponseFormat)
 	return out, nil
+}
+
+// decodeResponseFormat response_format -> IR。type:"text" 是默认值，
+// 等同于「没提要求」，不进 IR——否则下游会以为客户端要求了什么。
+func decodeResponseFormat(f *responseFormat) *ir.ResponseFormat {
+	if f == nil || f.Type == "" || f.Type == "text" {
+		return nil
+	}
+	out := &ir.ResponseFormat{}
+	if f.JSONSchema != nil {
+		out.Name = f.JSONSchema.Name
+		out.Schema = f.JSONSchema.Schema
+		out.Strict = f.JSONSchema.Strict != nil && *f.JSONSchema.Strict
+	}
+	return out
+}
+
+// encodeResponseFormat IR -> response_format。无 schema 时退回 json_object：
+// 「要求合法 JSON」这层语义 json_object 能完整表达。
+func encodeResponseFormat(f *ir.ResponseFormat) *responseFormat {
+	if f == nil {
+		return nil
+	}
+	if !f.IsSchema() {
+		return &responseFormat{Type: "json_object"}
+	}
+	js := &jsonSchema{Name: f.Name, Schema: f.Schema}
+	if js.Name == "" {
+		js.Name = "response" // name 是 json_schema 的必填字段
+	}
+	if f.Strict {
+		strict := true
+		js.Strict = &strict
+	}
+	return &responseFormat{Type: "json_schema", JSONSchema: js}
 }
 
 func decodeStop(v any) []string {
@@ -281,6 +318,7 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		}
 		out.ReasoningEffort = effort
 	}
+	out.ResponseFormat = encodeResponseFormat(r.ResponseFormat)
 	return json.Marshal(out)
 }
 

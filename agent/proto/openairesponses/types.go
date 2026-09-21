@@ -24,6 +24,7 @@ type request struct {
 	ParallelToolCalls  *bool           `json:"parallel_tool_calls,omitempty"`
 	Reasoning          *reasoning      `json:"reasoning,omitempty"`
 	Include            []string        `json:"include,omitempty"`
+	Text               *textConfig     `json:"text,omitempty"`
 	Metadata           json.RawMessage `json:"metadata,omitempty"`
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
 }
@@ -31,6 +32,19 @@ type request struct {
 type reasoning struct {
 	Effort  string `json:"effort,omitempty"`
 	Summary string `json:"summary,omitempty"`
+}
+
+// textConfig text.format 结构化输出：Responses 把 Chat 的 response_format
+// 挪进了 text 下，并把 json_schema 的三个字段平铺（没有嵌套的 json_schema 层）。
+type textConfig struct {
+	Format *textFormat `json:"format,omitempty"`
+}
+
+type textFormat struct {
+	Type   string          `json:"type"`
+	Name   string          `json:"name,omitempty"`
+	Strict *bool           `json:"strict,omitempty"`
+	Schema json.RawMessage `json:"schema,omitempty"`
 }
 
 // inputItem 输入项：message / function_call / function_call_output / reasoning。

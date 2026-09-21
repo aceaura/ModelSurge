@@ -90,6 +90,15 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	if req.TopK != nil && !caps.TopK {
 		notes = append(notes, "dropped top_k: upstream protocol has no equivalent field")
 	}
+	if req.ResponseFormat != nil && !caps.StructuredOutput {
+		// 这一条比别的更要紧：客户端会直接 JSON.parse 响应，拿到自由文本就是
+		// 硬失败而非降级。读者能做的是把 schema 写进 system 提示自行约束。
+		what := "JSON output mode"
+		if req.ResponseFormat.IsSchema() {
+			what = "JSON schema constraint"
+		}
+		notes = append(notes, "dropped "+what+": upstream payload has no structured output field, the response will be free-form text")
+	}
 	if req.ToolChoice != nil && req.ToolChoice.DisableParallel && !caps.ParallelToolCalls {
 		notes = append(notes, "dropped parallel tool call restriction: upstream protocol cannot express it")
 	}

@@ -80,6 +80,12 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 				HideThoughts: tc.IncludeThoughts != nil && !*tc.IncludeThoughts,
 			}
 		}
+		// responseSchema 单独出现（没写 mimeType）也是结构化输出诉求：
+		// 只看 mimeType 会把带 schema 的请求整条漏掉。
+		if gc.ResponseMimeType == "application/json" || len(gc.ResponseSchema) > 0 {
+			// Gemini 的 responseSchema 恒为严格语义，没有 strict 开关也没有名称。
+			out.ResponseFormat = &ir.ResponseFormat{Schema: gc.ResponseSchema, Strict: true}
+		}
 	}
 	if req.SystemInstruction != nil {
 		for _, p := range req.SystemInstruction.Parts {

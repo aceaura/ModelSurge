@@ -61,6 +61,10 @@ type generationConfig struct {
 	MaxOutputTokens int             `json:"maxOutputTokens,omitempty"`
 	StopSequences   []string        `json:"stopSequences,omitempty"`
 	ThinkingConfig  *thinkingConfig `json:"thinkingConfig,omitempty"`
+	// ResponseMimeType "application/json" 即要求结构化输出；
+	// ResponseSchema 是可选的 schema 约束（Gemini 的 schema 恒为严格语义）。
+	ResponseMimeType string          `json:"responseMimeType,omitempty"`
+	ResponseSchema   json.RawMessage `json:"responseSchema,omitempty"`
 }
 
 type thinkingConfig struct {

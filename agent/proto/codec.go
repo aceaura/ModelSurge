@@ -37,6 +37,13 @@ type Capabilities struct {
 	// 只有 kiro 的载荷里没有这一维。
 	ParallelToolCalls bool
 
+	// StructuredOutput 结构化输出约束（JSON 模式 / JSON Schema）能随请求送达。
+	// Chat 是 response_format，Responses 是 text.format，Gemini 是
+	// responseMimeType + responseSchema。Anthropic 与 kiro 的载荷里没有这一维：
+	// 官方做法是把 schema 写进 system 提示或声明单工具后强制调用，两者都在改写
+	// 请求语义，本层不做——客户端拿到的会是自由文本，JSON.parse 会失败。
+	StructuredOutput bool
+
 	// ToolResultError 工具结果能标出「这次调用失败了」。Anthropic 是
 	// is_error，kiro 是 status=error，Gemini 靠 response 里的 error 键约定。
 	// OpenAI 两系的 tool / function_call_output 里没有任何这类标志：失败结果

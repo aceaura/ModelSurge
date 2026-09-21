@@ -138,14 +138,19 @@ type choice struct {
 }
 
 type usage struct {
-	PromptTokens        int            `json:"prompt_tokens"`
-	CompletionTokens    int            `json:"completion_tokens"`
-	TotalTokens         int            `json:"total_tokens"`
-	PromptTokensDetails *promptDetails `json:"prompt_tokens_details,omitempty"`
+	PromptTokens            int                `json:"prompt_tokens"`
+	CompletionTokens        int                `json:"completion_tokens"`
+	TotalTokens             int                `json:"total_tokens"`
+	PromptTokensDetails     *promptDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *completionDetails `json:"completion_tokens_details,omitempty"`
 }
 
 type promptDetails struct {
 	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+type completionDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // errorResponse OpenAI 错误外形：{"error":{...}}。

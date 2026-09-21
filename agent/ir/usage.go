@@ -9,7 +9,12 @@ type Usage struct {
 	OutputTokens        int
 	CacheReadTokens     int
 	CacheCreationTokens int
-	Estimated           bool // 本地估算产生（上游未提供）时为 true
+	// ReasoningTokens 思考消耗，是 OutputTokens 的子集而非另一项，
+	// 因此不参与任何合计——加进去会把输出算两遍。
+	// 上游字段：Responses 的 output_tokens_details.reasoning_tokens、
+	// Gemini 的 thoughtsTokenCount、Chat 的 completion_tokens_details。
+	ReasoningTokens int
+	Estimated       bool // 本地估算产生（上游未提供）时为 true
 }
 
 // TotalInput 总输入口径（含 cache），对应 OpenAI prompt_tokens 语义。
@@ -31,6 +36,9 @@ func (u *Usage) MergeNonZero(o Usage) {
 	}
 	if o.CacheCreationTokens != 0 {
 		u.CacheCreationTokens = o.CacheCreationTokens
+	}
+	if o.ReasoningTokens != 0 {
+		u.ReasoningTokens = o.ReasoningTokens
 	}
 	u.Estimated = u.Estimated || o.Estimated
 }

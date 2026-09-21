@@ -143,6 +143,10 @@ func (d *streamDecoder) Finish() []ir.Event {
 // decodeUsage Responses usage -> IR（input 含 cached，需拆出）。
 func decodeUsage(u *usage) ir.Usage {
 	out := ir.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens}
+	if u.OutputTokensDetails != nil {
+		// 思考消耗是 output 的子集，不从 OutputTokens 里减。
+		out.ReasoningTokens = u.OutputTokensDetails.ReasoningTokens
+	}
 	if u.InputTokensDetails != nil && u.InputTokensDetails.CachedTokens > 0 {
 		out.CacheReadTokens = u.InputTokensDetails.CachedTokens
 		out.InputTokens -= u.InputTokensDetails.CachedTokens

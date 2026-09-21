@@ -30,13 +30,22 @@ func UnmapFinishReason(s ir.StopReason) string {
 	}
 }
 
-// encodeUsage 规范 Usage -> Gemini。output 无法拆回 thoughts，全部计入 candidates。
+// encodeUsage 规范 Usage -> Gemini。
 func encodeUsage(u ir.Usage) *usageMetadata {
 	prompt := u.TotalInput()
+	// 口径差：IR 与 OpenAI 两系把思考算作输出的子集，Gemini 把
+	// thoughtsTokenCount 与 candidatesTokenCount 并列（totalTokenCount 是三者
+	// 之和）。直接把 OutputTokens 填进 candidates 再补 thoughts 会把思考算两遍，
+	// 所以 candidates 要先减掉思考部分。
+	candidates := u.OutputTokens - u.ReasoningTokens
+	if candidates < 0 {
+		candidates = 0
+	}
 	return &usageMetadata{
 		PromptTokenCount:        prompt,
 		CachedContentTokenCount: u.CacheReadTokens,
-		CandidatesTokenCount:    u.OutputTokens,
+		CandidatesTokenCount:    candidates,
+		ThoughtsTokenCount:      u.ReasoningTokens,
 		TotalTokenCount:         prompt + u.OutputTokens,
 	}
 }

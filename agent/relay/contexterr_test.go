@@ -17,10 +17,10 @@ import (
 
 func TestClassifyContextError(t *testing.T) {
 	cases := []struct {
-		name    string
-		status  int
-		msg     string
-		want    bool
+		name   string
+		status int
+		msg    string
+		want   bool
 	}{
 		// 8 组特征各至少一例（含真实上游报文样本）
 		{"openai code", 400, "This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens.", true},
@@ -48,9 +48,9 @@ func TestClassifyContextError(t *testing.T) {
 }
 
 type reportCaptureReplay struct {
-	lease    replayv1.TargetLease
-	reports  []replayv1.ResultReport
-	dispatch []replayv1.DispatchRequest
+	lease       replayv1.TargetLease
+	reports     []replayv1.ResultReport
+	dispatch    []replayv1.DispatchRequest
 	dispatchErr error
 }
 

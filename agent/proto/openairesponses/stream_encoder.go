@@ -239,6 +239,11 @@ func encodeUsage(u *ir.Usage) *usage {
 			CachedTokens int `json:"cached_tokens,omitempty"`
 		}{CachedTokens: u.CacheReadTokens}
 	}
+	if u.ReasoningTokens > 0 {
+		out.OutputTokensDetails = &struct {
+			ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+		}{ReasoningTokens: u.ReasoningTokens}
+	}
 	return out
 }
 

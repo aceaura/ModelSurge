@@ -144,7 +144,7 @@ func TestPlainRequestContextExceededDoesNotFallBack(t *testing.T) {
 	f := NewForwarder(&config.Config{}, replay, nil)
 	w := httptest.NewRecorder()
 	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
-		Model: "orig",
+		Model:    "orig",
 		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
 	}, "client-key")
 

@@ -200,5 +200,9 @@ func decodeUsage(u *usage) ir.Usage {
 			out.InputTokens = 0
 		}
 	}
+	if u.CompletionTokensDetails != nil {
+		// 思考消耗是 completion 的子集，不从 OutputTokens 里减。
+		out.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+	}
 	return out
 }

@@ -109,7 +109,10 @@ type usageMetadata struct {
 	PromptTokenCount        int `json:"promptTokenCount,omitempty"`
 	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
 	CandidatesTokenCount    int `json:"candidatesTokenCount,omitempty"`
-	TotalTokenCount         int `json:"totalTokenCount,omitempty"`
+	// ThoughtsTokenCount 思考消耗，与 candidatesTokenCount 并列而非其子项
+	// （Gemini 的 totalTokenCount 把两者都算进去了）。
+	ThoughtsTokenCount int `json:"thoughtsTokenCount,omitempty"`
+	TotalTokenCount    int `json:"totalTokenCount,omitempty"`
 }
 
 // ---- 错误 ----

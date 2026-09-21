@@ -55,7 +55,7 @@ func TestAutoCompactEndToEnd(t *testing.T) {
 	f := NewForwarder(&config.Config{}, replay, nil)
 	w := httptest.NewRecorder()
 	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
-		Model: "orig",
+		Model:    "orig",
 		Messages: autoMsgs(),
 	}, "client-key")
 
@@ -106,7 +106,7 @@ func TestAutoCompactCompressionCallFails(t *testing.T) {
 	f := NewForwarder(&config.Config{}, replay, nil)
 	w := httptest.NewRecorder()
 	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
-		Model: "orig",
+		Model:    "orig",
 		Messages: autoMsgs(),
 	}, "client-key")
 
@@ -139,7 +139,7 @@ func TestAutoCompactStillTooLargeReturnsOriginalError(t *testing.T) {
 	f := NewForwarder(&config.Config{}, replay, nil)
 	w := httptest.NewRecorder()
 	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
-		Model: "orig",
+		Model:    "orig",
 		Messages: autoMsgs(),
 	}, "client-key")
 
@@ -171,7 +171,7 @@ func TestAutoCompactNotTriggeredWithoutCompressModel(t *testing.T) {
 	f := NewForwarder(&config.Config{}, r, nil)
 	w := httptest.NewRecorder()
 	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
-		Model: "orig",
+		Model:    "orig",
 		Messages: autoMsgs(),
 	}, "client-key")
 
@@ -221,7 +221,7 @@ func TestAutoCompactNoOldHistory(t *testing.T) {
 	f := NewForwarder(&config.Config{}, replay, nil)
 	w := httptest.NewRecorder()
 	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
-		Model: "orig",
+		Model:    "orig",
 		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "one huge message"}}}},
 	}, "client-key")
 
@@ -255,7 +255,7 @@ func TestAutoCompactDispatchTooLargeFlavor(t *testing.T) {
 	f := NewForwarder(&config.Config{}, r, nil)
 	w := httptest.NewRecorder()
 	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
-		Model: "orig",
+		Model:    "orig",
 		Messages: autoMsgs(),
 	}, "client-key")
 

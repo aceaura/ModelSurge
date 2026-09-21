@@ -138,6 +138,9 @@ func encodeUsage(u *ir.Usage) *usage {
 	if u.CacheReadTokens > 0 {
 		out.PromptTokensDetails = &promptDetails{CachedTokens: u.CacheReadTokens}
 	}
+	if u.ReasoningTokens > 0 {
+		out.CompletionTokensDetails = &completionDetails{ReasoningTokens: u.ReasoningTokens}
+	}
 	return out
 }
 

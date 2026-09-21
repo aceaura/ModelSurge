@@ -180,14 +180,20 @@ func (e *streamEncoder) doneItem(b *encBlock) *inputItem {
 
 func (e *streamEncoder) completedFrame() []byte {
 	e.completed = true
-	status := "completed"
-	if e.stopReason == ir.StopMaxTokens {
-		status = "incomplete"
-	}
-	return e.frame(streamEvent{Type: "response.completed", Response: &responseObj{
+	obj := &responseObj{
 		ID: e.id, Object: "response", CreatedAt: e.created, Model: e.model,
-		Status: status, Output: e.fullOutput(), Usage: encodeUsage(e.usage),
-	}})
+		Status: "completed", Output: e.fullOutput(), Usage: encodeUsage(e.usage),
+	}
+	// 事件名也要跟着改。此前恒发 response.completed 只改 status 字段，而本仓的
+	// 解码器（与官方 SDK）是按事件名分支的，completed 分支不看 status——
+	// responses -> responses 往返会把截断整个吃掉，读成正常结束。
+	typ := "response.completed"
+	if reason := unmapIncompleteReason(e.stopReason); reason != "" {
+		typ = "response.incomplete"
+		obj.Status = "incomplete"
+		obj.IncompleteDetails = &incompleteDetails{Reason: reason}
+	}
+	return e.frame(streamEvent{Type: typ, Response: obj})
 }
 
 // fullOutput 按序输出所有块的完整 item（SDK get_final_response 依赖）。
@@ -265,7 +271,7 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 	}
 	out.StopReason = ir.StopEndTurn
 	if r.Status == "incomplete" {
-		out.StopReason = ir.StopMaxTokens
+		out.StopReason = mapIncompleteReason(&r)
 	} else {
 		for _, b := range out.Content {
 			if b.Type == ir.BlockToolUse {
@@ -285,12 +291,15 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	for _, m := range fake.Messages {
 		items = append(items, encodeMessageItems(m)...)
 	}
-	status := "completed"
-	if resp.StopReason == ir.StopMaxTokens {
-		status = "incomplete"
-	}
-	return json.Marshal(responseObj{
+	out := responseObj{
 		ID: resp.ID, Object: "response", CreatedAt: time.Now().Unix(), Model: resp.Model,
-		Status: status, Output: items, Usage: encodeUsage(&resp.Usage),
-	})
+		Status: "completed", Output: items, Usage: encodeUsage(&resp.Usage),
+	}
+	// 风控拦截与输出超长在 Responses 里是同一个 status 的两个 reason；
+	// 只写 status 会让客户端把拦截当成超长，转而去加大 max_output_tokens。
+	if reason := unmapIncompleteReason(resp.StopReason); reason != "" {
+		out.Status = "incomplete"
+		out.IncompleteDetails = &incompleteDetails{Reason: reason}
+	}
+	return json.Marshal(out)
 }

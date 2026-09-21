@@ -89,7 +89,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return d.terminalEvents(), nil
 	case "response.incomplete":
 		d.finished = true
-		d.stopReason = ir.StopMaxTokens
+		d.stopReason = mapIncompleteReason(se.Response)
 		if se.Response != nil && se.Response.Usage != nil {
 			d.usage = decodeUsage(se.Response.Usage)
 		}
@@ -118,6 +118,32 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return []ir.Event{{Type: ir.EvError, Err: e}}, nil
 	}
 	return nil, nil // response.queued / in_progress 等进度事件忽略
+}
+
+// mapIncompleteReason 读 incomplete_details.reason 判断截断原因。
+// 此前恒判 max_tokens，把风控拦截误报成「输出太长」——客户端据此会加大
+// max_output_tokens 重试，而真正要做的是改提示词。
+// reason 缺失时仍按 max_tokens（对齐 cc-switch transform_responses.rs:2091）。
+func mapIncompleteReason(r *responseObj) ir.StopReason {
+	if r != nil && r.IncompleteDetails != nil && r.IncompleteDetails.Reason == "content_filter" {
+		return ir.StopRefusal
+	}
+	return ir.StopMaxTokens
+}
+
+// unmapIncompleteReason 规范 StopReason -> incomplete_details.reason；
+// 返回空串表示这一档不是截断，status 应为 completed。
+// pause_turn 也归到 max_output_tokens：Responses 没有续跑语义，但至少让客户端
+// 知道输出不完整（对齐 chat 侧把它映射成 length 的判据）。
+func unmapIncompleteReason(s ir.StopReason) string {
+	switch s {
+	case ir.StopMaxTokens, ir.StopPauseTurn:
+		return "max_output_tokens"
+	case ir.StopRefusal:
+		return "content_filter"
+	default:
+		return ""
+	}
 }
 
 func (d *streamDecoder) terminalEvents() []ir.Event {

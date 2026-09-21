@@ -8,7 +8,9 @@ type Response struct {
 	Model      string
 	Content    []Block
 	StopReason StopReason
-	Usage      Usage
+	// StopSequence StopStopSequence 档命中的那条序列原文；其余档为空。
+	StopSequence string
+	Usage        Usage
 }
 
 // Aggregator 把 IR 事件流聚合成完整 Response。
@@ -81,6 +83,9 @@ func (a *Aggregator) Feed(ev Event) bool {
 		}
 	case EvMessageDelta:
 		a.resp.StopReason = ev.StopReason
+		if ev.StopSequence != "" {
+			a.resp.StopSequence = ev.StopSequence
+		}
 		if ev.Usage != nil {
 			a.resp.Usage.MergeNonZero(*ev.Usage)
 		}

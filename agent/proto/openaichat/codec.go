@@ -57,7 +57,12 @@ func UnmapFinishReason(s ir.StopReason) string {
 		return "tool_calls"
 	case ir.StopRefusal:
 		return "content_filter"
-	default:
+	case ir.StopPauseTurn:
+		// pause_turn 是「这一轮没做完，回传对话继续」，OpenAI 侧没有对应值。
+		// 取 length 而非 stop：两者都表示输出不完整，客户端至少不会把半截
+		// 结果当成最终答案（stop 会）。真正的续跑语义无法保留，由诊断告知。
+		return "length"
+	default: // end_turn 与 stop_sequence 都是 stop（OpenAI 不区分后者）
 		return "stop"
 	}
 }

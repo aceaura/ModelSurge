@@ -113,6 +113,8 @@ type delta struct {
 	Thinking    string `json:"thinking,omitempty"`
 	Signature   string `json:"signature,omitempty"`
 	StopReason  string `json:"stop_reason,omitempty"` // message_delta
+	// StopSequence stop_reason 为 stop_sequence 时命中的那条序列原文。
+	StopSequence string `json:"stop_sequence,omitempty"` // message_delta
 }
 
 type usage struct {
@@ -130,13 +132,14 @@ type errorBody struct {
 // ---- 非流式响应 DTO ----
 
 type response struct {
-	ID         string  `json:"id"`
-	Type       string  `json:"type"`
-	Role       string  `json:"role"`
-	Model      string  `json:"model"`
-	Content    []block `json:"content"`
-	StopReason string  `json:"stop_reason"`
-	Usage      usage   `json:"usage"`
+	ID           string  `json:"id"`
+	Type         string  `json:"type"`
+	Role         string  `json:"role"`
+	Model        string  `json:"model"`
+	Content      []block `json:"content"`
+	StopReason   string  `json:"stop_reason"`
+	StopSequence string  `json:"stop_sequence,omitempty"`
+	Usage        usage   `json:"usage"`
 }
 
 // errorResponse 是 Anthropic 错误外形：{"type":"error","error":{...}}。

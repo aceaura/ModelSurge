@@ -105,17 +105,21 @@ type streamEvent struct {
 }
 
 type responseObj struct {
-	ID                string      `json:"id"`
-	Object            string      `json:"object,omitempty"`
-	CreatedAt         int64       `json:"created_at,omitempty"`
-	Model             string      `json:"model"`
-	Status            string      `json:"status,omitempty"` // completed / incomplete / failed / in_progress
-	Output            []inputItem `json:"output,omitempty"`
-	Usage             *usage      `json:"usage,omitempty"`
-	Error             *errorBody  `json:"error,omitempty"`
-	IncompleteDetails *struct {
-		Reason string `json:"reason"`
-	} `json:"incomplete_details,omitempty"`
+	ID                string             `json:"id"`
+	Object            string             `json:"object,omitempty"`
+	CreatedAt         int64              `json:"created_at,omitempty"`
+	Model             string             `json:"model"`
+	Status            string             `json:"status,omitempty"` // completed / incomplete / failed / in_progress
+	Output            []inputItem        `json:"output,omitempty"`
+	Usage             *usage             `json:"usage,omitempty"`
+	Error             *errorBody         `json:"error,omitempty"`
+	IncompleteDetails *incompleteDetails `json:"incomplete_details,omitempty"`
+}
+
+// incompleteDetails status=incomplete 时的具体原因：
+// max_output_tokens（输出超长）或 content_filter（风控拦截）。
+type incompleteDetails struct {
+	Reason string `json:"reason"`
 }
 
 type usage struct {

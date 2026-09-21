@@ -53,7 +53,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.messageDeltaSent = true
 		return [][]byte{sseFrame("message_delta", marshal(streamEvent{
 			Type:  "message_delta",
-			Delta: &delta{StopReason: UnmapStopReason(ev.StopReason)},
+			Delta: &delta{StopReason: UnmapStopReason(ev.StopReason), StopSequence: ev.StopSequence},
 			Usage: encodeUsagePtr(ev.Usage),
 		}))}, nil
 	case ir.EvMessageStop:
@@ -159,22 +159,24 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 		return nil, fmt.Errorf("anthropic: decode response: %w", err)
 	}
 	return &ir.Response{
-		ID:         r.ID,
-		Model:      r.Model,
-		Content:    decodeBlocks(r.Content),
-		StopReason: MapStopReason(r.StopReason),
-		Usage:      convUsage(r.Usage),
+		ID:           r.ID,
+		Model:        r.Model,
+		Content:      decodeBlocks(r.Content),
+		StopReason:   MapStopReason(r.StopReason),
+		StopSequence: r.StopSequence,
+		Usage:        convUsage(r.Usage),
 	}, nil
 }
 
 func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	out := response{
-		ID:         resp.ID,
-		Type:       "message",
-		Role:       "assistant",
-		Model:      resp.Model,
-		Content:    encodeBlocks(resp.Content),
-		StopReason: UnmapStopReason(resp.StopReason),
+		ID:           resp.ID,
+		Type:         "message",
+		Role:         "assistant",
+		Model:        resp.Model,
+		Content:      encodeBlocks(resp.Content),
+		StopReason:   UnmapStopReason(resp.StopReason),
+		StopSequence: resp.StopSequence,
 		Usage: usage{
 			InputTokens:              resp.Usage.InputTokens,
 			OutputTokens:             resp.Usage.OutputTokens,

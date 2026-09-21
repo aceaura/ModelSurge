@@ -25,6 +25,7 @@ type Event struct {
 	Block            *Block     // EvBlockStart
 	Text             string     // 各 delta
 	StopReason       StopReason // EvMessageDelta
+	StopSequence     string     // EvMessageDelta，StopSequence 档命中的那条序列原文
 	Usage            *Usage     // EvMessageStart / EvMessageDelta
 	MessageID        string     // EvMessageStart
 	Model            string     // EvMessageStart
@@ -48,4 +49,12 @@ const (
 	StopMaxTokens StopReason = "max_tokens"
 	StopToolUse   StopReason = "tool_use"
 	StopRefusal   StopReason = "refusal"
+	// StopStopSequence 命中了客户端给的 stop_sequences。与 end_turn 分开是因为
+	// 客户端的后续动作不同：命中停止串通常意味着它要按自己的分隔符切割输出，
+	// 塌成 end_turn 会让它以为模型自然说完了。命中的序列原文在 Event/Response
+	// 的 StopSequence 字段。
+	StopStopSequence StopReason = "stop_sequence"
+	// StopPauseTurn Anthropic 的长任务暂停：一轮没做完，客户端应把当前对话
+	// 原样回传以继续。塌成 end_turn 会让客户端把半截结果当成最终答案。
+	StopPauseTurn StopReason = "pause_turn"
 )

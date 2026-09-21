@@ -953,7 +953,7 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 	}
 	u := resp.Usage
 	events = append(events,
-		ir.Event{Type: ir.EvMessageDelta, StopReason: resp.StopReason, Usage: &u},
+		ir.Event{Type: ir.EvMessageDelta, StopReason: resp.StopReason, StopSequence: resp.StopSequence, Usage: &u},
 		ir.Event{Type: ir.EvMessageStop})
 	return events
 }

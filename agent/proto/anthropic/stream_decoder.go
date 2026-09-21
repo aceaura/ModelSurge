@@ -11,8 +11,12 @@ import (
 // MapStopReason Anthropic stop_reason -> 规范 StopReason。
 func MapStopReason(s string) ir.StopReason {
 	switch s {
-	case "end_turn", "stop_sequence", "pause_turn":
+	case "end_turn":
 		return ir.StopEndTurn
+	case "stop_sequence":
+		return ir.StopStopSequence
+	case "pause_turn":
+		return ir.StopPauseTurn
 	case "max_tokens":
 		return ir.StopMaxTokens
 	case "tool_use":
@@ -33,6 +37,10 @@ func UnmapStopReason(s ir.StopReason) string {
 		return "tool_use"
 	case ir.StopRefusal:
 		return "refusal"
+	case ir.StopStopSequence:
+		return "stop_sequence"
+	case ir.StopPauseTurn:
+		return "pause_turn"
 	default:
 		return "end_turn"
 	}
@@ -102,6 +110,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		ev := ir.Event{Type: ir.EvMessageDelta}
 		if se.Delta != nil {
 			ev.StopReason = MapStopReason(se.Delta.StopReason)
+			ev.StopSequence = se.Delta.StopSequence
 		}
 		if se.Usage != nil {
 			u := convUsage(*se.Usage)

@@ -115,7 +115,8 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		var out []ir.Event
 		// 关 thinking 块前先发 signature_delta（对齐 sub2api :688）
 		if se.Item != nil && se.Item.Type == "reasoning" && se.Item.EncryptedContent != "" {
-			out = append(out, ir.Event{Type: ir.EvSigDelta, Index: se.OutputIndex, Text: se.Item.EncryptedContent})
+			out = append(out, ir.Event{Type: ir.EvSigDelta, Index: se.OutputIndex, Text: se.Item.EncryptedContent,
+				SignatureFrom: ir.SigFrom(Name, se.Item.EncryptedContent)})
 		}
 		out = append(out, ir.Event{Type: ir.EvBlockStop, Index: se.OutputIndex})
 		return out, nil

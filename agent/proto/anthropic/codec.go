@@ -287,7 +287,7 @@ func degradeThinking(blocks []ir.Block) {
 		if b.Type != ir.BlockThinking || b.Thinking == nil {
 			continue
 		}
-		if b.Thinking.Signature != "" && b.Thinking.SignatureFrom == Name {
+		if b.Thinking.SignatureGenuineFor(Name) {
 			continue
 		}
 		blocks[i] = ir.Block{Type: ir.BlockText, Text: b.Thinking.Text}
@@ -435,7 +435,11 @@ func encodeBlock(b ir.Block) block {
 		out.Type = "thinking"
 		if b.Thinking != nil {
 			out.Thinking = b.Thinking.Text
-			out.Signature = b.Thinking.Signature
+			// 只回本族真签名。外族签名与本代理造的占位签名写进这一格就是冒充：
+			// 客户端会把它当账号绑定的真签名在下一轮回传，上游校验必拒。
+			if b.Thinking.SignatureGenuineFor(Name) {
+				out.Signature = b.Thinking.Signature
+			}
 		}
 	case ir.BlockServerToolUse:
 		out.Type = "server_tool_use"

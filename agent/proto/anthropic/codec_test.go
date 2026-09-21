@@ -73,21 +73,33 @@ func TestEncodeRequest_ThinkingDegradation(t *testing.T) {
 	}
 }
 
-// 响应方向不降级：即使签名形态是外族，thinking 块也原样编码。
-func TestEncodeResponse_ThinkingPassthrough(t *testing.T) {
-	resp := &ir.Response{
-		ID: "msg_1", Model: "claude-x",
-		Content: []ir.Block{{Type: ir.BlockThinking, Thinking: &ir.Thinking{
-			Text: "hmm", Signature: "sig", SignatureFrom: "gemini",
-		}}},
+// 响应方向：thinking 块不降级为 text（正文照留），但签名位按来源门控——
+// 外族签名不得写进 signature 冒充本族真签名，客户端下一轮回传会被上游拒。
+func TestEncodeResponse_ThinkingSignatureGatedByOrigin(t *testing.T) {
+	enc := func(from string) string {
+		out, err := New().EncodeResponse(&ir.Response{
+			ID: "msg_1", Model: "claude-x",
+			Content: []ir.Block{{Type: ir.BlockThinking, Thinking: &ir.Thinking{
+				Text: "hmm", Signature: "sig", SignatureFrom: from,
+			}}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
 	}
-	out, err := New().EncodeResponse(resp)
-	if err != nil {
-		t.Fatal(err)
+	for _, from := range []string{"gemini", ir.SigSynthetic, ""} {
+		s := enc(from)
+		if !strings.Contains(s, `"hmm"`) {
+			t.Errorf("from=%q 思考正文被丢了：%s", from, s)
+		}
+		if strings.Contains(s, `"signature"`) {
+			t.Errorf("from=%q 外来签名被洗进原生签名位：%s", from, s)
+		}
 	}
-	s := string(out)
-	if !strings.Contains(s, `"thinking"`) || !strings.Contains(s, `"signature":"sig"`) {
-		t.Errorf("response thinking must not be degraded: %s", s)
+	// 本族真签名必须原样回去，否则会话粘性下的签名链每一轮都断。
+	if s := enc(Name); !strings.Contains(s, `"signature":"sig"`) {
+		t.Errorf("本族真签名没带回：%s", s)
 	}
 }
 

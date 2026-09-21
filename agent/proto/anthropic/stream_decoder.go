@@ -104,7 +104,8 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		case "thinking_delta":
 			return []ir.Event{{Type: ir.EvThinkingDelta, Index: se.Index, Text: se.Delta.Thinking}}, nil
 		case "signature_delta":
-			return []ir.Event{{Type: ir.EvSigDelta, Index: se.Index, Text: se.Delta.Signature}}, nil
+			return []ir.Event{{Type: ir.EvSigDelta, Index: se.Index, Text: se.Delta.Signature,
+				SignatureFrom: ir.SigFrom(Name, se.Delta.Signature)}}, nil
 		case "citations_delta":
 			cs := decodeCitations([]citation{*orEmptyCitation(se.Delta.Citation)})
 			if len(cs) == 0 {

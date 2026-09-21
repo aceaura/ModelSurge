@@ -55,6 +55,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		frames := e.ensureOpen(ev.Index, ir.BlockThinking)
 		return append(frames, e.deltaFrame(ev.Index, delta{Type: "thinking_delta", Thinking: ev.Text})), nil
 	case ir.EvSigDelta:
+		// 只转本族真签名。外族/合成签名下发到 signature 位就是冒充：客户端
+		// 会在下一轮原样回传，Anthropic 的签名校验必拒整个请求。
+		if ev.SignatureFrom != Name {
+			return nil, nil
+		}
 		frames := e.ensureOpen(ev.Index, ir.BlockThinking)
 		return append(frames, e.deltaFrame(ev.Index, delta{Type: "signature_delta", Signature: ev.Text})), nil
 	case ir.EvToolInput:

@@ -291,7 +291,7 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	out.Instructions = joinSystem(r.System)
 	var items []inputItem
 	for _, m := range r.Messages {
-		items = append(items, encodeMessageItems(m)...)
+		items = append(items, encodeMessageItems(m, true)...)
 	}
 	if len(items) > 0 {
 		out.Input = marshal(items)
@@ -336,8 +336,11 @@ func joinSystem(blocks []ir.Block) string {
 }
 
 // encodeMessageItems 把一条 IR 消息展开为 Responses input items。
+// forRequest 区分方向：请求方向要回传给上游，无本族真签名的 reasoning item
+// 构造不出合法形态（OpenAI 会拒），整块跳过；响应方向是给客户端看的，
+// 思考正文必须留下，只是签名位留空。
 // tool_result 内嵌的图片提取为独立 user message（function_call_output 不能挂图片）。
-func encodeMessageItems(m ir.Message) []inputItem {
+func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 	var out []inputItem
 	switch m.Role {
 	case ir.RoleAssistant:
@@ -356,16 +359,22 @@ func encodeMessageItems(m ir.Message) []inputItem {
 			case ir.BlockRefusal:
 				parts = append(parts, contentPart{Type: "refusal", Refusal: b.Text})
 			case ir.BlockThinking:
-				// 仅本族形态签名可还原 reasoning item；无签名或外族签名
-				// 无法构造合法 item（OpenAI 会拒绝），跳过。
-				if b.Thinking != nil && b.Thinking.Signature != "" && b.Thinking.SignatureFrom == Name {
-					flush()
-					out = append(out, inputItem{
-						Type:             "reasoning",
-						Summary:          marshal([]summaryPart{{Type: "summary_text", Text: b.Thinking.Text}}),
-						EncryptedContent: b.Thinking.Signature,
-					})
+				if b.Thinking == nil {
+					continue
 				}
+				genuine := b.Thinking.SignatureGenuineFor(Name)
+				if forRequest && !genuine {
+					continue
+				}
+				flush()
+				it := inputItem{
+					Type:    "reasoning",
+					Summary: marshal([]summaryPart{{Type: "summary_text", Text: b.Thinking.Text}}),
+				}
+				if genuine {
+					it.EncryptedContent = b.Thinking.Signature
+				}
+				out = append(out, it)
 			case ir.BlockToolUse:
 				flush()
 				if b.ToolUse != nil {

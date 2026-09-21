@@ -59,7 +59,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		return e.chunk([]part{{Text: ev.Text, Thought: true}}, ""), nil
 	case ir.EvSigDelta:
 		// thoughtSignature 作为独立 part 下发（Gemini 原生也是如此：
-		// 签名在思考文本结束后的单独 part 中到达）
+		// 签名在思考文本结束后的单独 part 中到达）。只下发本族真签名：
+		// 外族/合成签名占了这一格，客户端下一轮回传必被 Gemini 拒。
+		if ev.SignatureFrom != Name {
+			return nil, nil
+		}
 		return e.chunk([]part{{ThoughtSignature: ev.Text}}, ""), nil
 	case ir.EvBlockStart:
 		if ev.Block != nil && ev.Block.Type == ir.BlockToolUse && ev.Block.ToolUse != nil {

@@ -52,13 +52,15 @@ func SetOptions(o Options) {
 // billingHeaderRe Claude Code 计费归因行（首行，纯归因无语义）。
 var billingHeaderRe = regexp.MustCompile(`(?i)^x-anthropic-billing-header:[^\n]*\n?`)
 
+// Name 协议名。
+const Name = "kiro"
+
 // Codec kiro 上游协议 codec。
 type Codec struct{}
 
 func init() { proto.Register(Codec{}) }
 
-// Name 协议名。
-func (Codec) Name() string { return "kiro" }
+func (Codec) Name() string { return Name }
 
 // Caps 能力声明：无 thinking 签名保真；支持图片与托管工具（web_search）。
 // tool_choice 以提示指令模拟（无原生字段），思考模式下不会因强制选择被拒。

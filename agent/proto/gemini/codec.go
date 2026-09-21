@@ -145,8 +145,23 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			case p.FileData != nil:
 				msg.Content = append(msg.Content, mediaBlock(p.FileData.MimeType, "", p.FileData.FileURI))
 			case p.Thought || p.ThoughtSignature != "":
+				sig, from := p.ThoughtSignature, ir.SigFrom(Name, p.ThoughtSignature)
+				if sig == dummyThoughtSignature {
+					// 这是我们自己塞的占位签名被客户端原样回传。认成 gemini 真签名
+					// 就等于给占位符洗白，它会被当作有效凭据一路透传下去。
+					from = ir.SigSynthetic
+				}
+				// 只有签名没有正文的 part：Gemini 原生把签名单独放一个 part，
+				// 它属于前一个思考块。另起一块会让上游多收到一个空 thinking。
+				if p.Text == "" && sig != "" && len(msg.Content) > 0 {
+					if prev := &msg.Content[len(msg.Content)-1]; prev.Type == ir.BlockThinking &&
+						prev.Thinking != nil && prev.Thinking.Signature == "" {
+						prev.Thinking.Signature, prev.Thinking.SignatureFrom = sig, from
+						continue
+					}
+				}
 				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{
-					Text: p.Text, Signature: p.ThoughtSignature, SignatureFrom: ir.SigFrom(Name, p.ThoughtSignature),
+					Text: p.Text, Signature: sig, SignatureFrom: from,
 				}})
 			case p.Text != "":
 				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockText, Text: p.Text})
@@ -230,22 +245,13 @@ func decodeToolChoice(cfg *functionCallingConfig) *ir.ToolChoice {
 }
 
 // ensureThoughtSignature 保证返回给 Gemini 客户端的 functionCall 带签名。
+// 判据落在 functionCall 那个 part 自己身上：校验是逐 part 做的，思考 part 上
+// 的真签名不能替 functionCall 顶账——按整条 content 有无签名来判断，会让
+// 「思考带签名 + functionCall」这种最常见形态里的 functionCall 一个签名都没有。
 func ensureThoughtSignature(c *content) {
-	hasCall, hasSig := false, false
-	for _, p := range c.Parts {
-		if p.FunctionCall != nil {
-			hasCall = true
-		}
-		if p.ThoughtSignature != "" {
-			hasSig = true
-		}
-	}
-	if hasCall && !hasSig {
-		for i := range c.Parts {
-			if c.Parts[i].FunctionCall != nil {
-				c.Parts[i].ThoughtSignature = dummyThoughtSignature
-				return
-			}
+	for i := range c.Parts {
+		if c.Parts[i].FunctionCall != nil && c.Parts[i].ThoughtSignature == "" {
+			c.Parts[i].ThoughtSignature = dummyThoughtSignature
 		}
 	}
 }
@@ -269,7 +275,13 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 			c.Parts = append(c.Parts, part{Text: b.Text})
 		case ir.BlockThinking:
 			if b.Thinking != nil {
-				c.Parts = append(c.Parts, part{Text: b.Thinking.Text, Thought: true, ThoughtSignature: b.Thinking.Signature})
+				// 只回本族真签名：外族/合成签名写进 thoughtSignature 会被客户端
+				// 当成可回传的凭据，下一轮 Gemini 校验必拒。
+				p := part{Text: b.Thinking.Text, Thought: true}
+				if b.Thinking.SignatureGenuineFor(Name) {
+					p.ThoughtSignature = b.Thinking.Signature
+				}
+				c.Parts = append(c.Parts, p)
 			}
 		case ir.BlockToolUse:
 			if b.ToolUse != nil {

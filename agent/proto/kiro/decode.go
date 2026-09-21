@@ -296,7 +296,8 @@ func (d *streamDecoder) Feed(_, data string) ([]ir.Event, error) {
 		d.onThinking(&out, *ev.Text)
 	case ev.Signature != nil:
 		if d.thinkingOpen && !d.thinkingSigSent && *ev.Signature != "" {
-			out = append(out, ir.Event{Type: ir.EvSigDelta, Index: d.thinkingIndex, Text: *ev.Signature})
+			out = append(out, ir.Event{Type: ir.EvSigDelta, Index: d.thinkingIndex, Text: *ev.Signature,
+				SignatureFrom: ir.SigFrom(Name, *ev.Signature)})
 			d.thinkingSigSent = true
 		}
 	case len(ev.Usage) != 0:
@@ -370,7 +371,10 @@ func (d *streamDecoder) closeThinkingBlock(out *[]ir.Event) {
 		return
 	}
 	if !d.thinkingSigSent && d.thinkingFakeSig != "" {
-		*out = append(*out, ir.Event{Type: ir.EvSigDelta, Index: d.thinkingIndex, Text: d.thinkingFakeSig})
+		// 占位签名：标成 synthetic，让它过不了任何协议的同族门控。标成
+		// kiro 会被写进客户端的原生签名位冒充真签名，客户端重放必被拒。
+		*out = append(*out, ir.Event{Type: ir.EvSigDelta, Index: d.thinkingIndex,
+			Text: d.thinkingFakeSig, SignatureFrom: ir.SigSynthetic})
 	}
 	*out = append(*out, ir.Event{Type: ir.EvBlockStop, Index: d.thinkingIndex})
 	d.thinkingOpen = false

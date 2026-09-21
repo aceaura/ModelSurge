@@ -955,7 +955,10 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 					events = append(events, ir.Event{Type: ir.EvThinkingDelta, Index: i, Text: blk.Thinking.Text})
 				}
 				if blk.Thinking.Signature != "" {
-					events = append(events, ir.Event{Type: ir.EvSigDelta, Index: i, Text: blk.Thinking.Signature})
+					// 来源必须一起回放：这条路径是把已解码的响应重放成事件流，
+					// 丢了来源等于把上游真签名降级成来源不明。
+					events = append(events, ir.Event{Type: ir.EvSigDelta, Index: i,
+						Text: blk.Thinking.Signature, SignatureFrom: blk.Thinking.SignatureFrom})
 				}
 			}
 		}

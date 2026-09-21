@@ -76,6 +76,10 @@ func (a *Aggregator) Feed(ev Event) bool {
 	case EvSigDelta:
 		if b := a.open[ev.Index]; b != nil && b.Type == BlockThinking && b.Thinking != nil {
 			b.Thinking.Signature += ev.Text
+			// 来源随首片确定，后续片是同一签名的续传，不覆盖。
+			if b.Thinking.SignatureFrom == "" {
+				b.Thinking.SignatureFrom = ev.SignatureFrom
+			}
 		}
 	case EvToolInput:
 		if rb := a.rawJSON[ev.Index]; rb != nil {

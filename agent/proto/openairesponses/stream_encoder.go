@@ -103,7 +103,12 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		b.text += ev.Text
 		return [][]byte{e.frame(streamEvent{Type: "response.reasoning_summary_text.delta", OutputIndex: ev.Index, SummaryIndex: 0, Delta: ev.Text})}, nil
 	case ir.EvSigDelta:
-		// 签名不进增量事件，随 output_item.done 的 encrypted_content 下发
+		// 签名不进增量事件，随 output_item.done 的 encrypted_content 下发。
+		// 只收本族真签名：外族/合成签名放进 encrypted_content 会被客户端当成
+		// 可回传的 reasoning 凭据，下一轮必被上游拒。
+		if ev.SignatureFrom != Name {
+			return nil, nil
+		}
 		if b := e.blocks[ev.Index]; b != nil {
 			b.sig += ev.Text
 		}
@@ -334,7 +339,7 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	fake := &ir.Request{Messages: []ir.Message{{Role: ir.RoleAssistant, Content: resp.Content}}}
 	var items []inputItem
 	for _, m := range fake.Messages {
-		items = append(items, encodeMessageItems(m)...)
+		items = append(items, encodeMessageItems(m, false)...)
 	}
 	out := responseObj{
 		ID: resp.ID, Object: "response", CreatedAt: time.Now().Unix(), Model: resp.Model,

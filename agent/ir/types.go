@@ -208,6 +208,18 @@ func SigFrom(protoName, sig string) string {
 	return protoName
 }
 
+// SigSynthetic 本代理自己造出来的占位签名的来源标记（kiro 的 fake reasoning
+// 不带真签名，但 thinking 块下游需要一个非空值占位）。它与任何协议名都不相等，
+// 因此永远过不了同族门控——占位签名既不会被回传给上游，也不会被写进客户端的
+// 原生签名位冒充真签名（客户端拿它重放必被上游拒绝）。
+const SigSynthetic = "synthetic"
+
+// SignatureGenuineFor 报告该签名能否在 protoName 形态的通道上原样使用。
+// 判据只有一条：来源形态与目标形态同族。合成签名与外族签名都为假。
+func (t *Thinking) SignatureGenuineFor(protoName string) bool {
+	return t != nil && t.Signature != "" && t.SignatureFrom == protoName
+}
+
 // Text 返回消息中所有 text 块拼接的纯文本，便于日志与测试断言。
 func (m Message) Text() string {
 	var out string

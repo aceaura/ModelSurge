@@ -34,6 +34,10 @@ type Event struct {
 	Citations        []Citation // EvCitation
 	TruncatedTools   []TruncatedTool
 	TruncatedContent string
+	// SignatureFrom EvSigDelta 的签名来源形态，语义同 Thinking.SignatureFrom。
+	// 签名在流式路径上逐片到达，来源只有解码器知道；不随事件带上，聚合出的
+	// Thinking 就只有签名没有来源，下一轮会被当成外族签名丢掉。
+	SignatureFrom string
 }
 
 type TruncatedTool struct {

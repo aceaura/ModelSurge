@@ -152,6 +152,12 @@ type ThinkingConfig struct {
 	Enabled      bool
 	Effort       string
 	BudgetTokens int
+
+	// HideThoughts 客户端要求思考内容不回显。Gemini 的
+	// thinkingConfig.includeThoughts=false 是唯一能表达这一点的入站形态；
+	// 三元语义（未给 / true / false）里只有显式 false 需要动作，所以用正向
+	// 的「隐藏」而不是「包含」，零值即「客户端没表态，照常回显」。
+	HideThoughts bool
 }
 
 // Request 统一请求模型。

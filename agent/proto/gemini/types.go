@@ -64,8 +64,9 @@ type generationConfig struct {
 }
 
 type thinkingConfig struct {
-	ThinkingBudget  int  `json:"thinkingBudget,omitempty"`
-	IncludeThoughts bool `json:"includeThoughts,omitempty"`
+	ThinkingBudget int `json:"thinkingBudget,omitempty"`
+	// 指针：未给 / true / false 三态语义不同，只有显式 false 要动作。
+	IncludeThoughts *bool `json:"includeThoughts,omitempty"`
 }
 
 type toolDef struct {

@@ -11,15 +11,21 @@ func TestDecodeRequest_ThinkingBudgetSemantics(t *testing.T) {
 		wantPresent bool
 		wantEnabled bool
 		wantBudget  int
+		wantHide    bool
 	}{
 		{"off", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":0}}}`,
-			true, false, 0},
+			true, false, 0, false},
 		{"dynamic", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":-1}}}`,
-			true, true, -1},
+			true, true, -1, false},
 		{"fixed", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":8192}}}`,
-			true, true, 8192},
+			true, true, 8192, false},
 		{"absent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":64}}`,
-			false, false, 0},
+			false, false, 0, false},
+		// includeThoughts 三态：缺失与 true 都表示照常回显，只有显式 false 要抑制。
+		{"include-thoughts-false", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":8192,"includeThoughts":false}}}`,
+			true, true, 8192, true},
+		{"include-thoughts-true", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":8192,"includeThoughts":true}}}`,
+			true, true, 8192, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -41,6 +47,9 @@ func TestDecodeRequest_ThinkingBudgetSemantics(t *testing.T) {
 			}
 			if req.Thinking.BudgetTokens != c.wantBudget {
 				t.Errorf("BudgetTokens = %d, want %d", req.Thinking.BudgetTokens, c.wantBudget)
+			}
+			if req.Thinking.HideThoughts != c.wantHide {
+				t.Errorf("HideThoughts = %v, want %v", req.Thinking.HideThoughts, c.wantHide)
 			}
 		})
 	}

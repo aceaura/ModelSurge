@@ -63,7 +63,13 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		if tc := gc.ThinkingConfig; tc != nil {
 			// thinkingBudget=0 是官方的「关闭思考」，-1 是动态思考；
 			// 一律 Enabled=true 会把显式关闭翻成开启。
-			out.Thinking = &ir.ThinkingConfig{Enabled: tc.ThinkingBudget != 0, BudgetTokens: tc.ThinkingBudget}
+			out.Thinking = &ir.ThinkingConfig{
+				Enabled:      tc.ThinkingBudget != 0,
+				BudgetTokens: tc.ThinkingBudget,
+				// includeThoughts=false 是「照常思考但别把思考内容给我」。
+				// 上游无法据此少想，所以只能在回客户端的方向上抑制。
+				HideThoughts: tc.IncludeThoughts != nil && !*tc.IncludeThoughts,
+			}
 		}
 	}
 	if req.SystemInstruction != nil {

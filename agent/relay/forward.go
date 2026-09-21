@@ -149,6 +149,8 @@ func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCo
 		log.Printf("agent phase=request_in request_id=%s %s", requestID, requestParams(clientCodec.Name(), req))
 	}
 	f.trunc.InjectNotices(req) // 上次截断的恢复提示（命中才修改）
+	// 客户端要求不回显思考时在入口装一层抑制（五处写出点自动覆盖）。
+	clientCodec = withHiddenThoughts(clientCodec, req)
 	f.forwardRemote(ctx, w, clientCodec, req, clientKey)
 }
 

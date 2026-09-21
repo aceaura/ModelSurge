@@ -30,6 +30,8 @@ func (codec) Caps() proto.Capabilities {
 		ToolResultError: true,
 		// document 块收 PDF 与纯文本；音频与视频没有任何入口。
 		Documents: true, Audio: false, Video: false,
+		// 没有 refusal 槽位：只有 stop_reason=refusal，正文得并进 text。
+		Refusal: false,
 		// 载荷里没有 response_format 之类的字段。
 		StructuredOutput: false,
 	}
@@ -455,6 +457,9 @@ func encodeBlock(b ir.Block) block {
 			out.Content = marshal(rs)
 		}
 	default:
+		// BlockRefusal 也落这里：Anthropic 没有 refusal 槽位，降级为文本而不是
+		// 丢弃——拒绝正文是模型真正说出的话，丢了客户端只剩空消息配
+		// stop_reason=refusal。不加标注前缀，那会污染正文。
 		out.Type = "text"
 		out.Text = b.Text
 	}

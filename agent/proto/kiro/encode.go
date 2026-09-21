@@ -72,6 +72,7 @@ func (Codec) Caps() proto.Capabilities {
 		StructuredOutput: false,
 		// 载荷里只有 images 一个媒体数组，没有任何附件槽位。
 		Documents: false, Audio: false, Video: false,
+		Refusal: false,
 	}
 }
 
@@ -277,6 +278,10 @@ func toUnified(msgs []ir.Message, systemBlocks []ir.Block) ([]unifiedMsg, string
 		for _, b := range m.Content {
 			switch b.Type {
 			case ir.BlockText:
+				textParts = append(textParts, b.Text)
+			case ir.BlockRefusal:
+				// 载荷里没有 refusal 槽位；正文并入文本而不是丢弃，否则历史里
+				// 这一轮会变成空回复，模型看不到自己拒绝过。
 				textParts = append(textParts, b.Text)
 			case ir.BlockImage:
 				if b.Image != nil {

@@ -15,16 +15,18 @@ import (
 // server_tool_use / web_search_tool_result 块无 OpenAI 对应形态，
 // 跳过（内容经其后的摘要文本块送达）。
 type streamEncoder struct {
-	id, model string
-	created   int64
-	toolIdx   map[int]int  // block index -> dense tool index
-	skipIdx   map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
-	nextTool  int
-	stopped   bool
+	id, model  string
+	created    int64
+	toolIdx    map[int]int  // block index -> dense tool index
+	skipIdx    map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
+	refusalIdx map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
+	nextTool   int
+	stopped    bool
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{created: time.Now().Unix(), toolIdx: map[int]int{}, skipIdx: map[int]bool{}}
+	return &streamEncoder{created: time.Now().Unix(), toolIdx: map[int]int{},
+		skipIdx: map[int]bool{}, refusalIdx: map[int]bool{}}
 }
 
 func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
@@ -49,11 +51,20 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 				Function: functionCall{Name: ev.Block.ToolUse.Name, Arguments: ""},
 			}}}, "")}, nil
 		}
+		if ev.Block != nil && ev.Block.Type == ir.BlockRefusal {
+			// 记下块序号：其后的 text delta 要写进 delta.refusal 而不是
+			// delta.content，否则拒绝正文会被客户端当成普通回答渲染。
+			e.refusalIdx[ev.Index] = true
+			return nil, nil
+		}
 		if ev.Block != nil && ev.Block.Type != ir.BlockText && ev.Block.Type != ir.BlockThinking {
 			e.skipIdx[ev.Index] = true // server_tool_use / web_search_tool_result
 		}
 		return nil, nil // text/thinking 块开始无需输出
 	case ir.EvTextDelta:
+		if e.refusalIdx[ev.Index] {
+			return [][]byte{e.chunk(&message{Refusal: ev.Text}, "")}, nil
+		}
 		return [][]byte{e.chunk(&message{Content: json.RawMessage(marshalString(ev.Text))}, "")}, nil
 	case ir.EvThinkingDelta:
 		return [][]byte{e.chunk(&message{ReasoningContent: ev.Text}, "")}, nil
@@ -158,6 +169,9 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 			out.Content = append(out.Content, ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{Text: m.ReasoningContent}})
 		}
 		out.Content = append(out.Content, contentBlocks(m.Content)...)
+		if m.Refusal != "" {
+			out.Content = append(out.Content, ir.Block{Type: ir.BlockRefusal, Text: m.Refusal})
+		}
 		for _, tc := range m.ToolCalls {
 			out.Content = append(out.Content, ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{
 				ID:    tc.ID,
@@ -180,6 +194,8 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		switch b.Type {
 		case ir.BlockText:
 			text += b.Text
+		case ir.BlockRefusal:
+			msg.Refusal += b.Text
 		case ir.BlockThinking:
 			if b.Thinking != nil {
 				msg.ReasoningContent += b.Thinking.Text

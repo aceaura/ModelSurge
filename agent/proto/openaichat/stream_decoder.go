@@ -21,6 +21,7 @@ type streamDecoder struct {
 	nextBlock  int
 	textIdx    int
 	thinkIdx   int
+	refusalIdx int
 	openBlocks []int // 已分配未关闭的块序号（按分配顺序）
 
 	tools map[int]*pendingTool // OpenAI tool index -> 状态
@@ -39,7 +40,7 @@ type pendingTool struct {
 }
 
 func (codec) NewStreamDecoder() proto.StreamDecoder {
-	return &streamDecoder{textIdx: -1, thinkIdx: -1, tools: map[int]*pendingTool{}}
+	return &streamDecoder{textIdx: -1, thinkIdx: -1, refusalIdx: -1, tools: map[int]*pendingTool{}}
 }
 
 func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
@@ -84,6 +85,14 @@ func (d *streamDecoder) feedDelta(m *message) []ir.Event {
 			out = append(out, d.openBlock(ir.BlockThinking, &d.thinkIdx)...)
 		}
 		out = append(out, ir.Event{Type: ir.EvThinkingDelta, Index: d.thinkIdx, Text: m.ReasoningContent})
+	}
+	if m.Refusal != "" {
+		// 拒绝正文自成一块：并入 text 块会让客户端把拒绝渲染成普通回答，
+		// 只凭 finish_reason 无法区分。
+		if d.refusalIdx == -1 {
+			out = append(out, d.openBlock(ir.BlockRefusal, &d.refusalIdx)...)
+		}
+		out = append(out, ir.Event{Type: ir.EvTextDelta, Index: d.refusalIdx, Text: m.Refusal})
 	}
 	if len(m.Content) > 0 {
 		var text string

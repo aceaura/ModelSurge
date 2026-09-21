@@ -28,6 +28,7 @@ func (codec) Caps() proto.Capabilities {
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
 		// input_file 是不透明容器，input_audio 是音频专属槽位；无视频入口。
 		Documents: true, Audio: true, Video: false,
+		Refusal: true, // type=refusal content part
 		// function_call_output 里没有失败标志位。
 		ToolResultError:  false,
 		StructuredOutput: true, // text.format
@@ -189,6 +190,11 @@ func decodeParts(raw json.RawMessage) []ir.Block {
 		switch p.Type {
 		case "input_text", "output_text", "text":
 			out = append(out, ir.Block{Type: ir.BlockText, Text: p.Text})
+		case "refusal":
+			// 拒绝正文是可见内容，不是元数据。漏读会让拒绝响应变成一条空消息，
+			// 客户端看到 200 + 空 content 会误判成成功（cc-switch handlers.rs
+			// 同款结论）。
+			out = append(out, ir.Block{Type: ir.BlockRefusal, Text: p.Refusal})
 		case "input_image":
 			out = append(out, ir.Block{Type: ir.BlockImage, Image: parseImageURL(p.ImageURL)})
 		case "input_file":
@@ -345,6 +351,8 @@ func encodeMessageItems(m ir.Message) []inputItem {
 			switch b.Type {
 			case ir.BlockText:
 				parts = append(parts, contentPart{Type: "output_text", Text: b.Text})
+			case ir.BlockRefusal:
+				parts = append(parts, contentPart{Type: "refusal", Refusal: b.Text})
 			case ir.BlockThinking:
 				// 仅本族形态签名可还原 reasoning item；无签名或外族签名
 				// 无法构造合法 item（OpenAI 会拒绝），跳过。

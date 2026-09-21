@@ -26,7 +26,9 @@ func EstimateRequestTokens(r *Request) int {
 		total += 3 // 每消息结构开销
 		for _, b := range m.Content {
 			switch b.Type {
-			case BlockText:
+			// 拒绝正文同样占上下文：漏计会让含拒绝历史的请求低估窗口占用，
+			// 调度层据此放行后上游直接超限。
+			case BlockText, BlockRefusal:
 				total += EstimateTokens(b.Text)
 			case BlockThinking:
 				if b.Thinking != nil {

@@ -57,7 +57,9 @@ func (a *Aggregator) Feed(ev Event) bool {
 		}
 		a.open[ev.Index] = &b
 	case EvTextDelta:
-		if b := a.open[ev.Index]; b != nil && b.Type == BlockText {
+		// BlockRefusal 也用 Text 承载，同样接收 text delta；只认 BlockText
+		// 会让拒绝正文在聚合路径（上游流式、客户端非流式）里静默清空。
+		if b := a.open[ev.Index]; b != nil && (b.Type == BlockText || b.Type == BlockRefusal) {
 			b.Text += ev.Text
 		}
 	case EvThinkingDelta:

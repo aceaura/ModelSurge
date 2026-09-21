@@ -50,10 +50,13 @@ type message struct {
 	Role             string          `json:"role,omitempty"`
 	Content          json.RawMessage `json:"content,omitempty"`
 	ReasoningContent string          `json:"reasoning_content,omitempty"`
-	ToolCalls        []toolCall      `json:"tool_calls,omitempty"`
-	ToolCallID       string          `json:"tool_call_id,omitempty"`
-	Name             string          `json:"name,omitempty"`
-	media            bool            // 出站内部标记：tool 结果抽出的图片块消息（不参与 JSON）
+	// Refusal 模型拒绝作答的正文。与 Content 并列而非互斥：官方在拒绝时把
+	// content 置 null、正文放这里，漏读会让拒绝变成一条空消息。
+	Refusal    string     `json:"refusal,omitempty"`
+	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Name       string     `json:"name,omitempty"`
+	media      bool       // 出站内部标记：tool 结果抽出的图片块消息（不参与 JSON）
 }
 
 type part struct {

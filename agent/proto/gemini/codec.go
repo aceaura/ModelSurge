@@ -257,7 +257,9 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	c := content{Role: "model"}
 	for _, b := range resp.Content {
 		switch b.Type {
-		case ir.BlockText:
+		case ir.BlockText, ir.BlockRefusal:
+			// Gemini 没有 refusal part；正文并入文本，拒绝这件事由
+			// finishReason=SAFETY 承载。丢正文会让客户端只看到一个空 candidate。
 			c.Parts = append(c.Parts, part{Text: b.Text})
 		case ir.BlockThinking:
 			if b.Thinking != nil {

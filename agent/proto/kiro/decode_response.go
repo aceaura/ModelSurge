@@ -95,7 +95,8 @@ func (Codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 			if b.Thinking.Signature != "" {
 				w(signatureEventJSON{Signature: b.Thinking.Signature})
 			}
-		case ir.BlockText:
+		case ir.BlockText, ir.BlockRefusal:
+			// kiro 载荷无 refusal 形态，正文并入 content 而不是丢弃。
 			if b.Text == "" {
 				continue
 			}

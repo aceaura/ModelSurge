@@ -25,7 +25,14 @@ const (
 	// 目标协议的承载槽位本来就是分开的：Anthropic 只有 document，OpenAI 两系
 	// 是 file / input_file 与 input_audio，各槽位收的 MIME 集合互不相同。
 	// 合到 BlockImage 会让音频被写进图片槽位，上游按图片解码后 400。
-	BlockMedia               BlockType = "media"
+	BlockMedia BlockType = "media"
+	// BlockRefusal 模型拒绝作答的正文。文本放 Text 字段。
+	// 与 BlockText 分开是因为 OpenAI 两系有独立槽位（Chat 的 message.refusal、
+	// Responses 的 refusal content part），而 Anthropic 与 kiro 没有——合进
+	// BlockText 会让同协议往返把拒绝降级成普通回答，客户端无法区分「模型拒绝了」
+	// 和「模型这么答的」。只靠 stop_reason=refusal 也不够：正文若丢，客户端看到
+	// 的是一条空消息配一个拒绝标记，像成功的空回复。
+	BlockRefusal             BlockType = "refusal"
 	BlockToolUse             BlockType = "tool_use"
 	BlockToolResult          BlockType = "tool_result"
 	BlockThinking            BlockType = "thinking"
@@ -36,7 +43,7 @@ const (
 // Block 消息内容块。按 Type 取用对应字段，其余字段为零值。
 type Block struct {
 	Type                BlockType
-	Text                string               // BlockText
+	Text                string               // BlockText / BlockRefusal
 	Image               *Image               // BlockImage
 	Media               *Media               // BlockMedia
 	ToolUse             *ToolUse             // BlockToolUse

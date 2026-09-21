@@ -63,7 +63,7 @@ func mediaNotes(counts map[ir.MediaKind]int, caps proto.Capabilities) []string {
 func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []string {
 	var notes []string
 
-	sigs, foreign, images, urlImages, errResults := 0, 0, 0, 0, 0
+	sigs, foreign, images, urlImages, errResults, refusals := 0, 0, 0, 0, 0, 0
 	media := map[ir.MediaKind]int{}
 	for _, m := range req.Messages {
 		for _, b := range m.Content {
@@ -84,6 +84,8 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 				}
 			case ir.BlockMedia:
 				countMedia(b.Media, media)
+			case ir.BlockRefusal:
+				refusals++
 			case ir.BlockToolResult:
 				if b.ToolResult == nil {
 					continue
@@ -114,6 +116,12 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream accepts inline base64 only, not remote URLs", urlImages))
 	}
 	notes = append(notes, mediaNotes(media, caps)...)
+	if refusals > 0 && !caps.Refusal {
+		// 历史里的拒绝会被并进普通文本发给上游。读者能做的是别把它当模型的
+		// 正常回答引用——上游看到的已经是不带标记的文本了。
+		notes = append(notes, fmt.Sprintf(
+			"merged %d refusal(s) into plain text: upstream protocol has no refusal field, the model cannot tell it previously refused", refusals))
+	}
 	if errResults > 0 && !caps.ToolResultError {
 		// 失败的工具结果在上游看来与成功结果同形，模型会把报错文本当成
 		// 正常返回值继续推理。读者能做的是把失败信息写进结果文本本身。

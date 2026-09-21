@@ -935,7 +935,9 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 		// 全块透传（server_tool_use / web_search_tool_result 的载荷在块上）
 		events = append(events, ir.Event{Type: ir.EvBlockStart, Index: i, Block: &blk})
 		switch blk.Type {
-		case ir.BlockText:
+		case ir.BlockText, ir.BlockRefusal:
+			// 拒绝块也用 Text 承载。漏掉这一档会让「上游非流式、客户端流式」
+			// 这条路径只发出空的块开合，拒绝正文整条不见。
 			if blk.Text != "" {
 				events = append(events, ir.Event{Type: ir.EvTextDelta, Index: i, Text: blk.Text})
 			}

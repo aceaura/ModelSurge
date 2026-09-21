@@ -29,6 +29,7 @@ func (codec) Caps() proto.Capabilities {
 		// file 是不透明容器（文档与其他都能塞），input_audio 是音频专属槽位；
 		// 视频没有任何专属入口，只能借 file 透传，故不声明能力。
 		Documents: true, Audio: true, Video: false,
+		Refusal: true, // message.refusal
 		// tool 消息里没有失败标志位，失败结果与成功结果同形。
 		ToolResultError:  false,
 		StructuredOutput: true, // response_format
@@ -175,6 +176,9 @@ func decodeMessage(req *ir.Request, m message) {
 		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: contentBlocks(m.Content)})
 	case "assistant":
 		msg := ir.Message{Role: ir.RoleAssistant, Content: contentBlocks(m.Content)}
+		if m.Refusal != "" {
+			msg.Content = append(msg.Content, ir.Block{Type: ir.BlockRefusal, Text: m.Refusal})
+		}
 		if m.ReasoningContent != "" {
 			msg.Content = append([]ir.Block{{Type: ir.BlockThinking, Thinking: &ir.Thinking{Text: m.ReasoningContent}}}, msg.Content...)
 		}
@@ -411,6 +415,10 @@ func encodeMessages(m ir.Message) []message {
 			switch b.Type {
 			case ir.BlockText:
 				text += b.Text
+			case ir.BlockRefusal:
+				// 历史里的拒绝也要带回：上一轮模型拒绝过是下一轮的上下文，
+				// 丢了会让模型看不到自己拒绝过，可能被同样的追问绕过。
+				msg.Refusal += b.Text
 			case ir.BlockThinking:
 				if b.Thinking != nil {
 					msg.ReasoningContent += b.Thinking.Text

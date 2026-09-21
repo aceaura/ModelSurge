@@ -16,9 +16,22 @@ type streamDecoder struct {
 	usage       ir.Usage
 	stopReason  ir.StopReason
 	finished    bool
+	// refusalOpen 已开启的拒绝块（按 output_index）。上游对被拒绝的消息仍然
+	// 先发 output_item.added type=message，从那一帧看不出是拒绝，块只能等
+	// response.refusal.delta 到了再补开。
+	refusalOpen map[int]bool
 }
 
-func (codec) NewStreamDecoder() proto.StreamDecoder { return &streamDecoder{} }
+// refusalBlockBase 拒绝块的 IR 序号偏移。output_index 本身已被同一条 message
+// 的文本块占用，拒绝必须落在独立块上（否则会被并进文本块，客户端无法区分），
+// 故整体挪到一个不会与 output_index 相撞的区段。
+const refusalBlockBase = 1 << 20
+
+func (d *streamDecoder) refusalIndex(outputIndex int) int { return refusalBlockBase + outputIndex }
+
+func (codec) NewStreamDecoder() proto.StreamDecoder {
+	return &streamDecoder{refusalOpen: map[int]bool{}}
+}
 
 func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	if data == "[DONE]" {
@@ -65,6 +78,27 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			return nil, nil
 		}
 		return []ir.Event{{Type: ir.EvTextDelta, Index: se.OutputIndex, Text: se.Delta}}, nil
+	case "response.refusal.delta":
+		// 拒绝正文另开一块：output_item.added 只给出 message 类型，看不出这条
+		// 是拒绝，所以块在这里补开。并入既有 text 块会让客户端把拒绝渲染成
+		// 普通回答（cc-switch streaming_responses.rs 把它映射成可见内容）。
+		if se.Delta == "" {
+			return nil, nil
+		}
+		var out []ir.Event
+		if !d.refusalOpen[se.OutputIndex] {
+			d.refusalOpen[se.OutputIndex] = true
+			out = append(out, ir.Event{Type: ir.EvBlockStart, Index: d.refusalIndex(se.OutputIndex),
+				Block: &ir.Block{Type: ir.BlockRefusal}})
+		}
+		out = append(out, ir.Event{Type: ir.EvTextDelta, Index: d.refusalIndex(se.OutputIndex), Text: se.Delta})
+		return out, nil
+	case "response.refusal.done":
+		if !d.refusalOpen[se.OutputIndex] {
+			return nil, nil
+		}
+		delete(d.refusalOpen, se.OutputIndex)
+		return []ir.Event{{Type: ir.EvBlockStop, Index: d.refusalIndex(se.OutputIndex)}}, nil
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 		return []ir.Event{{Type: ir.EvThinkingDelta, Index: se.OutputIndex, Text: se.Delta}}, nil
 	case "response.function_call_arguments.delta":
@@ -147,11 +181,19 @@ func unmapIncompleteReason(s ir.StopReason) string {
 }
 
 func (d *streamDecoder) terminalEvents() []ir.Event {
-	u := d.usage
-	return []ir.Event{
-		{Type: ir.EvMessageDelta, StopReason: d.stopReason, Usage: &u},
-		{Type: ir.EvMessageStop},
+	var out []ir.Event
+	// 未收到 refusal.done 就直接终止时补关块：output_item.done 关的是
+	// output_index 那个文本块，关不到挪过区段的拒绝块，不补会让下游编码器
+	// 认为块还开着，拒绝正文卡在缓冲里发不出去。
+	for idx := range d.refusalOpen {
+		out = append(out, ir.Event{Type: ir.EvBlockStop, Index: d.refusalIndex(idx)})
 	}
+	d.refusalOpen = map[int]bool{}
+	u := d.usage
+	return append(out,
+		ir.Event{Type: ir.EvMessageDelta, StopReason: d.stopReason, Usage: &u},
+		ir.Event{Type: ir.EvMessageStop},
+	)
 }
 
 // Finish 断流兜底：补齐终止事件。

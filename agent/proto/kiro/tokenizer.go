@@ -59,7 +59,9 @@ func countMessageTokens(req *ir.Request) int {
 // countBlockTokens 单个内容块 token 估算。
 func countBlockTokens(b ir.Block) int {
 	switch b.Type {
-	case ir.BlockText:
+	case ir.BlockText, ir.BlockRefusal:
+		// 拒绝正文同样要计费：漏计会让含拒绝历史的请求低估上下文，
+		// 客户端据此判断还能塞多少内容，估少了会直接超限。
 		return countTokens(b.Text, false)
 	case ir.BlockThinking:
 		if b.Thinking != nil {

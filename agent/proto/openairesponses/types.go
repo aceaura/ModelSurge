@@ -76,6 +76,8 @@ type contentPart struct {
 	Filename string `json:"filename,omitempty"`
 	// InputAudio input_audio 的 {data, format}，与 Chat 同形。
 	InputAudio *inputAudio `json:"input_audio,omitempty"`
+	// Refusal type=refusal 的正文。官方用独立字段而非 text，故不能并入上面。
+	Refusal string `json:"refusal,omitempty"`
 }
 
 type inputAudio struct {

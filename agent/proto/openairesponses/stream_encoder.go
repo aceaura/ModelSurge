@@ -69,6 +69,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return nil, fmt.Errorf("openai-responses: text delta for unopened block %d", ev.Index)
 		}
 		b.text += ev.Text
+		if b.typ == ir.BlockRefusal {
+			return [][]byte{e.frame(streamEvent{Type: "response.refusal.delta", OutputIndex: ev.Index, Delta: ev.Text})}, nil
+		}
 		return [][]byte{e.frame(streamEvent{Type: "response.output_text.delta", OutputIndex: ev.Index, Delta: ev.Text})}, nil
 	case ir.EvThinkingDelta:
 		b := e.blocks[ev.Index]
@@ -128,6 +131,18 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: ev.Index, Item: &inputItem{
 			Type: "function_call", ID: b.itemID, CallID: b.toolID, Name: b.toolName, Arguments: "",
 		}})}, nil
+	case ir.BlockRefusal:
+		// 拒绝有独立的 part 类型与独立的 delta 事件名；走 output_text 那条
+		// 会让客户端把拒绝当普通回答渲染。
+		b.itemID = e.nextID("msg")
+		e.register(ev.Index, b)
+		added := e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: ev.Index, Item: &inputItem{
+			Type: "message", ID: b.itemID, Role: "assistant", Content: json.RawMessage(`[]`),
+		}})
+		part := e.frame(streamEvent{Type: "response.content_part.added", OutputIndex: ev.Index, ContentIndex: 0, Part: &contentPart{
+			Type: "refusal",
+		}})
+		return [][]byte{added, part}, nil
 	case ir.BlockServerToolUse, ir.BlockWebSearchToolResult:
 		e.skip[ev.Index] = true
 		return nil, nil
@@ -172,6 +187,9 @@ func (e *streamEncoder) doneItem(b *encBlock) *inputItem {
 			args = "{}"
 		}
 		return &inputItem{Type: "function_call", ID: b.itemID, CallID: b.toolID, Name: b.toolName, Arguments: args}
+	case ir.BlockRefusal:
+		return &inputItem{Type: "message", ID: b.itemID, Role: "assistant",
+			Content: marshal([]contentPart{{Type: "refusal", Refusal: b.text}})}
 	default:
 		return &inputItem{Type: "message", ID: b.itemID, Role: "assistant",
 			Content: marshal([]contentPart{{Type: "output_text", Text: b.text}})}

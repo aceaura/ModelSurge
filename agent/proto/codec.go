@@ -58,6 +58,13 @@ type Capabilities struct {
 	// Video 视频附件输入。只有 Gemini 有原生槽位。
 	Video bool
 
+	// Refusal 有独立的「模型拒绝作答」槽位。OpenAI 两系有（Chat 的
+	// message.refusal、Responses 的 refusal content part），Anthropic、Gemini
+	// 与 kiro 没有——那三家只有 stop_reason/finishReason 能表达「这是拒绝」，
+	// 正文只能并入普通文本。装不下时降级为文本而非丢弃：拒绝正文是模型真正
+	// 说出的话，丢了客户端只剩一条空消息。
+	Refusal bool
+
 	// ToolResultError 工具结果能标出「这次调用失败了」。Anthropic 是
 	// is_error，kiro 是 status=error，Gemini 靠 response 里的 error 键约定。
 	// OpenAI 两系的 tool / function_call_output 里没有任何这类标志：失败结果

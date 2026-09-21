@@ -20,6 +20,11 @@ type streamEncoder struct {
 
 	blocks map[int]*encBlock
 	order  []int
+	// skip 服务端工具块（server_tool_use / web_search_tool_result）的 index。
+	// Responses 协议里没有对应 item 类型：它们是上游自己执行的搜索，客户端既
+	// 不需要回传也无法回传。落进 text 分支会把查询 JSON 拼进 output_text，
+	// 正文里凭空多出一段参数串——宁可不出现。
+	skip map[int]bool
 
 	stopReason ir.StopReason
 	usage      *ir.Usage
@@ -36,7 +41,7 @@ type encBlock struct {
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{created: time.Now().Unix(), blocks: map[int]*encBlock{}}
+	return &streamEncoder{created: time.Now().Unix(), blocks: map[int]*encBlock{}, skip: map[int]bool{}}
 }
 
 func (e *streamEncoder) nextID(prefix string) string {
@@ -79,6 +84,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}
 		return nil, nil
 	case ir.EvToolInput:
+		if e.skip[ev.Index] {
+			return nil, nil // 服务端工具块的查询参数无 Responses 形态
+		}
 		b := e.blocks[ev.Index]
 		if b == nil {
 			return nil, fmt.Errorf("openai-responses: tool input for unopened block %d", ev.Index)
@@ -120,6 +128,9 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: ev.Index, Item: &inputItem{
 			Type: "function_call", ID: b.itemID, CallID: b.toolID, Name: b.toolName, Arguments: "",
 		}})}, nil
+	case ir.BlockServerToolUse, ir.BlockWebSearchToolResult:
+		e.skip[ev.Index] = true
+		return nil, nil
 	default: // text
 		b.typ = ir.BlockText
 		b.itemID = e.nextID("msg")

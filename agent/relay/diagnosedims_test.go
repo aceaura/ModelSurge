@@ -219,18 +219,24 @@ func TestDiagnoseToolResultSuccessNotReported(t *testing.T) {
 
 func TestOutboundCapabilityMatrix(t *testing.T) {
 	want := map[string]proto.Capabilities{
+		// 媒体三位刻意不一致：anthropic 有 document 但没有音频入口，OpenAI 两系
+		// 音频文档都有，kiro 一个都没有。三者全真或全假都是漏洞。
 		"anthropic": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true, ToolResultError: true,
-			StructuredOutput: false},
+			StructuredOutput: false,
+			Documents:        true, Audio: false, Video: false},
 		"openai-chat": {ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
 			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
-			StructuredOutput: true},
+			StructuredOutput: true,
+			Documents:        true, Audio: true, Video: false},
 		"openai-responses": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
-			StructuredOutput: true},
+			StructuredOutput: true,
+			Documents:        true, Audio: true, Video: false},
 		"kiro": {ThinkingSignature: false, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: false, Sampling: false, TopK: false, ParallelToolCalls: false, ToolResultError: true,
-			StructuredOutput: false},
+			StructuredOutput: false,
+			Documents:        false, Audio: false, Video: false},
 	}
 	for name, exp := range want {
 		if got := capsOf(t, name); got != exp {

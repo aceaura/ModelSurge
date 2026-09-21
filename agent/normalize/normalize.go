@@ -129,12 +129,27 @@ func stripToolContent(req *ir.Request) {
 				out = append(out, ir.Block{Type: ir.BlockText, Text: renderToolUse(b.ToolUse)})
 			case ir.BlockToolResult:
 				out = append(out, ir.Block{Type: ir.BlockText, Text: renderToolResult(b.ToolResult)})
+				if b.ToolResult != nil {
+					out = append(out, mediaOf(b.ToolResult.Content)...)
+				}
 			default:
 				out = append(out, b)
 			}
 		}
 		m.Content = out
 	}
+}
+
+// mediaOf 抽出图片与附件块。tool 结果降级成文本时 renderToolResult 只拼文本，
+// 媒体块会整块消失——降级的目的是绕开上游的工具配对约束，不是丢附件。
+func mediaOf(blocks []ir.Block) []ir.Block {
+	var out []ir.Block
+	for _, b := range blocks {
+		if b.Type == ir.BlockImage || b.Type == ir.BlockMedia {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 func renderToolUse(tu *ir.ToolUse) string {
@@ -176,6 +191,7 @@ func fixOrphanToolResults(req *ir.Request) {
 		for _, b := range m.Content {
 			if b.Type == ir.BlockToolResult && b.ToolResult != nil && !seen[b.ToolResult.ToolUseID] {
 				out = append(out, ir.Block{Type: ir.BlockText, Text: renderToolResult(b.ToolResult)})
+				out = append(out, mediaOf(b.ToolResult.Content)...)
 			} else {
 				out = append(out, b)
 			}

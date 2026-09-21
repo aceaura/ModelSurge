@@ -44,6 +44,20 @@ type Capabilities struct {
 	// 请求语义，本层不做——客户端拿到的会是自由文本，JSON.parse 会失败。
 	StructuredOutput bool
 
+	// Documents PDF 等文档附件输入。Anthropic 是 document 块，Chat 是 file 部分，
+	// Responses 是 input_file，Gemini 是 inlineData（MIME 白名单含 application/pdf）。
+	// 只有 kiro 的载荷里没有任何文档槽位。
+	Documents bool
+
+	// Audio 音频附件输入。只有 Chat 的 input_audio、Responses 的 input_audio 与
+	// Gemini 的 inlineData 有；Anthropic 与 kiro 完全没有音频入口。
+	// 与 Documents 分开是因为 Anthropic 能收文档但收不了音频，合位会把两者的
+	// 诊断结论弄反，而读者的下一步动作不同（转文字 vs 保留原附件）。
+	Audio bool
+
+	// Video 视频附件输入。只有 Gemini 有原生槽位。
+	Video bool
+
 	// ToolResultError 工具结果能标出「这次调用失败了」。Anthropic 是
 	// is_error，kiro 是 status=error，Gemini 靠 response 里的 error 键约定。
 	// OpenAI 两系的 tool / function_call_output 里没有任何这类标志：失败结果

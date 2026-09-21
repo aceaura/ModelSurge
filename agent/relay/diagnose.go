@@ -20,6 +20,42 @@ func writeLossyNotes(w http.ResponseWriter, target string, notes []string) {
 	w.Header().Set("X-ModelSurge-Notes", joined)
 }
 
+// countMedia 按大类累计附件。nil 也计入 MediaOther：块类型已经是 media，
+// 载荷却没有内容，这本身就是该丢的东西，静默跳过会漏报。
+func countMedia(m *ir.Media, into map[ir.MediaKind]int) {
+	if m == nil {
+		into[ir.MediaOther]++
+		return
+	}
+	into[m.Kind]++
+}
+
+// mediaNotes 逐大类比对上游能力。按大类分别报而不是合成一条，是因为读者的
+// 下一步动作不同：音频装不下要先转文字，PDF 装不下要先抽文本，认不出大类的
+// 附件则要先确认 MIME。降级成占位文本块的事实一并说明，否则客户端会以为
+// 附件原样送达了。
+func mediaNotes(counts map[ir.MediaKind]int, caps proto.Capabilities) []string {
+	var notes []string
+	for _, c := range []struct {
+		kind ir.MediaKind
+		ok   bool
+		what string
+	}{
+		{ir.MediaDocument, caps.Documents, "document"},
+		{ir.MediaAudio, caps.Audio, "audio attachment"},
+		{ir.MediaVideo, caps.Video, "video attachment"},
+		// other 大类没有对应能力位：MIME 认不出来就无法判断上游能否承载，
+		// 一律按文档能力放行（文档槽位是各协议里最宽松的不透明容器）。
+		{ir.MediaOther, caps.Documents, "attachment of unrecognized type"},
+	} {
+		if n := counts[c.kind]; n > 0 && !c.ok {
+			notes = append(notes, fmt.Sprintf(
+				"replaced %d %s(s) with a placeholder text block: upstream protocol has no slot for it", n, c.what))
+		}
+	}
+	return notes
+}
+
 // Diagnose 对比请求特征与上游协议能力，返回本次转换必然发生的有损点描述。
 // protoName 为上游协议名（codec.Name），用于判断 thinking 签名能否在该上游回放。
 // 目的是让有损转换可观测（日志 + X-ModelSurge-Notes），而不是静默丢信息
@@ -28,6 +64,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	var notes []string
 
 	sigs, foreign, images, urlImages, errResults := 0, 0, 0, 0, 0
+	media := map[ir.MediaKind]int{}
 	for _, m := range req.Messages {
 		for _, b := range m.Content {
 			switch b.Type {
@@ -45,9 +82,21 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 				if b.Image != nil && b.Image.Data == "" && b.Image.URL != "" {
 					urlImages++
 				}
+			case ir.BlockMedia:
+				countMedia(b.Media, media)
 			case ir.BlockToolResult:
-				if b.ToolResult != nil && b.ToolResult.IsError {
+				if b.ToolResult == nil {
+					continue
+				}
+				if b.ToolResult.IsError {
 					errResults++
+				}
+				// tool 结果内嵌的附件与顶层同样会被降级，漏掉这层会让
+				// 「工具返回了 PDF」这类丢失完全不可见。
+				for _, c := range b.ToolResult.Content {
+					if c.Type == ir.BlockMedia {
+						countMedia(c.Media, media)
+					}
 				}
 			}
 		}
@@ -64,6 +113,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		// 分开报，是因为读者的下一步动作不同——这里换成 base64 内联即可。
 		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream accepts inline base64 only, not remote URLs", urlImages))
 	}
+	notes = append(notes, mediaNotes(media, caps)...)
 	if errResults > 0 && !caps.ToolResultError {
 		// 失败的工具结果在上游看来与成功结果同形，模型会把报错文本当成
 		// 正常返回值继续推理。读者能做的是把失败信息写进结果文本本身。

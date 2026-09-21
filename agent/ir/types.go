@@ -19,8 +19,13 @@ const (
 type BlockType string
 
 const (
-	BlockText                BlockType = "text"
-	BlockImage               BlockType = "image"
+	BlockText  BlockType = "text"
+	BlockImage BlockType = "image"
+	// BlockMedia 非图片附件（PDF、音频、视频等）。与 BlockImage 分开是因为
+	// 目标协议的承载槽位本来就是分开的：Anthropic 只有 document，OpenAI 两系
+	// 是 file / input_file 与 input_audio，各槽位收的 MIME 集合互不相同。
+	// 合到 BlockImage 会让音频被写进图片槽位，上游按图片解码后 400。
+	BlockMedia               BlockType = "media"
 	BlockToolUse             BlockType = "tool_use"
 	BlockToolResult          BlockType = "tool_result"
 	BlockThinking            BlockType = "thinking"
@@ -33,6 +38,7 @@ type Block struct {
 	Type                BlockType
 	Text                string               // BlockText
 	Image               *Image               // BlockImage
+	Media               *Media               // BlockMedia
 	ToolUse             *ToolUse             // BlockToolUse
 	ToolResult          *ToolResult          // BlockToolResult
 	Thinking            *Thinking            // BlockThinking
@@ -68,6 +74,66 @@ type Image struct {
 	MediaType string // 如 "image/png"
 	Data      string // base64
 	URL       string
+}
+
+// MediaKind 非图片附件的大类。按大类而非按 MIME 全串分流，是因为目标协议的
+// 槽位是按大类划分的（Anthropic document 只收文档，OpenAI input_audio 只收音频）。
+type MediaKind string
+
+const (
+	MediaDocument MediaKind = "document" // application/pdf 等
+	MediaAudio    MediaKind = "audio"    // audio/*
+	MediaVideo    MediaKind = "video"    // video/*
+	MediaOther    MediaKind = "other"    // 认不出大类，只能当不透明附件
+)
+
+// Media 非图片附件。Data 为 base64，与 URL、FileID 三者取一：
+// 各协议表达同一份附件的方式不同（内联 base64 / 远程 URL / 上游文件 ID），
+// 而它们之间不可互相换算——只能原样带过去，装不下时降级。
+type Media struct {
+	Kind      MediaKind
+	MediaType string // 完整 MIME，如 "application/pdf"
+	Data      string // base64
+	URL       string
+	FileID    string // 上游侧已上传文件的 ID（OpenAI file_id / Gemini fileUri 之外的形态）
+	Filename  string
+	// Format OpenAI input_audio 的 format 字段（"wav"/"mp3"）。它与 MediaType
+	// 可互推，但 Chat 协议只认 format，故原样留存避免反复猜。
+	Format string
+}
+
+// MediaKindOf 从 MIME 推大类。空 MIME 归 MediaOther 而不是猜测：
+// 猜错会把附件投进错误的协议槽位，比认不出更糟。
+func MediaKindOf(mime string) MediaKind {
+	switch {
+	case mime == "application/pdf" || hasPrefix(mime, "text/"):
+		return MediaDocument
+	case hasPrefix(mime, "audio/"):
+		return MediaAudio
+	case hasPrefix(mime, "video/"):
+		return MediaVideo
+	default:
+		return MediaOther
+	}
+}
+
+func hasPrefix(s, p string) bool { return len(s) >= len(p) && s[:len(p)] == p }
+
+// Describe 返回给占位文本用的人类可读描述。目标协议装不下这一模态时，
+// 参考 cc-switch 的 UNSUPPORTED_IMAGE_MARKER 做法换成占位文本块，而不是
+// 静默丢弃：模型至少知道"这里本来有个附件"，不会把缺失当成用户没给。
+func (m *Media) Describe() string {
+	if m == nil {
+		return "[attachment dropped: unsupported by upstream]"
+	}
+	desc := string(m.Kind)
+	if m.MediaType != "" {
+		desc = m.MediaType
+	}
+	if m.Filename != "" {
+		desc += " " + m.Filename
+	}
+	return "[attachment dropped: " + desc + " — upstream protocol cannot carry it]"
 }
 
 // ToolUse 一次工具调用。Input 为 JSON 对象。

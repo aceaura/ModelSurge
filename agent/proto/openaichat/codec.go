@@ -26,6 +26,9 @@ func (codec) Caps() proto.Capabilities {
 		ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
 		// TopK 留假：Chat 协议原生没有这一维，不是能力缺失而是字段不存在。
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
+		// file 是不透明容器（文档与其他都能塞），input_audio 是音频专属槽位；
+		// 视频没有任何专属入口，只能借 file 透传，故不声明能力。
+		Documents: true, Audio: true, Video: false,
 		// tool 消息里没有失败标志位，失败结果与成功结果同形。
 		ToolResultError:  false,
 		StructuredOutput: true, // response_format
@@ -221,9 +224,63 @@ func contentBlocks(raw json.RawMessage) []ir.Block {
 			if p.ImageURL != nil {
 				out = append(out, ir.Block{Type: ir.BlockImage, Image: parseImageURL(p.ImageURL.URL)})
 			}
+		case "input_audio":
+			if p.InputAudio != nil {
+				mime := "audio/" + p.InputAudio.Format
+				out = append(out, ir.Block{Type: ir.BlockMedia, Media: &ir.Media{
+					Kind: ir.MediaAudio, MediaType: mime,
+					Data: p.InputAudio.Data, Format: p.InputAudio.Format,
+				}})
+			}
+		case "file":
+			if p.File != nil {
+				out = append(out, ir.Block{Type: ir.BlockMedia, Media: decodeFilePart(p.File)})
+			}
 		}
 	}
 	return out
+}
+
+// decodeFilePart 解 file 部分。file_data 是 data URI，从里面拆出真 MIME；
+// 只给 file_id 时 MIME 不可知，归 MediaOther 而不是猜 PDF——猜错会让附件
+// 投进目标协议的文档槽位，上游解析失败。
+func decodeFilePart(f *filePart) *ir.Media {
+	m := &ir.Media{Filename: f.Filename, FileID: f.FileID}
+	if f.FileData != "" {
+		img := parseImageURL(f.FileData) // data URI 拆解逻辑与图片一致
+		m.MediaType = img.MediaType
+		m.Data = img.Data
+		if img.Data == "" {
+			m.URL = img.URL
+		}
+	}
+	m.Kind = ir.MediaKindOf(m.MediaType)
+	return m
+}
+
+// encodeMediaPart 媒体块 -> Chat 内容部分。音频有专属槽位 input_audio，
+// 其余（文档 / 视频 / 认不出的）走 file。Chat 没有视频入口，但 file 是不透明
+// 容器，原样带过去比换成占位文本保留更多信息——真装不下时由上游报错，而诊断
+// 已经告知了客户端。这与 Anthropic 侧不同：那边 document 会被按 PDF 解析。
+func encodeMediaPart(m *ir.Media) part {
+	if m == nil {
+		return part{Type: "text", Text: (*ir.Media)(nil).Describe()}
+	}
+	if m.Kind == ir.MediaAudio && m.Data != "" {
+		format := m.Format
+		if format == "" {
+			format = strings.TrimPrefix(m.MediaType, "audio/")
+		}
+		return part{Type: "input_audio", InputAudio: &inputAudio{Data: m.Data, Format: format}}
+	}
+	f := &filePart{FileID: m.FileID, Filename: m.Filename}
+	switch {
+	case m.Data != "":
+		f.FileData = "data:" + m.MediaType + ";base64," + m.Data
+	case m.URL != "":
+		f.FileData = m.URL
+	}
+	return part{Type: "file", File: f}
 }
 
 // parseImageURL 解析 image_url，data URI 拆出 media type 与 base64。
@@ -404,6 +461,8 @@ func encodeMessages(m ir.Message) []message {
 					}
 					parts = append(parts, part{Type: "image_url", ImageURL: &imageURL{URL: url}})
 				}
+			case ir.BlockMedia:
+				parts = append(parts, encodeMediaPart(b.Media))
 			case ir.BlockToolResult:
 				flush()
 				if b.ToolResult != nil {
@@ -412,18 +471,20 @@ func encodeMessages(m ir.Message) []message {
 						ToolCallID: b.ToolResult.ToolUseID,
 						Content:    json.RawMessage(marshalString(blocksText(b.ToolResult.Content))),
 					})
-					// tool 消息 content 只能是文本；结果里的图片块抽出为
+					// tool 消息 content 只能是文本；结果里的媒体块抽出为
 					// 紧随的 user 媒体消息（fixToolOrder 会挪到整组回复之后）
 					var imgParts []part
 					for _, c := range b.ToolResult.Content {
-						if c.Type != ir.BlockImage || c.Image == nil {
-							continue
+						switch {
+						case c.Type == ir.BlockImage && c.Image != nil:
+							url := c.Image.URL
+							if url == "" && c.Image.Data != "" {
+								url = "data:" + c.Image.MediaType + ";base64," + c.Image.Data
+							}
+							imgParts = append(imgParts, part{Type: "image_url", ImageURL: &imageURL{URL: url}})
+						case c.Type == ir.BlockMedia:
+							imgParts = append(imgParts, encodeMediaPart(c.Media))
 						}
-						url := c.Image.URL
-						if url == "" && c.Image.Data != "" {
-							url = "data:" + c.Image.MediaType + ";base64," + c.Image.Data
-						}
-						imgParts = append(imgParts, part{Type: "image_url", ImageURL: &imageURL{URL: url}})
 					}
 					if len(imgParts) > 0 {
 						out = append(out, message{Role: "user", Content: marshal(imgParts), media: true})

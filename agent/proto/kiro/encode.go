@@ -70,6 +70,8 @@ func (Codec) Caps() proto.Capabilities {
 		ToolResultError: true, // status=error
 		// 载荷里没有结构化输出约束的落点。
 		StructuredOutput: false,
+		// 载荷里只有 images 一个媒体数组，没有任何附件槽位。
+		Documents: false, Audio: false, Video: false,
 	}
 }
 
@@ -280,6 +282,11 @@ func toUnified(msgs []ir.Message, systemBlocks []ir.Block) ([]unifiedMsg, string
 				if b.Image != nil {
 					u.images = append(u.images, *b.Image)
 				}
+			case ir.BlockMedia:
+				// 载荷里只有 images 数组，非图片附件无处安放。塞进 images
+				// 会被上游按图片解码而 400，静默丢掉则让模型以为用户没给附件，
+				// 故降级为占位文本（参考 cc-switch 的 UNSUPPORTED_IMAGE_MARKER）。
+				textParts = append(textParts, b.Media.Describe())
 			case ir.BlockToolUse:
 				if b.ToolUse != nil {
 					u.toolUses = append(u.toolUses, convertToolUse(*b.ToolUse))

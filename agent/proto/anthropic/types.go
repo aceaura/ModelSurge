@@ -43,7 +43,8 @@ type message struct {
 type block struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
-	Source    *imageSource    `json:"source,omitempty"` // image
+	Source    *mediaSource    `json:"source,omitempty"` // image / document
+	Title     string          `json:"title,omitempty"`  // document 文件名
 	ID        string          `json:"id,omitempty"`     // tool_use / server_tool_use
 	Name      string          `json:"name,omitempty"`   // tool_use / server_tool_use
 	Input     json.RawMessage `json:"input,omitempty"`  // tool_use / server_tool_use
@@ -63,11 +64,14 @@ type webSearchResultBlock struct {
 	EncryptedContent string `json:"encrypted_content"` // 原文摘要（KiroaaS 语义）
 }
 
-type imageSource struct {
-	Type      string `json:"type"` // "base64" / "url"
+// mediaSource image 与 document 共用的 source 外形。
+// document 多出 file 与 text 两种 Type：前者引用已上传文件，后者直接内联纯文本。
+type mediaSource struct {
+	Type      string `json:"type"` // "base64" / "url" / "file" / "text"
 	MediaType string `json:"media_type,omitempty"`
 	Data      string `json:"data,omitempty"`
 	URL       string `json:"url,omitempty"`
+	FileID    string `json:"file_id,omitempty"`
 }
 
 type cacheControl struct {

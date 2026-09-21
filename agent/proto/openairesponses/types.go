@@ -66,9 +66,21 @@ type inputItem struct {
 }
 
 type contentPart struct {
-	Type     string `json:"type"` // input_text / input_image / output_text
+	Type     string `json:"type"` // input_text / input_image / input_file / input_audio / output_text
 	Text     string `json:"text,omitempty"`
 	ImageURL string `json:"image_url,omitempty"`
+	// input_file：三者取一。file_data 是 data URI，file_url 是远程地址。
+	FileData string `json:"file_data,omitempty"`
+	FileURL  string `json:"file_url,omitempty"`
+	FileID   string `json:"file_id,omitempty"`
+	Filename string `json:"filename,omitempty"`
+	// InputAudio input_audio 的 {data, format}，与 Chat 同形。
+	InputAudio *inputAudio `json:"input_audio,omitempty"`
+}
+
+type inputAudio struct {
+	Data   string `json:"data"`
+	Format string `json:"format"` // "wav" / "mp3"
 }
 
 type summaryPart struct {

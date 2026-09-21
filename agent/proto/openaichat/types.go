@@ -57,9 +57,24 @@ type message struct {
 }
 
 type part struct {
-	Type     string    `json:"type"` // text / image_url
-	Text     string    `json:"text,omitempty"`
-	ImageURL *imageURL `json:"image_url,omitempty"`
+	Type       string      `json:"type"` // text / image_url / input_audio / file
+	Text       string      `json:"text,omitempty"`
+	ImageURL   *imageURL   `json:"image_url,omitempty"`
+	InputAudio *inputAudio `json:"input_audio,omitempty"`
+	File       *filePart   `json:"file,omitempty"`
+}
+
+// inputAudio Chat 的音频输入部分。只有 base64 一种形态，MIME 由 format 推出。
+type inputAudio struct {
+	Data   string `json:"data"`
+	Format string `json:"format"` // "wav" / "mp3"
+}
+
+// filePart Chat 的文件输入部分。file_data 是 data URI，与 file_id 二选一。
+type filePart struct {
+	FileData string `json:"file_data,omitempty"`
+	FileID   string `json:"file_id,omitempty"`
+	Filename string `json:"filename,omitempty"`
 }
 
 type imageURL struct {

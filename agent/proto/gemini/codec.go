@@ -141,13 +141,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 					Content:   []ir.Block{{Type: ir.BlockText, Text: decodeFuncResponseText(p.FunctionResponse.Response)}},
 				}})
 			case p.InlineData != nil:
-				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockImage, Image: &ir.Image{
-					MediaType: p.InlineData.MimeType, Data: p.InlineData.Data,
-				}})
+				msg.Content = append(msg.Content, mediaBlock(p.InlineData.MimeType, p.InlineData.Data, ""))
 			case p.FileData != nil:
-				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockImage, Image: &ir.Image{
-					MediaType: p.FileData.MimeType, URL: p.FileData.FileURI,
-				}})
+				msg.Content = append(msg.Content, mediaBlock(p.FileData.MimeType, "", p.FileData.FileURI))
 			case p.Thought || p.ThoughtSignature != "":
 				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{
 					Text: p.Text, Signature: p.ThoughtSignature, SignatureFrom: ir.SigFrom(Name, p.ThoughtSignature),
@@ -279,6 +275,17 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 			if b.Image != nil && b.Image.Data != "" {
 				c.Parts = append(c.Parts, part{InlineData: &blob{MimeType: b.Image.MediaType, Data: b.Image.Data}})
 			}
+		case ir.BlockMedia:
+			// inlineData 能装任意 MIME，媒体块原样带回；只有远端 URI 形态走
+			// fileData（Gemini 不接受内联 URL）。
+			if b.Media != nil {
+				switch {
+				case b.Media.Data != "":
+					c.Parts = append(c.Parts, part{InlineData: &blob{MimeType: b.Media.MediaType, Data: b.Media.Data}})
+				case b.Media.URL != "":
+					c.Parts = append(c.Parts, part{FileData: &fileData{MimeType: b.Media.MediaType, FileURI: b.Media.URL}})
+				}
+			}
 		}
 	}
 	ensureThoughtSignature(&c)
@@ -288,6 +295,18 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		ModelVersion:  resp.Model,
 		ResponseID:    resp.ID,
 	})
+}
+
+// mediaBlock 按 MIME 分流 inlineData / fileData。Gemini 的这两个字段能装
+// 任意 MIME（音频、PDF、视频），此前一律解成 BlockImage：音频会被写进目标协议的
+// 图片槽位，上游按图片解码后 400。空 MIME 也不猜图片——它在 Gemini 里是可选字段。
+func mediaBlock(mime, data, uri string) ir.Block {
+	if strings.HasPrefix(mime, "image/") {
+		return ir.Block{Type: ir.BlockImage, Image: &ir.Image{MediaType: mime, Data: data, URL: uri}}
+	}
+	return ir.Block{Type: ir.BlockMedia, Media: &ir.Media{
+		Kind: ir.MediaKindOf(mime), MediaType: mime, Data: data, URL: uri,
+	}}
 }
 
 // ---- 错误渲染 ----

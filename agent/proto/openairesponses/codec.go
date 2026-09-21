@@ -26,6 +26,8 @@ func (codec) Caps() proto.Capabilities {
 		ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 		// TopK 留假：Responses 协议原生没有这一维。
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
+		// input_file 是不透明容器，input_audio 是音频专属槽位；无视频入口。
+		Documents: true, Audio: true, Video: false,
 		// function_call_output 里没有失败标志位。
 		ToolResultError:  false,
 		StructuredOutput: true, // text.format
@@ -189,9 +191,34 @@ func decodeParts(raw json.RawMessage) []ir.Block {
 			out = append(out, ir.Block{Type: ir.BlockText, Text: p.Text})
 		case "input_image":
 			out = append(out, ir.Block{Type: ir.BlockImage, Image: parseImageURL(p.ImageURL)})
+		case "input_file":
+			out = append(out, ir.Block{Type: ir.BlockMedia, Media: decodeInputFile(p)})
+		case "input_audio":
+			if p.InputAudio != nil {
+				out = append(out, ir.Block{Type: ir.BlockMedia, Media: &ir.Media{
+					Kind: ir.MediaAudio, MediaType: "audio/" + p.InputAudio.Format,
+					Data: p.InputAudio.Data, Format: p.InputAudio.Format,
+				}})
+			}
 		}
 	}
 	return out
+}
+
+// decodeInputFile 解 input_file。只给 file_id 时 MIME 不可知，归 MediaOther
+// 而不是猜 PDF——猜错会让附件投进目标协议的文档槽位被按 PDF 解析。
+func decodeInputFile(p contentPart) *ir.Media {
+	m := &ir.Media{Filename: p.Filename, FileID: p.FileID, URL: p.FileURL}
+	if p.FileData != "" {
+		f := parseImageURL(p.FileData) // data URI 拆解逻辑与图片一致
+		m.MediaType = f.MediaType
+		m.Data = f.Data
+		if f.Data == "" && m.URL == "" {
+			m.URL = f.URL
+		}
+	}
+	m.Kind = ir.MediaKindOf(m.MediaType)
+	return m
 }
 
 func parseImageURL(u string) *ir.Image {
@@ -361,6 +388,8 @@ func encodeMessageItems(m ir.Message) []inputItem {
 					}
 					parts = append(parts, contentPart{Type: "input_image", ImageURL: url})
 				}
+			case ir.BlockMedia:
+				parts = append(parts, encodeMediaPart(b.Media))
 			case ir.BlockToolResult:
 				flush()
 				if b.ToolResult != nil {
@@ -377,10 +406,12 @@ func encodeMessageItems(m ir.Message) []inputItem {
 	return out
 }
 
-// splitToolResultContent 拆出文本与图片（图片转成 input_image parts）。
+// splitToolResultContent 拆出文本与媒体（转成 input_image / input_file /
+// input_audio parts）。function_call_output.output 只能是字符串，媒体必须另起
+// 一条 user 消息承载。
 func splitToolResultContent(blocks []ir.Block) (string, []contentPart) {
 	var sb strings.Builder
-	var images []contentPart
+	var media []contentPart
 	for _, b := range blocks {
 		switch b.Type {
 		case ir.BlockText:
@@ -391,11 +422,36 @@ func splitToolResultContent(blocks []ir.Block) (string, []contentPart) {
 				if url == "" && b.Image.Data != "" {
 					url = "data:" + b.Image.MediaType + ";base64," + b.Image.Data
 				}
-				images = append(images, contentPart{Type: "input_image", ImageURL: url})
+				media = append(media, contentPart{Type: "input_image", ImageURL: url})
 			}
+		case ir.BlockMedia:
+			media = append(media, encodeMediaPart(b.Media))
 		}
 	}
-	return sb.String(), images
+	return sb.String(), media
+}
+
+// encodeMediaPart 媒体块 -> Responses 内容部分。音频走 input_audio，
+// 其余走 input_file（不透明容器，视频亦借它透传）。
+func encodeMediaPart(m *ir.Media) contentPart {
+	if m == nil {
+		return contentPart{Type: "input_text", Text: (*ir.Media)(nil).Describe()}
+	}
+	if m.Kind == ir.MediaAudio && m.Data != "" {
+		format := m.Format
+		if format == "" {
+			format = strings.TrimPrefix(m.MediaType, "audio/")
+		}
+		return contentPart{Type: "input_audio", InputAudio: &inputAudio{Data: m.Data, Format: format}}
+	}
+	p := contentPart{Type: "input_file", FileID: m.FileID, Filename: m.Filename}
+	switch {
+	case m.Data != "":
+		p.FileData = "data:" + m.MediaType + ";base64," + m.Data
+	case m.URL != "":
+		p.FileURL = m.URL
+	}
+	return p
 }
 
 func encodeToolChoice(tc *ir.ToolChoice) any {

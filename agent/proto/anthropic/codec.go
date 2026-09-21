@@ -28,6 +28,8 @@ func (codec) Caps() proto.Capabilities {
 		ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 		ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true,
 		ToolResultError: true,
+		// document 块收 PDF 与纯文本；音频与视频没有任何入口。
+		Documents: true, Audio: false, Video: false,
 		// 载荷里没有 response_format 之类的字段。
 		StructuredOutput: false,
 	}
@@ -156,6 +158,9 @@ func decodeBlock(b block) ir.Block {
 		if b.Source != nil {
 			out.Image = &ir.Image{MediaType: b.Source.MediaType, Data: b.Source.Data, URL: b.Source.URL}
 		}
+	case "document":
+		out.Type = ir.BlockMedia
+		out.Media = decodeDocument(b)
 	case "tool_use":
 		out.Type = ir.BlockToolUse
 		out.ToolUse = &ir.ToolUse{ID: b.ID, Name: b.Name, Input: b.Input}
@@ -177,6 +182,38 @@ func decodeBlock(b block) ir.Block {
 		out.Text = b.Text
 	}
 	return out
+}
+
+// decodeDocument 解 document 块的四种 source 形态。
+// source.type=text 是内联纯文本，MIME 缺省按官方的 text/plain；其余形态缺省
+// application/pdf（对齐 cc-switch transform_responses.rs 的同款兜底）。
+// 缺省值不能留空：MIME 为空会让 MediaKindOf 判成 other，转出时投错槽位。
+func decodeDocument(b block) *ir.Media {
+	m := &ir.Media{Filename: b.Title}
+	if b.Source == nil {
+		m.Kind = ir.MediaDocument
+		m.MediaType = "application/pdf"
+		return m
+	}
+	m.MediaType = b.Source.MediaType
+	switch b.Source.Type {
+	case "text":
+		if m.MediaType == "" {
+			m.MediaType = "text/plain"
+		}
+		m.Data = b.Source.Data
+	case "url":
+		m.URL = b.Source.URL
+	case "file":
+		m.FileID = b.Source.FileID
+	default: // base64
+		m.Data = b.Source.Data
+	}
+	if m.MediaType == "" {
+		m.MediaType = "application/pdf"
+	}
+	m.Kind = ir.MediaKindOf(m.MediaType)
+	return m
 }
 
 func decodeToolResultContent(raw json.RawMessage) []ir.Block {
@@ -327,6 +364,34 @@ func encodeBlocks(bs []ir.Block) []block {
 	return out
 }
 
+// encodeMedia 把媒体块写成 document，装不下的大类降级为占位文本。
+// Anthropic 只有 document 一个附件槽位，音频与视频没有任何入口：写进 document
+// 会被上游按 PDF 解析而 400，静默丢掉则让模型以为用户没给附件。占位文本是
+// 唯一两者都不发生的形态（参考 cc-switch 的 UNSUPPORTED_IMAGE_MARKER 做法）。
+func encodeMedia(b ir.Block, out block) block {
+	if b.Media == nil || b.Media.Kind != ir.MediaDocument {
+		out.Type = "text"
+		out.Text = b.Media.Describe()
+		return out
+	}
+	m := b.Media
+	out.Type = "document"
+	out.Title = m.Filename
+	switch {
+	case m.FileID != "":
+		out.Source = &mediaSource{Type: "file", FileID: m.FileID}
+	case m.URL != "":
+		out.Source = &mediaSource{Type: "url", URL: m.URL}
+	case m.MediaType == "text/plain":
+		// 纯文本走 source.type=text：塞进 base64 槽位需要先编码，而上游对
+		// text/plain 只接受 text 形态。
+		out.Source = &mediaSource{Type: "text", MediaType: m.MediaType, Data: m.Data}
+	default:
+		out.Source = &mediaSource{Type: "base64", MediaType: m.MediaType, Data: m.Data}
+	}
+	return out
+}
+
 func encodeBlock(b ir.Block) block {
 	out := block{CacheCtl: encodeCacheCtl(b.CacheCtl)}
 	switch b.Type {
@@ -337,11 +402,13 @@ func encodeBlock(b ir.Block) block {
 		out.Type = "image"
 		if b.Image != nil {
 			if b.Image.URL != "" {
-				out.Source = &imageSource{Type: "url", URL: b.Image.URL}
+				out.Source = &mediaSource{Type: "url", URL: b.Image.URL}
 			} else {
-				out.Source = &imageSource{Type: "base64", MediaType: b.Image.MediaType, Data: b.Image.Data}
+				out.Source = &mediaSource{Type: "base64", MediaType: b.Image.MediaType, Data: b.Image.Data}
 			}
 		}
+	case ir.BlockMedia:
+		return encodeMedia(b, out)
 	case ir.BlockToolUse:
 		out.Type = "tool_use"
 		if b.ToolUse != nil {

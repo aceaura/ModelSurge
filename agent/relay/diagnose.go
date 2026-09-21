@@ -2,11 +2,23 @@ package relay
 
 import (
 	"fmt"
+	"log"
+	"net/http"
 	"strings"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
 	"github.com/aceaura/ModelSurge/agent/proto"
 )
+
+// writeLossyNotes 把有损诊断落到日志与响应头。须在 WriteHeader 之前调用。
+func writeLossyNotes(w http.ResponseWriter, target string, notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	joined := strings.Join(notes, "; ")
+	log.Printf("relay: upstream %s lossy conversion: %s", target, joined)
+	w.Header().Set("X-ModelSurge-Notes", joined)
+}
 
 // Diagnose 对比请求特征与上游协议能力，返回本次转换必然发生的有损点描述。
 // protoName 为上游协议名（codec.Name），用于判断 thinking 签名能否在该上游回放。
@@ -15,7 +27,7 @@ import (
 func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []string {
 	var notes []string
 
-	sigs, foreign, images := 0, 0, 0
+	sigs, foreign, images, urlImages := 0, 0, 0, 0
 	for _, m := range req.Messages {
 		for _, b := range m.Content {
 			switch b.Type {
@@ -30,6 +42,9 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 				}
 			case ir.BlockImage:
 				images++
+				if b.Image != nil && b.Image.Data == "" && b.Image.URL != "" {
+					urlImages++
+				}
 			}
 		}
 	}
@@ -40,6 +55,34 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	}
 	if images > 0 && !caps.Images {
 		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream protocol has no image input", images))
+	} else if urlImages > 0 && !caps.ImageURLs {
+		// 只有形态装不下：上游收 base64 不收远程 URL（kiro）。与整协议无图片能力
+		// 分开报，是因为读者的下一步动作不同——这里换成 base64 内联即可。
+		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream accepts inline base64 only, not remote URLs", urlImages))
+	}
+	if !caps.Sampling {
+		var params []string
+		if req.Temperature != nil {
+			params = append(params, "temperature")
+		}
+		if req.TopP != nil {
+			params = append(params, "top_p")
+		}
+		if len(req.StopSequences) > 0 {
+			params = append(params, "stop_sequences")
+		}
+		if req.MaxTokens > 0 {
+			params = append(params, "max_tokens")
+		}
+		if len(params) > 0 {
+			notes = append(notes, "dropped sampling parameter(s) "+strings.Join(params, ",")+": upstream payload has no such fields")
+		}
+	}
+	if req.TopK != nil && !caps.TopK {
+		notes = append(notes, "dropped top_k: upstream protocol has no equivalent field")
+	}
+	if req.ToolChoice != nil && req.ToolChoice.DisableParallel && !caps.ParallelToolCalls {
+		notes = append(notes, "dropped parallel tool call restriction: upstream protocol cannot express it")
 	}
 	if req.Thinking != nil && req.Thinking.Enabled && req.ToolChoice != nil &&
 		(req.ToolChoice.Mode == ir.ChoiceAny || req.ToolChoice.Mode == ir.ChoiceTool) &&

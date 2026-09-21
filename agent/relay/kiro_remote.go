@@ -19,17 +19,19 @@ import (
 func (f *Forwarder) attemptKiro(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	upReq := req.Clone()
 	upReq.Stream = true
+	cand.ov.Apply(upReq) // 账号级请求覆盖（未配置时 no-op）
 	// 推理风格互补。这条路径直接把 canonical IR 交给 replay，不经 codec 的
 	// EncodeRequest 也不经 ClampThinking，所以换算只能在这里做一次；
 	// kiro 的 effortFragment 优先读 Effort，客户端只给 budget 时若不补全
 	// 会落进它自己那套与 new-api 不同源的分档阈值。
-	ir.CompleteThinking(upReq)
+	thinkNotes := ir.CompleteThinking(upReq)
+	notes := append(Diagnose(req, cand.codec.Name(), cand.codec.Caps()), thinkNotes...)
 	body, err := json.Marshal(upReq)
 	if err != nil {
 		return false, ir.NewHTTPError(http.StatusBadRequest, "encode canonical request: "+err.Error())
 	}
 	if policy := strictToolChoice(upReq); policy != nil {
-		return f.attemptKiroStrict(ctx, w, clientCodec, cand, req, upReq, policy, onUsage)
+		return f.attemptKiroStrict(ctx, w, clientCodec, cand, req, upReq, policy, notes, onUsage)
 	}
 	resp, openErr := f.openKiroReplay(ctx, cand, body, requestParams("kiro", upReq))
 	if openErr != nil {
@@ -39,6 +41,7 @@ func (f *Forwarder) attemptKiro(ctx context.Context, w http.ResponseWriter, clie
 		return false, openErr
 	}
 	defer resp.Body.Close()
+	writeLossyNotes(w, cand.name, notes)
 	if req.Stream {
 		return f.streamKiroToClient(ctx, w, clientCodec, cand, req, resp.Body, onUsage)
 	}
@@ -239,7 +242,7 @@ func (f *Forwarder) aggregateKiro(ctx context.Context, cand candidate, req *ir.R
 	return response, nil
 }
 
-func (f *Forwarder) attemptKiroStrict(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, upReq *ir.Request, policy *ir.ToolChoice, onUsage func(*ir.Usage)) (bool, *ir.Error) {
+func (f *Forwarder) attemptKiroStrict(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, upReq *ir.Request, policy *ir.ToolChoice, notes []string, onUsage func(*ir.Usage)) (bool, *ir.Error) {
 	var violation *toolViolation
 	for attempt := 0; ; attempt++ {
 		if violation != nil {
@@ -274,6 +277,7 @@ func (f *Forwarder) attemptKiroStrict(ctx context.Context, w http.ResponseWriter
 		upstreamSummary.log()
 		clientSummary := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), req.Stream, requestLogFrom(ctx).started)
 		clientSummary.fill(response)
+		writeLossyNotes(w, cand.name, notes)
 		writeResponse(w, clientCodec, response, req.Stream, clientSummary)
 		clientSummary.log()
 		return true, nil

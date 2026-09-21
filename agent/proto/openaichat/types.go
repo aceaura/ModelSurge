@@ -23,6 +23,7 @@ type request struct {
 	StreamOptions       *streamOptions  `json:"stream_options,omitempty"`
 	Tools               []tool          `json:"tools,omitempty"`
 	ToolChoice          any             `json:"tool_choice,omitempty"` // string 或 object
+	ParallelToolCalls   *bool           `json:"parallel_tool_calls,omitempty"`
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
 	Metadata            json.RawMessage `json:"metadata,omitempty"`
 }

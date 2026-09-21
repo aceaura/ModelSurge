@@ -22,7 +22,11 @@ func (codec) Name() string { return Name }
 // Caps Chat Completions：reasoning_content 无签名机制，也无 hosted tools；
 // DeepSeek 系上游思考模式下强制 tool_choice 会 400（EncodeRequest 兜底降级 auto）。
 func (codec) Caps() proto.Capabilities {
-	return proto.Capabilities{ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false}
+	return proto.Capabilities{
+		ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
+		// TopK 留假：Chat 协议原生没有这一维，不是能力缺失而是字段不存在。
+		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
+	}
 }
 
 // MapFinishReason OpenAI finish_reason -> 规范 StopReason。
@@ -84,6 +88,14 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		})
 	}
 	out.ToolChoice = decodeToolChoice(req.ToolChoice)
+	// parallel_tool_calls=false 是「禁止并行」，与 anthropic 的
+	// disable_parallel_tool_use 同一维度。客户端没给时不表态（IR 零值即允许并行）。
+	if req.ParallelToolCalls != nil && !*req.ParallelToolCalls {
+		if out.ToolChoice == nil {
+			out.ToolChoice = &ir.ToolChoice{Mode: ir.ChoiceAuto}
+		}
+		out.ToolChoice.DisableParallel = true
+	}
 	if req.ReasoningEffort != "" {
 		out.Thinking = &ir.ThinkingConfig{Enabled: req.ReasoningEffort != "none", Effort: req.ReasoningEffort}
 	}
@@ -250,6 +262,11 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		}})
 	}
 	out.ToolChoice = encodeToolChoice(r.ToolChoice)
+	// 只在客户端明确禁止并行时写出。默认值由上游决定，替它写 true 是发明意图。
+	if r.ToolChoice != nil && r.ToolChoice.DisableParallel {
+		no := false
+		out.ParallelToolCalls = &no
+	}
 	thinkingOn := r.Thinking != nil && r.Thinking.Enabled
 	if thinkingOn {
 		// DeepSeek 系上游思考模式下强制 tool_choice（required/指定函数）会 400，降级 auto

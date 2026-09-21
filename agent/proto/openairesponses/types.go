@@ -21,6 +21,7 @@ type request struct {
 	Store              *bool           `json:"store,omitempty"`
 	Tools              []tool          `json:"tools,omitempty"`
 	ToolChoice         any             `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool           `json:"parallel_tool_calls,omitempty"`
 	Reasoning          *reasoning      `json:"reasoning,omitempty"`
 	Include            []string        `json:"include,omitempty"`
 	Metadata           json.RawMessage `json:"metadata,omitempty"`

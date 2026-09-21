@@ -22,7 +22,11 @@ func (codec) Name() string { return Name }
 // Caps Responses：encrypted_content 签名、图片、hosted tools 均支持；
 // 思考模式下强制 tool_choice 亦支持。
 func (codec) Caps() proto.Capabilities {
-	return proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true}
+	return proto.Capabilities{
+		ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
+		// TopK 留假：Responses 协议原生没有这一维。
+		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
+	}
 }
 
 // ---- 请求解码：Responses -> IR ----
@@ -65,6 +69,13 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		out.Tools = append(out.Tools, ir.Tool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters})
 	}
 	out.ToolChoice = decodeToolChoice(req.ToolChoice)
+	// 同 Chat：parallel_tool_calls=false 是「禁止并行」。没给则不表态。
+	if req.ParallelToolCalls != nil && !*req.ParallelToolCalls {
+		if out.ToolChoice == nil {
+			out.ToolChoice = &ir.ToolChoice{Mode: ir.ChoiceAuto}
+		}
+		out.ToolChoice.DisableParallel = true
+	}
 	if req.Reasoning != nil && req.Reasoning.Effort != "" {
 		out.Thinking = &ir.ThinkingConfig{Enabled: req.Reasoning.Effort != "none" && req.Reasoning.Effort != "minimal", Effort: req.Reasoning.Effort}
 	}
@@ -221,6 +232,11 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.Tools = append(out.Tools, tool{Type: "function", Name: t.Name, Description: t.Description, Parameters: t.InputSchema})
 	}
 	out.ToolChoice = encodeToolChoice(r.ToolChoice)
+	// 只在客户端明确禁止并行时写出。默认值由上游决定，替它写 true 是发明意图。
+	if r.ToolChoice != nil && r.ToolChoice.DisableParallel {
+		no := false
+		out.ParallelToolCalls = &no
+	}
 	if r.Thinking != nil && r.Thinking.Enabled {
 		effort := r.Thinking.Effort
 		if effort == "" {

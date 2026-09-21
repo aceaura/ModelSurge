@@ -21,12 +21,14 @@ func TestDiagnose(t *testing.T) {
 		Tools: []ir.Tool{{Hosted: ir.HostedWebSearch}},
 	}
 
-	full := proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true}
+	full := proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
+		ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true}
 	if notes := Diagnose(req, "anthropic", full); len(notes) != 0 {
 		t.Errorf("same-protocol signature with full caps should produce no notes, got %v", notes)
 	}
 
-	chat := proto.Capabilities{ThinkingSignature: false, Images: true, HostedTools: false}
+	chat := proto.Capabilities{ThinkingSignature: false, Images: true, HostedTools: false,
+		ImageURLs: true, Sampling: true, ParallelToolCalls: true}
 	notes := Diagnose(req, "openai-chat", chat)
 	joined := strings.Join(notes, "; ")
 	if !strings.Contains(joined, "1 thinking signature") {

@@ -17,6 +17,25 @@ type Capabilities struct {
 	Images                   bool // 图片输入
 	HostedTools              bool // 服务端托管工具声明（web_search / code_execution 等）
 	ThinkingForcedToolChoice bool // 思考模式下允许 tool_choice 强制（required/指定函数）；DeepSeek 系 Chat 上游会 400
+
+	// ImageURLs 远程 URL 形态的图片输入。与 Images 分开是因为两者粒度不同：
+	// 四个出站都能收 base64，只有 kiro 收不了 URL（它把 URL 形态静默跳过）。
+	// 合用一位会让「整个协议没有图片能力」与「只是这一种形态装不下」同形，
+	// 而前者从不发生——四个 codec 的 Images 全为真，那条诊断分支恒假。
+	ImageURLs bool
+
+	// Sampling 采样参数（temperature / top_p / stop_sequences / max_tokens）
+	// 能随请求送达上游。kiro 的载荷里没有这些字段，客户端调的参数全部无效。
+	Sampling bool
+
+	// TopK 独立于 Sampling：只有 Anthropic 与 Gemini 有这一维，
+	// OpenAI 两系原生没有对应字段，不是「能力缺失」而是协议里就不存在。
+	TopK bool
+
+	// ParallelToolCalls 可表达「禁止并行工具调用」。Anthropic 是
+	// disable_parallel_tool_use，Chat 与 responses 都是 parallel_tool_calls；
+	// 只有 kiro 的载荷里没有这一维。
+	ParallelToolCalls bool
 }
 
 // InboundCodec 客户端入口协议编解码器。

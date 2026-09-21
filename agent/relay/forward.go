@@ -159,8 +159,16 @@ func resolvedCandidate(t replayv1.TargetLease) (candidate, error) {
 	if !allowedOutboundProtocol(t.Protocol) {
 		return candidate{}, fmt.Errorf("unsupported outbound protocol %q", t.Protocol)
 	}
+	ov := overridesFrom(t)
 	if t.Protocol == "kiro" {
-		return candidate{name: t.TargetID, protocol: t.Protocol}, nil
+		// codec 只用于能力声明与诊断：数据面在 Upstream 侧（ExecuteKiro），
+		// 这里不会调它的 EncodeRequest。ov 同样要带上，否则账号级
+		// request_overrides 对 kiro 目标会静默失效。
+		c, err := proto.GetOutbound("kiro")
+		if err != nil {
+			return candidate{}, err
+		}
+		return candidate{name: t.TargetID, protocol: t.Protocol, codec: c, ov: ov}, nil
 	}
 	c, err := proto.GetOutbound(t.Protocol)
 	if err != nil {
@@ -169,13 +177,6 @@ func resolvedCandidate(t replayv1.TargetLease) (candidate, error) {
 	url, defaultHeaders, err := endpoint(t.Protocol, t.BaseURL, t.Credential, t.NativeModel)
 	if err != nil {
 		return candidate{}, err
-	}
-	var ov *ir.Overrides
-	if t.RequestOverrides != nil {
-		ov = &ir.Overrides{Temperature: t.RequestOverrides.Temperature, TopP: t.RequestOverrides.TopP, MaxTokens: t.RequestOverrides.MaxTokens}
-		if x := t.RequestOverrides.Thinking; x != nil {
-			ov.Thinking = &ir.ThinkingOverride{Enabled: x.Enabled, BudgetTokens: x.BudgetTokens, Effort: x.Effort}
-		}
 	}
 	return candidate{name: t.TargetID, protocol: t.Protocol, native: t.NativeModel, codec: c, ov: ov,
 		resolve: func(context.Context) (string, map[string]string, *ir.Error) {
@@ -190,6 +191,17 @@ func resolvedCandidate(t replayv1.TargetLease) (candidate, error) {
 			}
 			return url, headers, nil
 		}}, nil
+}
+
+func overridesFrom(t replayv1.TargetLease) *ir.Overrides {
+	if t.RequestOverrides == nil {
+		return nil
+	}
+	ov := &ir.Overrides{Temperature: t.RequestOverrides.Temperature, TopP: t.RequestOverrides.TopP, MaxTokens: t.RequestOverrides.MaxTokens}
+	if x := t.RequestOverrides.Thinking; x != nil {
+		ov.Thinking = &ir.ThinkingOverride{Enabled: x.Enabled, BudgetTokens: x.BudgetTokens, Effort: x.Effort}
+	}
+	return ov
 }
 
 func allowedOutboundProtocol(protocol string) bool {
@@ -498,10 +510,7 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	// 推理风格换算的说明来自 upReq（每个目标的 max_tokens 覆盖不同，档位换算
 	// 结果也不同），Diagnose 看的是客户端原请求，两者只能在此处汇合。
 	notes = append(notes, thinkNotes...)
-	if len(notes) > 0 {
-		log.Printf("relay: upstream %s lossy conversion: %s", cand.name, strings.Join(notes, "; "))
-		w.Header().Set("X-ModelSurge-Notes", strings.Join(notes, "; "))
-	}
+	writeLossyNotes(w, cand.name, notes)
 
 	// body 形态适配（可选 codec 缝）：kiro 二进制 eventstream -> SSE；
 	// 适配过的 body 一律走流式路径。

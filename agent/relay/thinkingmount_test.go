@@ -85,6 +85,54 @@ func TestNoUnregisteredUpstreamPath(t *testing.T) {
 	}
 }
 
+// clientFacingPaths 会向客户端写响应的上游路径 -> 所在文件。
+// 这些路径必须调 Diagnose 并把结果落到 X-ModelSurge-Notes；
+// 压缩路径（fetchSummary / fetchKiroSummary）不写客户端响应，故不在列。
+var clientFacingPaths = map[string]string{
+	"attempt":     "forward.go",
+	"attemptKiro": "kiro_remote.go",
+}
+
+// kiro 路径曾经整条绕过 Diagnose：候选的 codec 为 nil，连能力声明都取不到，
+// 于是它丢掉的签名、URL 图片、采样参数、并行开关全部无声。守卫钉住装配点。
+func TestEveryClientFacingPathDiagnoses(t *testing.T) {
+	for fn, file := range clientFacingPaths {
+		t.Run(fn, func(t *testing.T) {
+			body := funcBody(t, file, fn)
+			if !hasPlainCall(body, "Diagnose") {
+				t.Fatalf("%s (%s) does not call Diagnose: lossy conversions on this path "+
+					"would reach the client with HTTP 200 and no explanation", fn, file)
+			}
+			if !hasPlainCall(body, "writeLossyNotes") {
+				t.Fatalf("%s (%s) computes diagnostics but never writes them out; "+
+					"X-ModelSurge-Notes would stay empty", fn, file)
+			}
+		})
+	}
+}
+
+// 反向守卫：Diagnose 的每个调用点都在已登记的客户端可见路径里。
+func TestNoUnregisteredDiagnoseCallSite(t *testing.T) {
+	for _, file := range []string{"forward.go", "kiro_remote.go", "autocompact.go", "toolpolicy.go", "diagnose.go"} {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			fd, ok := n.(*ast.FuncDecl)
+			if !ok || fd.Body == nil || !hasPlainCall(fd.Body, "Diagnose") {
+				return true
+			}
+			if clientFacingPaths[fd.Name.Name] != file {
+				t.Errorf("%s in %s calls Diagnose but is not a registered client-facing path; "+
+					"either register it or drop the call", fd.Name.Name, file)
+			}
+			return true
+		})
+	}
+}
+
 func funcBody(t *testing.T, file, fn string) *ast.BlockStmt {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -124,6 +172,23 @@ func clonesRequest(body *ast.BlockStmt) bool {
 		}
 		// 只认 *ir.Request 的 Clone：形参名一律以 req 开头（req / upReq）。
 		if id, ok := sel.X.(*ast.Ident); ok && strings.HasPrefix(strings.ToLower(id.Name), "req") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// hasPlainCall 匹配包内非限定调用（f(...) 形态，非 pkg.f(...)）。
+func hasPlainCall(body *ast.BlockStmt, fn string) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == fn {
 			found = true
 			return false
 		}

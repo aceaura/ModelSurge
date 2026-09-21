@@ -61,7 +61,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		out.TopK = gc.TopK
 		out.StopSequences = gc.StopSequences
 		if tc := gc.ThinkingConfig; tc != nil {
-			out.Thinking = &ir.ThinkingConfig{Enabled: true, BudgetTokens: tc.ThinkingBudget}
+			// thinkingBudget=0 是官方的「关闭思考」，-1 是动态思考；
+			// 一律 Enabled=true 会把显式关闭翻成开启。
+			out.Thinking = &ir.ThinkingConfig{Enabled: tc.ThinkingBudget != 0, BudgetTokens: tc.ThinkingBudget}
 		}
 	}
 	if req.SystemInstruction != nil {

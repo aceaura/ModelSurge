@@ -24,7 +24,10 @@ func (codec) Name() string { return Name }
 // Caps Anthropic 是全能力协议：签名、图片、托管工具均原生支持；
 // 思考模式下强制 tool_choice（any/tool）亦为协议支持形态。
 func (codec) Caps() proto.Capabilities {
-	return proto.Capabilities{ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true}
+	return proto.Capabilities{
+		ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
+		ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true,
+	}
 }
 
 // ClampThinking 把 thinking 预算归一成线上可携带形态：缺省补默认值；

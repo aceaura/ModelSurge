@@ -1,7 +1,6 @@
 package gemini
 
 import (
-	"strings"
 	"unicode/utf8"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
@@ -67,18 +66,13 @@ func byteOffset(s string, runeIdx int) int {
 	return n
 }
 
-// encodeGroundingStreamed 流式路径的引用铺法。与非流式的差别：正文是逐增量
-// 作为独立 part 下发的，客户端拼接后 part 序号全局递增，一条引用的区间可能
-// 横跨多个增量 part——按 part 边界切成多条 support，各用本 part 内的字节偏移。
-// 区间落在尚未下发的正文上时跳过该段（引用按约定在正文之后到达，此分支是防御）。
+// encodeGroundingStreamed 流式路径的引用铺法。网络增量不会创建新的语义 part：
+// 同一正文块的全部增量在客户端聚合后仍是一个 part，support 的区间必须相对
+// 完整块正文计算。把每个 chunk 当成 part 会让 partIndex 漂移并切碎跨 chunk 引用。
 func encodeGroundingStreamed(t *encText, citations []ir.Citation) *groundingMetadata {
 	var chunks []groundingChunk
 	var supports []groundingSupport
 	chunkOf := map[string]int{}
-	var whole string
-	if t != nil {
-		whole = strings.Join(t.deltas, "")
-	}
 	for _, c := range citations {
 		if c.URL == "" {
 			continue
@@ -89,33 +83,23 @@ func encodeGroundingStreamed(t *encText, citations []ir.Citation) *groundingMeta
 			chunkOf[c.URL] = ci
 			chunks = append(chunks, groundingChunk{Web: &groundingWeb{URI: c.URL, Title: c.Title}})
 		}
-		if t == nil {
+		if t == nil || !t.assigned {
 			continue
 		}
-		start, end, ok := ir.ResolveRange(whole, c)
+		start, end, ok := ir.ResolveRange(t.text, c)
 		if !ok {
 			// 没有区间就没有 support（同非流式）：来源已进清单，不丢。
 			continue
 		}
-		runePos := 0
-		for i, d := range t.deltas {
-			dRunes := utf8.RuneCountInString(d)
-			ps, pe := runePos, runePos+dRunes
-			runePos = pe
-			s, e := max(start, ps), min(end, pe)
-			if s >= e {
-				continue
-			}
-			supports = append(supports, groundingSupport{
-				Segment: groundingSegment{
-					PartIndex:  t.parts[i],
-					StartIndex: byteOffset(d, s-ps),
-					EndIndex:   byteOffset(d, e-ps),
-					Text:       string([]rune(d)[s-ps : e-ps]),
-				},
-				GroundingChunkIndices: []int{ci},
-			})
-		}
+		supports = append(supports, groundingSupport{
+			Segment: groundingSegment{
+				PartIndex:  t.part,
+				StartIndex: byteOffset(t.text, start),
+				EndIndex:   byteOffset(t.text, end),
+				Text:       ir.ResolveCitedText(t.text, c),
+			},
+			GroundingChunkIndices: []int{ci},
+		})
 	}
 	if len(chunks) == 0 {
 		return nil

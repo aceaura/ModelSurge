@@ -123,8 +123,7 @@ func TestEncodeGroundingPartIndex(t *testing.T) {
 }
 
 // 流式编码：引用走独立 chunk，parts 留空（重发正文会让客户端看到重复文字）。
-// partIndex 指全局拼接后的部件序号，区间相对该 part 自己的正文——
-// 「累积正文偏移 + partIndex 0」是自相矛盾的旧语义（偏移会超出 part 0 长度）。
+// 同一语义正文块的多个网络增量仍属于一个 part，区间相对完整块正文。
 func TestStreamEncodeGrounding(t *testing.T) {
 	enc := codec{}.NewStreamEncoder()
 	feed := func(ev ir.Event) [][]byte {
@@ -155,11 +154,11 @@ func TestStreamEncodeGrounding(t *testing.T) {
 		t.Fatalf("流里没带 grounding：%s", payload)
 	}
 	seg := gm.GroundingSupports[0].Segment
-	if seg.PartIndex != 1 {
-		t.Errorf("partIndex = %d, want 1（第二增量是 part 1）", seg.PartIndex)
+	if seg.PartIndex != 0 {
+		t.Errorf("partIndex = %d, want 0（两个增量仍是同一个正文 part）", seg.PartIndex)
 	}
-	if seg.StartIndex != 0 || seg.EndIndex != 12 {
-		t.Errorf("区间 = [%d,%d)，want [0,12)（相对 part 1 正文）", seg.StartIndex, seg.EndIndex)
+	if seg.StartIndex != 18 || seg.EndIndex != 30 {
+		t.Errorf("区间 = [%d,%d)，want [18,30)（相对完整块正文）", seg.StartIndex, seg.EndIndex)
 	}
 	if seg.Text != "明天有雨" {
 		t.Errorf("segment 文本 = %q", seg.Text)
@@ -169,8 +168,8 @@ func TestStreamEncodeGrounding(t *testing.T) {
 	}
 }
 
-// 横跨两个增量的引用按 part 边界切成多条 support，共享一个来源 chunk。
-func TestStreamEncodeGroundingSplitsAcrossParts(t *testing.T) {
+// 横跨两个网络增量的引用仍是一条 support：两个增量属于同一语义 part。
+func TestStreamEncodeGroundingKeepsOnePartAcrossDeltas(t *testing.T) {
 	enc := codec{}.NewStreamEncoder()
 	feed := func(ev ir.Event) [][]byte {
 		t.Helper()
@@ -193,20 +192,17 @@ func TestStreamEncodeGroundingSplitsAcrossParts(t *testing.T) {
 	if len(gm.GroundingChunks) != 1 {
 		t.Fatalf("来源数 = %d, want 1（同一 URL 共用一条 chunk）", len(gm.GroundingChunks))
 	}
-	if len(gm.GroundingSupports) != 2 {
-		t.Fatalf("support 数 = %d, want 2（跨 part 切分）", len(gm.GroundingSupports))
+	if len(gm.GroundingSupports) != 1 {
+		t.Fatalf("support 数 = %d, want 1（网络分片不拆语义 part）", len(gm.GroundingSupports))
 	}
-	s0, s1 := gm.GroundingSupports[0].Segment, gm.GroundingSupports[1].Segment
-	if s0.PartIndex != 0 || s0.StartIndex != 12 || s0.EndIndex != 18 || s0.Text != "晴，" {
-		t.Errorf("第一段 = %+v, want part0 [12,18) \"晴，\"", s0)
-	}
-	if s1.PartIndex != 1 || s1.StartIndex != 0 || s1.EndIndex != 6 || s1.Text != "明天" {
-		t.Errorf("第二段 = %+v, want part1 [0,6) \"明天\"", s1)
+	seg := gm.GroundingSupports[0].Segment
+	if seg.PartIndex != 0 || seg.StartIndex != 12 || seg.EndIndex != 24 || seg.Text != "晴，明天" {
+		t.Errorf("segment = %+v, want part0 [12,24) \"晴，明天\"", seg)
 	}
 }
 
-// 思考 part 与签名 part 都占全局部件序号：正文前的每一个 part 都会推移
-// 引用的 partIndex，漏数任何一个都会把高亮打到思考或签名上。
+// 思考 part 与签名 part 都占全局部件序号，但同一思考块的多个网络增量
+// 只能占一个 part；多算会把后续正文引用推到不存在的位置。
 func TestStreamEncodeGroundingPartIndexShifts(t *testing.T) {
 	build := func() [][]byte {
 		enc := codec{}.NewStreamEncoder()
@@ -219,6 +215,7 @@ func TestStreamEncodeGroundingPartIndexShifts(t *testing.T) {
 		feed(ir.Event{Type: ir.EvMessageStart, MessageID: "r1", Model: "gemini"})
 		feed(ir.Event{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{}}})
 		feed(ir.Event{Type: ir.EvThinkingDelta, Index: 0, Text: "想"})
+		feed(ir.Event{Type: ir.EvThinkingDelta, Index: 0, Text: "一下"})
 		feed(ir.Event{Type: ir.EvSigDelta, Index: 0, Text: "sig", SignatureFrom: Name})
 		feed(ir.Event{Type: ir.EvBlockStop, Index: 0})
 		feed(ir.Event{Type: ir.EvBlockStart, Index: 1, Block: &ir.Block{Type: ir.BlockText}})
@@ -294,8 +291,8 @@ func TestStreamEncodeGroundingSecondTextBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	seg := r.Candidates[0].GroundingMetadata.GroundingSupports[0].Segment
-	if seg.PartIndex != 2 {
-		t.Errorf("partIndex = %d, want 2（块 0 两个增量占了 part 0、1）", seg.PartIndex)
+	if seg.PartIndex != 1 {
+		t.Errorf("partIndex = %d, want 1（块 0 的两个增量只占 part 0）", seg.PartIndex)
 	}
 	if seg.StartIndex != 0 || seg.EndIndex != 9 {
 		t.Errorf("区间 = [%d,%d)，want [0,9)", seg.StartIndex, seg.EndIndex)

@@ -3,6 +3,7 @@ package openairesponses
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
@@ -39,6 +40,8 @@ func (codec) Caps() proto.Capabilities {
 		UserID:           true, // user
 		// previous_response_id + store。
 		ResponseChain: true,
+		// include / background / prompt 模板 / conversation。
+		ResponsesExtras: true,
 	}
 }
 
@@ -108,7 +111,35 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	out.PreviousResponseID = req.PreviousResponseID
 	// store 三态透传：客户端显式给了就记住，没给保持 nil（出站再决定兜底值）。
 	out.Store = req.Store
+	// 会话对象锚点：string 与 {id} 两种形态归一成 id；与 PreviousResponseID
+	// 互斥是官方约束，同给时两边都留着，让上游照实 400（只报不拒）。
+	out.ConversationID = decodeConversation(req.Conversation)
+	out.Background = req.Background
+	out.Include = req.Include
+	if req.Prompt != nil {
+		out.Prompt = &ir.PromptRef{ID: req.Prompt.ID, Version: req.Prompt.Version, Variables: req.Prompt.Variables}
+	}
 	return out, nil
+}
+
+// decodeConversation conversation 参数归一：字符串 id 或 {id} 对象。
+// 其余形态（官方 spec 之外）解不出 id，按没给处理——会话锚点瞎猜一个
+// 比丢了对客户端伤害更大（上游会把请求挂到错误的会话上）。
+func decodeConversation(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var obj struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		return obj.ID
+	}
+	return ""
 }
 
 // decodeResponseFormat text.format -> IR。type:"text" 是默认值，
@@ -347,6 +378,21 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.Reasoning = &reasoning{Effort: effort, Summary: "auto"}
 		// 要求上游回传 encrypted_content 以便还原 thinking 签名（对齐 sub2api）
 		out.Include = append(out.Include, "reasoning.encrypted_content")
+	}
+	// 客户端自己的 include 条目并入（去重）：同协议回写是它们唯一的活路，
+	// 其他三族没有「点名要额外回传载荷」的机制。
+	for _, inc := range r.Include {
+		if !slices.Contains(out.Include, inc) {
+			out.Include = append(out.Include, inc)
+		}
+	}
+	// 会话对象锚点与后台模式同协议回写（与 PreviousResponseID 同一族约束）。
+	if r.ConversationID != "" {
+		out.Conversation = json.RawMessage(marshal(r.ConversationID))
+	}
+	out.Background = r.Background
+	if r.Prompt != nil {
+		out.Prompt = &promptRef{ID: r.Prompt.ID, Version: r.Prompt.Version, Variables: r.Prompt.Variables}
 	}
 	out.Text = encodeResponseFormat(r.ResponseFormat)
 	if uid := r.Metadata["user_id"]; uid != "" {

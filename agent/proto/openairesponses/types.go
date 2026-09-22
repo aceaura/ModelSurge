@@ -30,8 +30,23 @@ type request struct {
 	// 同一维度，IR 里统一放 Metadata["user_id"]。
 	User               string          `json:"user,omitempty"`
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	// Conversation 会话对象锚点（与 previous_response_id 互斥）。官方两种
+	// 形态：字符串 id 或 {id} 对象，按原文收下，解码时归一成 id。
+	Conversation json.RawMessage `json:"conversation,omitempty"`
+	// Background 后台运行模式（长任务异步执行）。
+	Background *bool `json:"background,omitempty"`
+	// Prompt 服务端 prompt 模板引用 {id, version?, variables?}。
+	Prompt *promptRef `json:"prompt,omitempty"`
 	// TopLogProbs 兼任开关与档位：Responses 没有独立的 logprobs 布尔。
 	TopLogProbs *int `json:"top_logprobs,omitempty"`
+}
+
+// promptRef prompt 模板引用。Variables 值可为字符串/图像/文件对象，
+// 按原文保留不解析（代理展开不了服务端模板，回写时必须字节保真）。
+type promptRef struct {
+	ID        string          `json:"id"`
+	Version   string          `json:"version,omitempty"`
+	Variables json.RawMessage `json:"variables,omitempty"`
 }
 
 type reasoning struct {

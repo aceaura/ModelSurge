@@ -237,7 +237,7 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
 			StructuredOutput: true,
 			Documents:        true, Audio: true, Video: false, Refusal: true, Citations: true,
-			LogProbs: true, LogProbsViaTopN: true, UserID: true, ResponseChain: true},
+			LogProbs: true, LogProbsViaTopN: true, UserID: true, ResponseChain: true, ResponsesExtras: true},
 		"kiro": {ThinkingSignature: false, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: false, Sampling: false, TopK: false, ParallelToolCalls: false, ToolResultError: true,
 			StructuredOutput: false,

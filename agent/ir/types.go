@@ -351,6 +351,30 @@ type Request struct {
 	Store *bool
 	// ItemRefs input 里 item_reference 条目的计数（内容拿不到，只记数）。
 	ItemRefs int
+
+	// 以下四维只有 Responses 一族有。ConversationID 与 PreviousResponseID
+	// 互斥（官方 API 同给会 400），是同族会话锚点的另一种形态，同协议出站
+	// 回写；Include / Background / Prompt 是同族专属的请求修饰，其他三族
+	// 没有任何对应物，收进 IR 只为同协议回写 + 跨协议诊断，不作映射尝试。
+	// ConversationID 会话对象锚点（conversation 参数，string 或 {id} 形态）。
+	ConversationID string
+	// Background 后台运行模式。三态：nil = 客户端没提；显式 true 被丢时
+	// 客户端期待的异步行为会变成同步等待，必须报。
+	Background *bool
+	// Include 客户端点名要回传的额外载荷（message.output_text.logprobs、
+	// reasoning.encrypted_content、file_search_call.results 等）。
+	Include []string
+	// Prompt 服务端 prompt 模板引用。模板内容存在上游服务端，代理展开不了；
+	// 丢了它上游只能看到裸消息（模板指令全丢）。
+	Prompt *PromptRef
+}
+
+// PromptRef 服务端 prompt 模板引用（Responses 的 prompt 参数）。
+// Variables 值可为字符串/图像/文件对象，按原文保留不解析。
+type PromptRef struct {
+	ID        string
+	Version   string
+	Variables json.RawMessage
 }
 
 // SafetySetting 一条内容安全档位（Gemini safetySettings 的等价物）。

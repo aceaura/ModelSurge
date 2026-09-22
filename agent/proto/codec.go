@@ -118,6 +118,13 @@ type Capabilities struct {
 	// ResponseChain 有服务端会话链槽位（Responses 的 previous_response_id
 	// 与 store）。只有 responses 一族（含 codex 别名）有。
 	ResponseChain bool
+
+	// ResponsesExtras 有 Responses 一族的专属请求修饰槽位：
+	// include（点名要额外回传载荷）、background（后台运行）、
+	// prompt（服务端 prompt 模板引用）。只有 responses 一族
+	// （含 codex 别名）有；其他三族连「对应物不存在」都谈不上——
+	// 这些概念只在 Responses 里有。conversation 锚点归 ResponseChain 位。
+	ResponsesExtras bool
 }
 
 // InboundCodec 客户端入口协议编解码器。

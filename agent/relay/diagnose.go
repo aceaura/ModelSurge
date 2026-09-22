@@ -293,5 +293,28 @@ func samplingNotes(req *ir.Request, caps proto.Capabilities) []string {
 		notes = append(notes, fmt.Sprintf(
 			"unresolved %d item reference(s): the proxy is stateless and cannot expand them, referenced content will not reach the upstream", req.ItemRefs))
 	}
+	if req.ConversationID != "" && !caps.ResponseChain {
+		// 会话对象锚点是会话链语义的另一种形态（与 previous_response_id
+		// 互斥），与链锚点同一位门控；别的协议没有服务端会话概念。
+		notes = append(notes,
+			"dropped conversation anchor: the target protocol has no server-side conversation, context continues only via the messages in this request")
+	}
+	if req.Background != nil && *req.Background && !caps.ResponsesExtras {
+		// 客户端期待的异步行为会变成同步等待；显式 false 等同默认，不算丢。
+		notes = append(notes,
+			"dropped background mode: the target protocol runs synchronously, the client expecting an async job will get a blocking response")
+	}
+	if len(req.Include) > 0 && !caps.ResponsesExtras {
+		// include 点名的额外回传载荷（logprobs/加密推理/检索结果等）在
+		// 其他三族的响应 schema 里没有任何对应物。
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d include value(s): the client asked for extra payload back, but the target protocol has no such mechanism", len(req.Include)))
+	}
+	if req.Prompt != nil && !caps.ResponsesExtras {
+		// prompt 模板内容存在服务端，代理展开不了；丢了它上游只能看到
+		// 裸消息——模板里的指令全部丢失。
+		notes = append(notes,
+			"dropped prompt template reference: the template content lives server-side and the target protocol cannot resolve it, its instructions will not reach the upstream")
+	}
 	return notes
 }

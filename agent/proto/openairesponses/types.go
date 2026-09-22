@@ -166,11 +166,14 @@ type toolChoiceNamed struct {
 // ---- 响应 / 流式事件 DTO ----
 
 // streamEvent 统一解析流式事件载荷，按 Type 分派。
+// 三个索引是指针：它们在携带块的事件上是必填字段，而 0 是合法值，用 int +
+// omitempty 会把 output_index:0 整个抹掉——官方 SDK 拿它去索引 response.output[]，
+// 缺字段直接读成 undefined。不携带索引的事件（response.created / error）留 nil。
 type streamEvent struct {
 	Type         string       `json:"type"`
-	OutputIndex  int          `json:"output_index,omitempty"`
-	ContentIndex int          `json:"content_index,omitempty"`
-	SummaryIndex int          `json:"summary_index,omitempty"`
+	OutputIndex  *int         `json:"output_index,omitempty"`
+	ContentIndex *int         `json:"content_index,omitempty"`
+	SummaryIndex *int         `json:"summary_index,omitempty"`
 	Item         *inputItem   `json:"item,omitempty"`      // output_item.added / done
 	Part         *contentPart `json:"part,omitempty"`      // content_part.added
 	Delta        string       `json:"delta,omitempty"`     // *.delta

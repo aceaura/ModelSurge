@@ -10,7 +10,9 @@ import (
 )
 
 // streamDecoder Responses SSE -> IR 事件。
-// output_index 直接作为 IR 块序号；事件映射表对齐 sub2api responses_to_anthropic.go。
+// 寻址单位是 content part 而不是 output item：Responses 的一条 message 可以带
+// 多个 part（output_text / refusal 混排），而 IR 的块是扁平的。事件映射表对齐
+// sub2api responses_to_anthropic.go。
 type streamDecoder struct {
 	started     bool
 	sawToolCall bool
@@ -20,24 +22,111 @@ type streamDecoder struct {
 	// tier 档位回显：response.created 与 completed/incomplete 都可能携带，
 	// 后者晚到时随终止的 message_delta 事件交付。
 	tier string
-	// toolArgs 记录已发出的参数前缀。done 事件携带完整值时只补缺失后缀，
-	// 既覆盖 done-only 上游，又不把已有 delta 重复一遍。
+	// toolArgs 记录已发出的参数前缀（按 IR 块序号）。done 事件携带完整值时只补
+	// 缺失后缀，既覆盖 done-only 上游，又不把已有 delta 重复一遍。
 	toolArgs map[int]string
-	// refusalOpen 已开启的拒绝块（按 output_index）。上游对被拒绝的消息仍然
-	// 先发 output_item.added type=message，从那一帧看不出是拒绝，块只能等
-	// response.refusal.delta 到了再补开。
-	refusalOpen map[int]bool
+	// parts content part -> IR 块序号。IR 序号由本解码器稠密分配，不等于
+	// output_index：一条 message 的多个 part 要各占一块，而 output_index 相同。
+	parts map[partKey]int
+	// itemParts output_index -> 该 item 下已开的 IR 块序号，按开块顺序。
+	// 关块一律走这个顺序，保证下游看到的 start/stop 不交叉嵌套。
+	itemParts map[int][]int
+	// open 仍开着的 IR 块。关块幂等：content_part.done / refusal.done /
+	// output_item.done 会重复指向同一个块。
+	open  map[int]bool
+	order []int
+	next  int
 }
 
-// refusalBlockBase 拒绝块的 IR 序号偏移。output_index 本身已被同一条 message
-// 的文本块占用，拒绝必须落在独立块上（否则会被并进文本块，客户端无法区分），
-// 故整体挪到一个不会与 output_index 相撞的区段。
-const refusalBlockBase = 1 << 20
-
-func (d *streamDecoder) refusalIndex(outputIndex int) int { return refusalBlockBase + outputIndex }
+// partKey content part 的寻址键。refusal 单独占一位：上游漏发 content_part.added
+// 时文本与拒绝会共用同一个 (output_index, content_index)，并成一块等于把拒绝
+// 正文渲染成普通回答。
+type partKey struct {
+	out     int
+	content int
+	refusal bool
+}
 
 func (codec) NewStreamDecoder() proto.StreamDecoder {
-	return &streamDecoder{refusalOpen: map[int]bool{}, toolArgs: map[int]string{}}
+	return &streamDecoder{
+		toolArgs:  map[int]string{},
+		parts:     map[partKey]int{},
+		itemParts: map[int][]int{},
+		open:      map[int]bool{},
+	}
+}
+
+// assign 定位 part 对应的 IR 块，尚未开块时按 blk 补开并返回 BlockStart。
+// 补开是必需的兼容路径：漏发 content_part.added 的上游照样能出正文，
+// 而悬空的增量会让下游编码器直接报错断流。
+func (d *streamDecoder) assign(k partKey, blk *ir.Block) (int, []ir.Event) {
+	if idx, ok := d.parts[k]; ok {
+		return idx, nil
+	}
+	idx := d.next
+	d.next++
+	d.parts[k] = idx
+	d.itemParts[k.out] = append(d.itemParts[k.out], idx)
+	d.open[idx] = true
+	d.order = append(d.order, idx)
+	return idx, []ir.Event{{Type: ir.EvBlockStart, Index: idx, Block: blk}}
+}
+
+func (d *streamDecoder) close(idx int) []ir.Event {
+	if !d.open[idx] {
+		return nil
+	}
+	delete(d.open, idx)
+	return []ir.Event{{Type: ir.EvBlockStop, Index: idx}}
+}
+
+func (d *streamDecoder) closePart(k partKey) []ir.Event {
+	idx, ok := d.parts[k]
+	if !ok {
+		return nil
+	}
+	return d.close(idx)
+}
+
+// closeItem 按开块顺序关掉一个 output item 下的全部 part，并释放其寻址状态。
+func (d *streamDecoder) closeItem(out int) []ir.Event {
+	var evs []ir.Event
+	for _, idx := range d.itemParts[out] {
+		evs = append(evs, d.close(idx)...)
+	}
+	delete(d.itemParts, out)
+	for k := range d.parts {
+		if k.out == out {
+			delete(d.parts, k)
+		}
+	}
+	return evs
+}
+
+// deref 索引缺省按 0 读：Responses 的 content_index 在单 part 消息上常被上游省略。
+func deref(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// idx 编码侧用：把索引写进 wire（含 0）。
+func idx(v int) *int { return &v }
+
+func thinkingBlock() *ir.Block {
+	return &ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{}}
+}
+
+// toolBlock 工具块。it 为 nil 时只有增量帧可用，call_id/name 拿不到——那是上游
+// 漏发 output_item.added 的畸形流，仍要开块，否则悬空的参数增量会让下游编码器
+// 直接报错断流。
+func toolBlock(kind ir.ToolKind, it *inputItem) *ir.Block {
+	tu := &ir.ToolUse{Kind: kind}
+	if it != nil {
+		tu.ID, tu.Name = it.CallID, it.Name
+	}
+	return &ir.Block{Type: ir.BlockToolUse, ToolUse: tu}
 }
 
 func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
@@ -49,6 +138,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	if err := json.Unmarshal([]byte(data), &se); err != nil {
 		return nil, fmt.Errorf("openai-responses: decode stream event: %w", err)
 	}
+	oi, ci := deref(se.OutputIndex), deref(se.ContentIndex)
 	switch se.Type {
 	case "response.created":
 		d.started = true
@@ -66,7 +156,10 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		}
 		switch se.Item.Type {
 		case "message":
-			return []ir.Event{{Type: ir.EvBlockStart, Index: se.OutputIndex, Block: &ir.Block{Type: ir.BlockText}}}, nil
+			// 不在这里开块：正文与拒绝分属不同 content part，类型要到
+			// content_part.added 才确定。提前开一个 text 块，纯拒绝消息就会多出
+			// 一条空 output_text item（客户端渲染成一条空回答）。
+			return nil, nil
 		case "function_call", "custom_tool_call":
 			d.sawToolCall = true
 			kind := ir.ToolFunction
@@ -75,25 +168,32 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 				kind = ir.ToolCustom
 				full = se.Item.Input
 			}
-			out := []ir.Event{{Type: ir.EvBlockStart, Index: se.OutputIndex, Block: &ir.Block{
-				Type:    ir.BlockToolUse,
-				ToolUse: &ir.ToolUse{ID: se.Item.CallID, Name: se.Item.Name, Kind: kind},
-			}}}
-			return append(out, d.completeToolArgs(se.OutputIndex, full)...), nil
+			i, out := d.assign(partKey{out: oi}, toolBlock(kind, se.Item))
+			return append(out, d.completeToolArgs(i, full)...), nil
 		case "reasoning":
-			return []ir.Event{{Type: ir.EvBlockStart, Index: se.OutputIndex, Block: &ir.Block{
-				Type:     ir.BlockThinking,
-				Thinking: &ir.Thinking{},
-			}}}, nil
+			_, out := d.assign(partKey{out: oi}, thinkingBlock())
+			return out, nil
 		}
 		return nil, nil
 	case "response.content_part.added":
-		return nil, nil // block 已由 output_item.added 开启
+		// part 类型只在这一帧给出。refusal 与 output_text 是两种块：并入同一条
+		// 通道会让客户端把拒绝渲染成普通回答。
+		if se.Part == nil {
+			return nil, nil
+		}
+		k := partKey{out: oi, content: ci}
+		typ := ir.BlockText
+		if se.Part.Type == "refusal" {
+			typ, k.refusal = ir.BlockRefusal, true
+		}
+		_, out := d.assign(k, &ir.Block{Type: typ})
+		return out, nil
 	case "response.output_text.delta":
 		if se.Delta == "" {
 			return nil, nil
 		}
-		return []ir.Event{{Type: ir.EvTextDelta, Index: se.OutputIndex, Text: se.Delta}}, nil
+		i, out := d.assign(partKey{out: oi, content: ci}, &ir.Block{Type: ir.BlockText})
+		return append(out, ir.Event{Type: ir.EvTextDelta, Index: i, Text: se.Delta}), nil
 	case "response.output_text.annotation.added":
 		// 该事件没有 delta 字段：正文在 annotation 之外。此前与文本增量并档，
 		// 于是恒命中 delta 为空的分支被静默丢弃，引用一条都到不了客户端。
@@ -101,57 +201,75 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		if len(cs) == 0 {
 			return nil, nil
 		}
-		return []ir.Event{{Type: ir.EvCitation, Index: se.OutputIndex, Citations: cs}}, nil
+		// 索引口径是「相对本 part 的正文」，必须落到 content_index 对应的那一块。
+		// 并进合并块会让 start_index 指向前一个 part 的文字。
+		i, out := d.assign(partKey{out: oi, content: ci}, &ir.Block{Type: ir.BlockText})
+		return append(out, ir.Event{Type: ir.EvCitation, Index: i, Citations: cs}), nil
 	case "response.refusal.delta":
-		// 拒绝正文另开一块：output_item.added 只给出 message 类型，看不出这条
-		// 是拒绝，所以块在这里补开。并入既有 text 块会让客户端把拒绝渲染成
-		// 普通回答（cc-switch streaming_responses.rs 把它映射成可见内容）。
 		if se.Delta == "" {
 			return nil, nil
 		}
-		var out []ir.Event
-		if !d.refusalOpen[se.OutputIndex] {
-			d.refusalOpen[se.OutputIndex] = true
-			out = append(out, ir.Event{Type: ir.EvBlockStart, Index: d.refusalIndex(se.OutputIndex),
-				Block: &ir.Block{Type: ir.BlockRefusal}})
-		}
-		out = append(out, ir.Event{Type: ir.EvTextDelta, Index: d.refusalIndex(se.OutputIndex), Text: se.Delta})
-		return out, nil
+		i, out := d.assign(partKey{out: oi, content: ci, refusal: true}, &ir.Block{Type: ir.BlockRefusal})
+		return append(out, ir.Event{Type: ir.EvTextDelta, Index: i, Text: se.Delta}), nil
 	case "response.refusal.done":
-		if !d.refusalOpen[se.OutputIndex] {
+		return d.closePart(partKey{out: oi, content: ci, refusal: true}), nil
+	case "response.content_part.done":
+		// part 结束就关块，不等 output_item.done：同一条 message 的多个 part 若
+		// 一起延后关闭，下游会看到 start/start/stop/stop 的交叉嵌套。
+		k := partKey{out: oi, content: ci}
+		if se.Part != nil && se.Part.Type == "refusal" {
+			k.refusal = true
+		}
+		return d.closePart(k), nil
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		if se.Delta == "" {
 			return nil, nil
 		}
-		delete(d.refusalOpen, se.OutputIndex)
-		return []ir.Event{{Type: ir.EvBlockStop, Index: d.refusalIndex(se.OutputIndex)}}, nil
-	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
-		return []ir.Event{{Type: ir.EvThinkingDelta, Index: se.OutputIndex, Text: se.Delta}}, nil
+		i, out := d.assign(partKey{out: oi}, thinkingBlock())
+		return append(out, ir.Event{Type: ir.EvThinkingDelta, Index: i, Text: se.Delta}), nil
 	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		if se.Delta == "" {
 			return nil, nil
 		}
-		d.toolArgs[se.OutputIndex] += se.Delta
-		return []ir.Event{{Type: ir.EvToolInput, Index: se.OutputIndex, Text: se.Delta}}, nil
+		kind := ir.ToolFunction
+		if se.Type == "response.custom_tool_call_input.delta" {
+			kind = ir.ToolCustom
+		}
+		i, out := d.assign(partKey{out: oi}, toolBlock(kind, nil))
+		d.toolArgs[i] += se.Delta
+		return append(out, ir.Event{Type: ir.EvToolInput, Index: i, Text: se.Delta}), nil
 	case "response.function_call_arguments.done":
-		return d.completeToolArgs(se.OutputIndex, se.Arguments), nil
+		i, out := d.assign(partKey{out: oi}, toolBlock(ir.ToolFunction, nil))
+		return append(out, d.completeToolArgs(i, se.Arguments)...), nil
 	case "response.custom_tool_call_input.done":
-		return d.completeToolArgs(se.OutputIndex, se.Input), nil
+		i, out := d.assign(partKey{out: oi}, toolBlock(ir.ToolCustom, nil))
+		return append(out, d.completeToolArgs(i, se.Input)...), nil
 	case "response.output_item.done":
 		var out []ir.Event
-		if se.Item != nil && (se.Item.Type == "function_call" || se.Item.Type == "custom_tool_call") {
-			full := se.Item.Arguments
-			if se.Item.Type == "custom_tool_call" {
-				full = se.Item.Input
+		if se.Item != nil {
+			switch se.Item.Type {
+			case "function_call", "custom_tool_call":
+				kind := ir.ToolFunction
+				full := se.Item.Arguments
+				if se.Item.Type == "custom_tool_call" {
+					kind = ir.ToolCustom
+					full = se.Item.Input
+				}
+				i, opened := d.assign(partKey{out: oi}, toolBlock(kind, se.Item))
+				out = append(out, opened...)
+				out = append(out, d.completeToolArgs(i, full)...)
+				delete(d.toolArgs, i)
+			case "reasoning":
+				// 关 thinking 块前先发 signature_delta（对齐 sub2api :688）
+				if se.Item.EncryptedContent != "" {
+					i, opened := d.assign(partKey{out: oi}, thinkingBlock())
+					out = append(out, opened...)
+					out = append(out, ir.Event{Type: ir.EvSigDelta, Index: i, Text: se.Item.EncryptedContent,
+						SignatureFrom: ir.SigFrom(Name, se.Item.EncryptedContent)})
+				}
 			}
-			out = append(out, d.completeToolArgs(se.OutputIndex, full)...)
-			delete(d.toolArgs, se.OutputIndex)
 		}
-		// 关 thinking 块前先发 signature_delta（对齐 sub2api :688）
-		if se.Item != nil && se.Item.Type == "reasoning" && se.Item.EncryptedContent != "" {
-			out = append(out, ir.Event{Type: ir.EvSigDelta, Index: se.OutputIndex, Text: se.Item.EncryptedContent,
-				SignatureFrom: ir.SigFrom(Name, se.Item.EncryptedContent)})
-		}
-		out = append(out, ir.Event{Type: ir.EvBlockStop, Index: se.OutputIndex})
-		return out, nil
+		return append(out, d.closeItem(oi)...), nil
 	case "response.completed":
 		d.finished = true
 		if se.Response != nil && se.Response.Usage != nil {
@@ -246,13 +364,11 @@ func unmapIncompleteReason(s ir.StopReason) string {
 
 func (d *streamDecoder) terminalEvents() []ir.Event {
 	var out []ir.Event
-	// 未收到 refusal.done 就直接终止时补关块：output_item.done 关的是
-	// output_index 那个文本块，关不到挪过区段的拒绝块，不补会让下游编码器
-	// 认为块还开着，拒绝正文卡在缓冲里发不出去。
-	for idx := range d.refusalOpen {
-		out = append(out, ir.Event{Type: ir.EvBlockStop, Index: d.refusalIndex(idx)})
+	// 未收到 part/item 终止帧就直接结束时补关全部仍开着的块：不补会让下游编码器
+	// 认为块还开着，正文卡在缓冲里发不出去。按开块顺序关，避免 start/stop 交叉。
+	for _, i := range d.order {
+		out = append(out, d.close(i)...)
 	}
-	d.refusalOpen = map[int]bool{}
 	u := d.usage
 	return append(out,
 		ir.Event{Type: ir.EvMessageDelta, StopReason: d.stopReason, Usage: &u, ServiceTier: d.tier},

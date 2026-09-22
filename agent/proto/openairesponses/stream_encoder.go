@@ -3,7 +3,6 @@ package openairesponses
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
@@ -20,6 +19,11 @@ type streamEncoder struct {
 
 	blocks map[int]*encBlock
 	order  []int
+	// wire IR 块序号 -> wire output_index。IR 序号是解码器的内部编号，可能稀疏
+	// 也可能沿用别族的编号习惯；直接写进 output_index 会让客户端按它索引
+	// response.output[] 时越界。这里按开块顺序重新稠密编号。
+	wire    map[int]int
+	nextOut int
 	// skip 服务端工具块（server_tool_use / web_search_tool_result）的 index。
 	// Responses 协议里没有对应 item 类型：它们是上游自己执行的搜索，客户端既
 	// 不需要回传也无法回传。落进 text 分支会把查询 JSON 拼进 output_text，
@@ -57,7 +61,18 @@ type encBlock struct {
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{created: time.Now().Unix(), blocks: map[int]*encBlock{}, skip: map[int]bool{}}
+	return &streamEncoder{created: time.Now().Unix(), blocks: map[int]*encBlock{}, wire: map[int]int{}, skip: map[int]bool{}}
+}
+
+// wireOf IR 块序号 -> 稠密 wire output_index，首次见到时分配。
+func (e *streamEncoder) wireOf(i int) int {
+	if w, ok := e.wire[i]; ok {
+		return w
+	}
+	w := e.nextOut
+	e.nextOut++
+	e.wire[i] = w
+	return w
 }
 
 func (e *streamEncoder) nextID(prefix string) string {
@@ -95,9 +110,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}
 		b.text += ev.Text
 		if b.typ == ir.BlockRefusal {
-			return [][]byte{e.frame(streamEvent{Type: "response.refusal.delta", OutputIndex: ev.Index, Delta: ev.Text})}, nil
+			return [][]byte{e.frame(streamEvent{Type: "response.refusal.delta", OutputIndex: idx(e.wireOf(ev.Index)), ContentIndex: idx(0), Delta: ev.Text})}, nil
 		}
-		return [][]byte{e.frame(streamEvent{Type: "response.output_text.delta", OutputIndex: ev.Index, Delta: ev.Text})}, nil
+		return [][]byte{e.frame(streamEvent{Type: "response.output_text.delta", OutputIndex: idx(e.wireOf(ev.Index)), ContentIndex: idx(0), Delta: ev.Text})}, nil
 	case ir.EvCitation:
 		b := e.blocks[ev.Index]
 		if b == nil {
@@ -114,8 +129,8 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		for i := range as {
 			a := as[i]
 			frames = append(frames, e.frame(streamEvent{
-				Type: "response.output_text.annotation.added", OutputIndex: ev.Index,
-				ContentIndex: 0, Annotation: &a,
+				Type: "response.output_text.annotation.added", OutputIndex: idx(e.wireOf(ev.Index)),
+				ContentIndex: idx(0), Annotation: &a,
 			}))
 		}
 		return frames, nil
@@ -125,7 +140,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return nil, fmt.Errorf("openai-responses: thinking delta for unopened block %d", ev.Index)
 		}
 		b.text += ev.Text
-		return [][]byte{e.frame(streamEvent{Type: "response.reasoning_summary_text.delta", OutputIndex: ev.Index, SummaryIndex: 0, Delta: ev.Text})}, nil
+		return [][]byte{e.frame(streamEvent{Type: "response.reasoning_summary_text.delta", OutputIndex: idx(e.wireOf(ev.Index)), SummaryIndex: idx(0), Delta: ev.Text})}, nil
 	case ir.EvSigDelta:
 		// 签名不进增量事件，随 output_item.done 的 encrypted_content 下发。
 		// 只收本族真签名：外族/合成签名放进 encrypted_content 会被客户端当成
@@ -151,7 +166,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if b.toolKind == ir.ToolCustom {
 			typ = "response.custom_tool_call_input.delta"
 		}
-		return [][]byte{e.frame(streamEvent{Type: typ, OutputIndex: ev.Index, Delta: ev.Text})}, nil
+		return [][]byte{e.frame(streamEvent{Type: typ, OutputIndex: idx(e.wireOf(ev.Index)), Delta: ev.Text})}, nil
 	case ir.EvBlockStop:
 		return e.blockStop(ev.Index), nil
 	case ir.EvMessageDelta:
@@ -175,11 +190,12 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 
 func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 	b := &encBlock{typ: blockTypeOf(ev.Block)}
+	oi := idx(e.wireOf(ev.Index))
 	switch b.typ {
 	case ir.BlockThinking:
 		b.itemID = e.nextID("rs")
 		e.register(ev.Index, b)
-		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: ev.Index, Item: &inputItem{
+		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
 			Type: "reasoning", ID: b.itemID, Summary: json.RawMessage(`[]`),
 		}})}, nil
 	case ir.BlockToolUse:
@@ -196,7 +212,7 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		}
 		b.itemID = e.nextID(prefix)
 		e.register(ev.Index, b)
-		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: ev.Index, Item: &inputItem{
+		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
 			Type: typ, ID: b.itemID, CallID: b.toolID, Name: b.toolName,
 		}})}, nil
 	case ir.BlockRefusal:
@@ -204,10 +220,10 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		// 会让客户端把拒绝当普通回答渲染。
 		b.itemID = e.nextID("msg")
 		e.register(ev.Index, b)
-		added := e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: ev.Index, Item: &inputItem{
+		added := e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
 			Type: "message", ID: b.itemID, Role: "assistant", Content: json.RawMessage(`[]`),
 		}})
-		part := e.frame(streamEvent{Type: "response.content_part.added", OutputIndex: ev.Index, ContentIndex: 0, Part: &contentPart{
+		part := e.frame(streamEvent{Type: "response.content_part.added", OutputIndex: oi, ContentIndex: idx(0), Part: &contentPart{
 			Type: "refusal",
 		}})
 		return [][]byte{added, part}, nil
@@ -223,29 +239,33 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		b.typ = ir.BlockText
 		b.itemID = e.nextID("msg")
 		e.register(ev.Index, b)
-		added := e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: ev.Index, Item: &inputItem{
+		added := e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
 			Type: "message", ID: b.itemID, Role: "assistant", Content: json.RawMessage(`[]`),
 		}})
-		part := e.frame(streamEvent{Type: "response.content_part.added", OutputIndex: ev.Index, ContentIndex: 0, Part: &contentPart{
+		part := e.frame(streamEvent{Type: "response.content_part.added", OutputIndex: oi, ContentIndex: idx(0), Part: &contentPart{
 			Type: "output_text", Text: "",
 		}})
 		return [][]byte{added, part}, nil
 	}
 }
 
-func (e *streamEncoder) register(idx int, b *encBlock) {
-	e.blocks[idx] = b
-	e.order = append(e.order, idx)
+func (e *streamEncoder) register(i int, b *encBlock) {
+	if _, dup := e.blocks[i]; !dup {
+		e.order = append(e.order, i)
+	}
+	e.blocks[i] = b
+	e.wireOf(i)
 }
 
-func (e *streamEncoder) blockStop(idx int) [][]byte {
-	b := e.blocks[idx]
+func (e *streamEncoder) blockStop(i int) [][]byte {
+	b := e.blocks[i]
 	if b == nil || b.closed {
 		return nil
 	}
 	b.closed = true
+	oi := idx(e.wireOf(i))
 	if b.typ == ir.BlockToolUse {
-		done := streamEvent{OutputIndex: idx}
+		done := streamEvent{OutputIndex: oi}
 		if b.toolKind == ir.ToolCustom {
 			done.Type = "response.custom_tool_call_input.done"
 			done.Input = b.text
@@ -258,10 +278,10 @@ func (e *streamEncoder) blockStop(idx int) [][]byte {
 		}
 		return [][]byte{
 			e.frame(done),
-			e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: idx, Item: e.doneItem(b)}),
+			e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: oi, Item: e.doneItem(b)}),
 		}
 	}
-	return [][]byte{e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: idx, Item: e.doneItem(b)})}
+	return [][]byte{e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: oi, Item: e.doneItem(b)})}
 }
 
 // doneItem 由累积状态构造完整 item。
@@ -314,11 +334,11 @@ func (e *streamEncoder) completedFrame() []byte {
 }
 
 // fullOutput 按序输出所有块的完整 item（SDK get_final_response 依赖）。
+// 顺序必须是 wire output_index 的顺序（即开块顺序），不能按 IR 序号排：
+// 客户端是拿 output_index 去索引这个数组的，两者错位就等于指向别的 item。
 func (e *streamEncoder) fullOutput() []inputItem {
-	idxs := append([]int(nil), e.order...)
-	sort.Ints(idxs)
-	out := make([]inputItem, 0, len(idxs))
-	for _, i := range idxs {
+	out := make([]inputItem, 0, len(e.order))
+	for _, i := range e.order {
 		out = append(out, *e.doneItem(e.blocks[i]))
 	}
 	return out

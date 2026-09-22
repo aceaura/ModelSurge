@@ -73,6 +73,8 @@ func TestDecodeAnnotationsFilters(t *testing.T) {
 
 // 回归：response.output_text.annotation.added 此前与文本增量并档，
 // 而该事件没有 delta 字段，于是恒命中空分支被静默丢弃，引用一条都到不了客户端。
+// 裸帧（上游漏发 output_item.added / content_part.added）还要先把块开起来：
+// 悬空的引用事件会被下游编码器整条丢掉。
 func TestStreamDecodeAnnotationAdded(t *testing.T) {
 	dec := codec{}.NewStreamDecoder()
 	evs, err := dec.Feed("", `{"type":"response.output_text.annotation.added","output_index":0,
@@ -80,15 +82,18 @@ func TestStreamDecodeAnnotationAdded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(evs) != 1 || evs[0].Type != ir.EvCitation {
-		t.Fatalf("事件 = %+v，want 一条 EvCitation（并档回归）", evs)
+	if len(evs) != 2 || evs[0].Type != ir.EvBlockStart || evs[1].Type != ir.EvCitation {
+		t.Fatalf("事件 = %+v，want BlockStart + EvCitation（并档回归）", evs)
 	}
-	if got := evs[0].Citations; len(got) != 1 || got[0].URL != "https://w" || got[0].End != 2 {
+	if got := evs[1].Citations; len(got) != 1 || got[0].URL != "https://w" || got[0].End != 2 {
 		t.Fatalf("引用内容不对：%+v", got)
+	}
+	if evs[0].Index != evs[1].Index {
+		t.Fatalf("引用落在了别的块上：start=%d citation=%d", evs[0].Index, evs[1].Index)
 	}
 }
 
-// annotation 为 null 的畸形帧不得 panic，也不得产出空引用。
+// annotation 为 null 的畸形帧不得 panic，也不得产出空引用（更不得凭空开块）。
 func TestStreamDecodeAnnotationAddedNil(t *testing.T) {
 	dec := codec{}.NewStreamDecoder()
 	evs, err := dec.Feed("", `{"type":"response.output_text.annotation.added","output_index":0}`)
@@ -107,7 +112,10 @@ func TestStreamDecodeTextDeltaUnaffected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(evs) != 1 || evs[0].Type != ir.EvTextDelta || evs[0].Text != "hi" {
+	if len(evs) != 2 || evs[0].Type != ir.EvBlockStart {
+		t.Fatalf("裸文本增量没有补开块：%+v", evs)
+	}
+	if evs[1].Type != ir.EvTextDelta || evs[1].Text != "hi" || evs[1].Index != evs[0].Index {
 		t.Fatalf("文本增量被破坏：%+v", evs)
 	}
 }

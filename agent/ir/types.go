@@ -63,6 +63,14 @@ type Block struct {
 	CacheTTL string
 }
 
+// ContextMgmtEntry 一条服务端上下文管理策略（responses context_management
+// 数组元素）。Type 目前官方只有 "compaction"；CompactThreshold 是触发压缩的
+// token 阈值，nil = 客户端没给（上游默认）。
+type ContextMgmtEntry struct {
+	Type             string
+	CompactThreshold *int
+}
+
 // Container 代码执行容器的标识与技能声明（仅 Anthropic 一族）。
 // 请求侧：ID 是跨请求复用的容器标识，Skills 是要加载的技能（Version 缺省
 // 为 latest）；响应侧：ID/ExpiresAt 是实际使用的容器与过期时间，Skills 是
@@ -416,6 +424,10 @@ type Request struct {
 	// Prompt 服务端 prompt 模板引用。模板内容存在上游服务端，代理展开不了；
 	// 丢了它上游只能看到裸消息（模板指令全丢）。
 	Prompt *PromptRef
+	// ContextMgmt 服务端上下文管理策略（responses 一族的 context_management，
+	// 目前唯一条目 type 是 "compaction"：到 compact_threshold tokens 时服务端
+	// 自动压缩上下文）。外族无对应，跨族由诊断报出。
+	ContextMgmt []ContextMgmtEntry
 	// ServiceTier 服务质量档位原值（anthropic auto/standard_only；OpenAI 两系
 	// auto/default/flex/scale/priority/fast，responses 另有 ultrafast）。
 	// 保留原值不规整：跨族映射在出站编码按目标协议值集进行（proto.MapServiceTier）。

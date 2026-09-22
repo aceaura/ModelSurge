@@ -124,6 +124,12 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	out.ServiceTier = req.ServiceTier
 	out.PromptCacheKey = req.PromptCacheKey
 	out.SafetyIdentifier = req.SafetyIdentifier
+	// context_management 原值进 IR（type/threshold 都是结构化字段，无需
+	// RawMessage 透传；threshold 三态指针保留「没给」）。
+	for _, e := range req.ContextManagement {
+		out.ContextMgmt = append(out.ContextMgmt, ir.ContextMgmtEntry{
+			Type: e.Type, CompactThreshold: e.CompactThreshold})
+	}
 	// 显式 null 等同没给（与 chat 同款归一）。
 	if string(req.Moderation) != "null" {
 		out.Moderation = req.Moderation
@@ -406,6 +412,11 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.Conversation = json.RawMessage(marshal(r.ConversationID))
 	}
 	out.Background = r.Background
+	// context_management 同族回写。
+	for _, e := range r.ContextMgmt {
+		out.ContextManagement = append(out.ContextManagement, contextMgmtEntry{
+			Type: e.Type, CompactThreshold: e.CompactThreshold})
+	}
 	if r.Prompt != nil {
 		out.Prompt = &promptRef{ID: r.Prompt.ID, Version: r.Prompt.Version, Variables: r.Prompt.Variables}
 	}

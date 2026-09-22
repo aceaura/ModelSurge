@@ -319,10 +319,17 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 			"unresolved %d item reference(s): the proxy is stateless and cannot expand them, referenced content will not reach the upstream", req.ItemRefs))
 	}
 	if req.ConversationID != "" && !caps.ResponseChain {
+
 		// 会话对象锚点是会话链语义的另一种形态（与 previous_response_id
 		// 互斥），与链锚点同一位门控；别的协议没有服务端会话概念。
 		notes = append(notes,
 			"dropped conversation anchor: the target protocol has no server-side conversation, context continues only via the messages in this request")
+	}
+	if len(req.ContextMgmt) > 0 && !caps.ResponseChain {
+		// 服务端压缩策略同为 responses 一族专属：丢了上游按默认策略
+		// （不压缩或默认阈值）处理，超长上下文行为与客户端预期不符。
+		notes = append(notes,
+			"dropped context_management: the target protocol has no server-side context compaction configuration, the upstream default policy applies")
 	}
 	if req.Background != nil && *req.Background && !caps.ResponsesExtras {
 		// 客户端期待的异步行为会变成同步等待；显式 false 等同默认，不算丢。

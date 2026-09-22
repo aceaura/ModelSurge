@@ -49,6 +49,16 @@ type request struct {
 	PromptCacheOptions json.RawMessage `json:"prompt_cache_options,omitempty"`
 	// TopLogProbs 兼任开关与档位：Responses 没有独立的 logprobs 布尔。
 	TopLogProbs *int `json:"top_logprobs,omitempty"`
+	// ContextManagement 服务端上下文管理策略（目前唯一条目 type 是
+	// "compaction" + compact_threshold tokens 阈值）。
+	ContextManagement []contextMgmtEntry `json:"context_management,omitempty"`
+}
+
+// contextMgmtEntry context_management 数组元素。CompactThreshold 三态：
+// nil = 客户端没给（上游默认），与显式 0 不同。
+type contextMgmtEntry struct {
+	Type             string `json:"type"`
+	CompactThreshold *int   `json:"compact_threshold,omitempty"`
 }
 
 // promptRef prompt 模板引用。Variables 值可为字符串/图像/文件对象，

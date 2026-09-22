@@ -259,12 +259,19 @@ func encodeUsagePtr(u *ir.Usage) *usage {
 	if u == nil {
 		return nil
 	}
-	return &usage{
+	out := &usage{
 		InputTokens:              u.InputTokens,
 		OutputTokens:             u.OutputTokens,
 		CacheReadInputTokens:     u.CacheReadTokens,
 		CacheCreationInputTokens: u.CacheCreationTokens,
 	}
+	if u.CacheCreationDetailsKnown {
+		out.CacheCreation = &cacheCreationUsage{
+			Ephemeral5mInputTokens: u.CacheCreation5mTokens,
+			Ephemeral1hInputTokens: u.CacheCreation1hTokens,
+		}
+	}
+	return out
 }
 
 // ---- 非流式响应 ----
@@ -295,12 +302,7 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		Content:      encodeBlocks(resp.Content),
 		StopReason:   UnmapStopReason(resp.StopReason),
 		StopSequence: resp.StopSequence,
-		Usage: usage{
-			InputTokens:              resp.Usage.InputTokens,
-			OutputTokens:             resp.Usage.OutputTokens,
-			CacheReadInputTokens:     resp.Usage.CacheReadTokens,
-			CacheCreationInputTokens: resp.Usage.CacheCreationTokens,
-		},
+		Usage:        *encodeUsagePtr(&resp.Usage),
 	}
 	// 值集装不下的回显（OpenAI 的 flex/fast 等）丢弃，由 ResponseNotes 报出。
 	if tier, ok := proto.MapServiceTierEcho(resp.ServiceTier, Name); ok {

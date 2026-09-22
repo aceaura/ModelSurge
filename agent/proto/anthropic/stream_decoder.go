@@ -166,10 +166,19 @@ func (d *streamDecoder) Finish() []ir.Event {
 }
 
 func convUsage(u usage) ir.Usage {
-	return ir.Usage{
+	out := ir.Usage{
 		InputTokens:         u.InputTokens,
 		OutputTokens:        u.OutputTokens,
 		CacheReadTokens:     u.CacheReadInputTokens,
 		CacheCreationTokens: u.CacheCreationInputTokens,
 	}
+	if u.CacheCreation != nil {
+		out.CacheCreation5mTokens = u.CacheCreation.Ephemeral5mInputTokens
+		out.CacheCreation1hTokens = u.CacheCreation.Ephemeral1hInputTokens
+		out.CacheCreationDetailsKnown = true
+		if out.CacheCreationTokens == 0 {
+			out.CacheCreationTokens = out.CacheCreation5mTokens + out.CacheCreation1hTokens
+		}
+	}
+	return out
 }

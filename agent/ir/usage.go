@@ -5,10 +5,13 @@ package ir
 // 各 codec 在边界处负责口径换算（OpenAI 的 input_tokens 含 cached_tokens，
 // 需减去；Gemini 的 promptTokenCount 含 cachedContentTokenCount，同理）。
 type Usage struct {
-	InputTokens         int
-	OutputTokens        int
-	CacheReadTokens     int
-	CacheCreationTokens int
+	InputTokens               int
+	OutputTokens              int
+	CacheReadTokens           int
+	CacheCreationTokens       int
+	CacheCreation5mTokens     int
+	CacheCreation1hTokens     int
+	CacheCreationDetailsKnown bool
 	// ReasoningTokens 思考消耗，是 OutputTokens 的子集而非另一项，
 	// 因此不参与任何合计——加进去会把输出算两遍。
 	// 上游字段：Responses 的 output_tokens_details.reasoning_tokens、
@@ -36,6 +39,11 @@ func (u *Usage) MergeNonZero(o Usage) {
 	}
 	if o.CacheCreationTokens != 0 {
 		u.CacheCreationTokens = o.CacheCreationTokens
+	}
+	if o.CacheCreationDetailsKnown {
+		u.CacheCreation5mTokens = o.CacheCreation5mTokens
+		u.CacheCreation1hTokens = o.CacheCreation1hTokens
+		u.CacheCreationDetailsKnown = true
 	}
 	if o.ReasoningTokens != 0 {
 		u.ReasoningTokens = o.ReasoningTokens

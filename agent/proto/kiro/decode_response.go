@@ -151,6 +151,9 @@ func (Codec) ResponseNotes(resp *ir.Response) []string {
 	if resp.Audio != nil {
 		notes = append(notes, proto.AudioOutputDropNote())
 	}
+	if resp.Usage.CacheCreationDetailsKnown {
+		notes = append(notes, proto.CacheCreationDetailsDropNote())
+	}
 	return notes
 }
 

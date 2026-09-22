@@ -663,10 +663,14 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 				startUsage = *ev.Usage
 			}
 			ev = f.estimateUsageOnEvent(req, &outText, ev, cand.name)
-			if onUsage != nil && ev.Type == ir.EvMessageDelta && ev.Usage != nil {
+			if onUsage != nil && ev.Type == ir.EvMessageDelta {
 				merged := startUsage
-				merged.MergeNonZero(*ev.Usage)
-				onUsage(&merged)
+				if ev.Usage != nil {
+					merged.MergeNonZero(*ev.Usage)
+				}
+				if ev.Usage != nil || merged.TotalInput()+merged.OutputTokens != 0 {
+					onUsage(&merged)
+				}
 			}
 			sum.observe(ev)
 			csum.observe(ev)

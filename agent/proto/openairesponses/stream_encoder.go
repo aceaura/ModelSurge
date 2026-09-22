@@ -26,8 +26,10 @@ type streamEncoder struct {
 	// 正文里凭空多出一段参数串——宁可不出现。
 	skip map[int]bool
 
-	stopReason ir.StopReason
-	usage      *ir.Usage
+	stopReason          ir.StopReason
+	usage               ir.Usage
+	hasUsage            bool
+	droppedCacheDetails bool
 	// tier 已映射待回显的档位（response.created 与终止帧都携带）。
 	tier        string
 	droppedTier string
@@ -79,6 +81,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Audio != nil {
 			e.droppedAudio = true
 		}
+		e.mergeUsage(ev.Usage)
 		return [][]byte{e.frame(streamEvent{Type: "response.created", Response: &responseObj{
 			ID: e.id, Object: "response", CreatedAt: e.created, Model: e.model, Status: "in_progress",
 			ServiceTier: e.tier,
@@ -153,7 +156,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		return e.blockStop(ev.Index), nil
 	case ir.EvMessageDelta:
 		e.stopReason = ev.StopReason
-		e.usage = ev.Usage
+		e.mergeUsage(ev.Usage)
 		// 晚到的档位回显还补得上：终止帧的 response 对象也带 service_tier。
 		e.mapTier(ev.ServiceTier)
 		if ev.Container != nil {
@@ -289,9 +292,13 @@ func (e *streamEncoder) doneItem(b *encBlock) *inputItem {
 
 func (e *streamEncoder) completedFrame() []byte {
 	e.completed = true
+	var usageOut *usage
+	if e.hasUsage {
+		usageOut = encodeUsage(&e.usage)
+	}
 	obj := &responseObj{
 		ID: e.id, Object: "response", CreatedAt: e.created, Model: e.model,
-		Status: "completed", Output: e.fullOutput(), Usage: encodeUsage(e.usage),
+		Status: "completed", Output: e.fullOutput(), Usage: usageOut,
 		ServiceTier: e.tier,
 	}
 	// 事件名也要跟着改。此前恒发 response.completed 只改 status 字段，而本仓的
@@ -360,7 +367,22 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, ir.RawArgsPassNote(e.badToolArgs))
 		e.badToolArgs = 0
 	}
+	if e.droppedCacheDetails {
+		notes = append(notes, proto.CacheCreationDetailsDropNote())
+		e.droppedCacheDetails = false
+	}
 	return notes
+}
+
+func (e *streamEncoder) mergeUsage(u *ir.Usage) {
+	if u == nil {
+		return
+	}
+	e.usage.MergeNonZero(*u)
+	e.hasUsage = true
+	if u.CacheCreationDetailsKnown {
+		e.droppedCacheDetails = true
+	}
 }
 
 // mapTier 映射档位回显：值集装不下的（anthropic 的 batch 等）丢弃，

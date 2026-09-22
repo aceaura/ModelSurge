@@ -212,10 +212,16 @@ type delta struct {
 }
 
 type usage struct {
-	InputTokens              int `json:"input_tokens,omitempty"`
-	OutputTokens             int `json:"output_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	InputTokens              int                 `json:"input_tokens,omitempty"`
+	OutputTokens             int                 `json:"output_tokens,omitempty"`
+	CacheReadInputTokens     int                 `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int                 `json:"cache_creation_input_tokens,omitempty"`
+	CacheCreation            *cacheCreationUsage `json:"cache_creation,omitempty"`
+}
+
+type cacheCreationUsage struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
 }
 
 type errorBody struct {

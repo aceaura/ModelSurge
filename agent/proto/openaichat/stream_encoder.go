@@ -36,8 +36,11 @@ type streamEncoder struct {
 	text     map[int]string
 	nextTool int
 	// droppedSigs 丢弃的签名增量数：Chat 没有签名槽位，全丢，Notes() 报出。
-	droppedSigs int
-	stopped     bool
+	droppedSigs         int
+	usage               ir.Usage
+	hasUsage            bool
+	droppedCacheDetails bool
+	stopped             bool
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
@@ -61,6 +64,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Audio != nil {
 			e.droppedAudio = true
 		}
+		e.mergeUsage(ev.Usage)
 		return [][]byte{e.chunk(&message{Role: "assistant"}, "")}, nil
 	case ir.EvBlockStart:
 		if ev.Block != nil && ev.Block.Type == ir.BlockToolUse && ev.Block.ToolUse != nil {
@@ -135,10 +139,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Container != nil {
 			e.droppedContainer = true
 		}
+		e.mergeUsage(ev.Usage)
 		var frames [][]byte
 		frames = append(frames, e.chunk(&message{}, UnmapFinishReason(ev.StopReason)))
-		if ev.Usage != nil {
-			frames = append(frames, e.usageChunk(ev.Usage))
+		if e.hasUsage {
+			frames = append(frames, e.usageChunk(&e.usage))
 		}
 		return frames, nil
 	case ir.EvMessageStop:
@@ -201,7 +206,22 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.CustomToolDowngradeNote(e.customTools))
 		e.customTools = 0
 	}
+	if e.droppedCacheDetails {
+		notes = append(notes, proto.CacheCreationDetailsDropNote())
+		e.droppedCacheDetails = false
+	}
 	return notes
+}
+
+func (e *streamEncoder) mergeUsage(u *ir.Usage) {
+	if u == nil {
+		return
+	}
+	e.usage.MergeNonZero(*u)
+	e.hasUsage = true
+	if u.CacheCreationDetailsKnown {
+		e.droppedCacheDetails = true
+	}
 }
 
 func (e *streamEncoder) finishToolArgs(index int) [][]byte {

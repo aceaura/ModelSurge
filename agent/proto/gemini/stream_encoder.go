@@ -32,8 +32,11 @@ type streamEncoder struct {
 	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
 	droppedUploads int
 	// droppedAudio 完整 Chat 音频输出没有 Gemini 流式响应槽位。
-	droppedAudio bool
-	finished     bool
+	droppedAudio        bool
+	usage               ir.Usage
+	hasUsage            bool
+	droppedCacheDetails bool
+	finished            bool
 }
 
 // encText 一个正文块的流式下发记录。
@@ -73,6 +76,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Audio != nil {
 			e.droppedAudio = true
 		}
+		e.mergeUsage(ev.Usage)
 		return nil, nil
 	case ir.EvTextDelta:
 		t := e.texts[ev.Index]
@@ -158,7 +162,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Container != nil {
 			e.droppedContainer = true
 		}
-		return e.finishChunk(ev.StopReason, ev.Usage), nil
+		e.mergeUsage(ev.Usage)
+		if e.hasUsage {
+			return e.finishChunk(ev.StopReason, &e.usage), nil
+		}
+		return e.finishChunk(ev.StopReason, nil), nil
 	case ir.EvMessageStop, ir.EvPing:
 		return nil, nil
 	case ir.EvError:
@@ -246,5 +254,20 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.AudioOutputDropNote())
 		e.droppedAudio = false
 	}
+	if e.droppedCacheDetails {
+		notes = append(notes, proto.CacheCreationDetailsDropNote())
+		e.droppedCacheDetails = false
+	}
 	return notes
+}
+
+func (e *streamEncoder) mergeUsage(u *ir.Usage) {
+	if u == nil {
+		return
+	}
+	e.usage.MergeNonZero(*u)
+	e.hasUsage = true
+	if u.CacheCreationDetailsKnown {
+		e.droppedCacheDetails = true
+	}
 }

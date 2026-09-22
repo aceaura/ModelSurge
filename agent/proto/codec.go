@@ -408,6 +408,9 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	if resp.Audio != nil && protoName != "openai-chat" {
 		notes = append(notes, AudioOutputDropNote())
 	}
+	if resp.Usage.CacheCreationDetailsKnown && protoName != "anthropic" {
+		notes = append(notes, CacheCreationDetailsDropNote())
+	}
 	return notes
 }
 
@@ -427,6 +430,10 @@ func ContainerUploadDropNote(n int) string {
 // message.audio；Chat SSE 与所有外族响应都没有等价槽位。
 func AudioOutputDropNote() string {
 	return "dropped model audio output: this response format has no complete-audio slot, the client cannot play the generated audio or recover its transcript and replay id"
+}
+
+func CacheCreationDetailsDropNote() string {
+	return "dropped Anthropic cache-creation TTL details: this response format has no 5-minute/1-hour cache-write usage fields; aggregate input token totals remain preserved"
 }
 
 func CustomToolDowngradeNote(n int) string {

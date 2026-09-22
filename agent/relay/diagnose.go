@@ -246,5 +246,17 @@ func samplingNotes(req *ir.Request, caps proto.Capabilities) []string {
 		// 不翻译：偏置的键是 token id，词表随模型而变，跨模型重映射没有正确答案。
 		notes = append(notes, "dropped logit_bias: upstream protocol has no logit bias parameter")
 	}
+	if req.Metadata["user_id"] != "" && !caps.UserID {
+		notes = append(notes, "dropped user id: upstream protocol has no end-user identifier parameter, abuse tracking will not see it")
+	}
+	if len(req.SafetySettings) > 0 {
+		// safetySettings 是 Gemini 独有维度，没有任何出站接得住，恒报。
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d safety setting(s): upstream protocol has no content-safety threshold parameter, filtering falls back to the upstream default", len(req.SafetySettings)))
+	}
+	if req.CachedContent != "" {
+		// cachedContent 同理：缓存是服务端资源 id，换协议后引用不到。
+		notes = append(notes, "dropped cached content reference: upstream protocol has no context-caching parameter, the full context will be sent and billed")
+	}
 	return notes
 }

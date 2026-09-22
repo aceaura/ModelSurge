@@ -36,6 +36,7 @@ func (codec) Caps() proto.Capabilities {
 		ToolResultError:  false,
 		StructuredOutput: true, // text.format
 		Citations:        true, // output_text.annotations
+		UserID:           true, // user
 	}
 }
 
@@ -98,6 +99,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	}
 	if req.Text != nil {
 		out.ResponseFormat = decodeResponseFormat(req.Text.Format)
+	}
+	if req.User != "" {
+		out.Metadata = map[string]string{"user_id": req.User}
 	}
 	return out, nil
 }
@@ -336,6 +340,9 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.Include = append(out.Include, "reasoning.encrypted_content")
 	}
 	out.Text = encodeResponseFormat(r.ResponseFormat)
+	if uid := r.Metadata["user_id"]; uid != "" {
+		out.User = uid
+	}
 	// 订阅端点（Codex 形态）要求 store=false；对官方 API 无害
 	f := false
 	out.Store = &f

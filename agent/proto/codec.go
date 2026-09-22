@@ -109,6 +109,10 @@ type Capabilities struct {
 	// 对象槽位装不下非法/非对象参数，会被规整进 ir.RawArgsKey 键位；
 	// 字符串槽位原样透传。两者诊断措辞不同，读者要改的地方也不同。
 	ToolInputObject bool
+
+	// UserID 有终端用户标识槽位（Anthropic metadata.user_id、
+	// Chat/Responses 的 user）。kiro 没有这一维。
+	UserID bool
 }
 
 // InboundCodec 客户端入口协议编解码器。

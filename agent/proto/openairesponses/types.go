@@ -26,6 +26,9 @@ type request struct {
 	Include            []string        `json:"include,omitempty"`
 	Text               *textConfig     `json:"text,omitempty"`
 	Metadata           json.RawMessage `json:"metadata,omitempty"`
+	// User 终端用户标识（滥用追踪/计费归属）。与 anthropic 的 metadata.user_id
+	// 同一维度，IR 里统一放 Metadata["user_id"]。
+	User               string          `json:"user,omitempty"`
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
 	// TopLogProbs 兼任开关与档位：Responses 没有独立的 logprobs 布尔。
 	TopLogProbs *int `json:"top_logprobs,omitempty"`

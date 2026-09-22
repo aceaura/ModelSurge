@@ -333,6 +333,19 @@ type Request struct {
 	// LogitBias token id -> 偏置。键是 token id，词表随模型而变，跨模型
 	// 重映射没有正确答案，所以只在目标协议有这一维时原样透传，否则报丢弃。
 	LogitBias map[string]float64
+
+	// 以下两维只有 Gemini 一族有，没有任何出站协议接得住。收进 IR 只为
+	// 让 Diagnose 看得见「客户端给了但装不下」，不作任何映射尝试。
+	// SafetySettings 内容安全档位（类别+阈值）。
+	SafetySettings []SafetySetting
+	// CachedContent 服务端缓存名（context caching 的资源 id）。
+	CachedContent string
+}
+
+// SafetySetting 一条内容安全档位（Gemini safetySettings 的等价物）。
+type SafetySetting struct {
+	Category  string
+	Threshold string
 }
 
 // Clone 深拷贝请求，用于重试隔离（参考 new-api 的 DeepCopy 惯例）。

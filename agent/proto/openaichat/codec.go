@@ -36,6 +36,7 @@ func (codec) Caps() proto.Capabilities {
 		ToolResultError:  false,
 		StructuredOutput: true, // response_format
 		Citations:        true, // message.annotations
+		UserID:           true, // user
 	}
 }
 
@@ -123,6 +124,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		out.Thinking = &ir.ThinkingConfig{Enabled: req.ReasoningEffort != "none", Effort: req.ReasoningEffort}
 	}
 	out.ResponseFormat = decodeResponseFormat(req.ResponseFormat)
+	if req.User != "" {
+		out.Metadata = map[string]string{"user_id": req.User}
+	}
 	return out, nil
 }
 
@@ -403,6 +407,9 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.ReasoningEffort = effort
 	}
 	out.ResponseFormat = encodeResponseFormat(r.ResponseFormat)
+	if uid := r.Metadata["user_id"]; uid != "" {
+		out.User = uid
+	}
 	return json.Marshal(out)
 }
 

@@ -27,6 +27,9 @@ type request struct {
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
 	ResponseFormat      *responseFormat `json:"response_format,omitempty"`
 	Metadata            json.RawMessage `json:"metadata,omitempty"`
+	// User 终端用户标识（滥用追踪/计费归属）。与 anthropic 的 metadata.user_id
+	// 同一维度，IR 里统一放 Metadata["user_id"]。
+	User string `json:"user,omitempty"`
 	// 调参维度全用指针：penalty 的 0 是「不惩罚」、seed 的 0 是一个具体种子、
 	// logprobs 的 false 是「明确不要」，与「没给」语义不同。
 	PresencePenalty  *float64           `json:"presence_penalty,omitempty"`

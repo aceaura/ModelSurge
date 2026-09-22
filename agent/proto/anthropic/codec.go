@@ -37,6 +37,8 @@ func (codec) Caps() proto.Capabilities {
 		Citations:        true, // text.citations
 		// tool_use.input 是 JSON 对象槽位。
 		ToolInputObject: true,
+		// metadata.user_id。
+		UserID: true,
 	}
 }
 

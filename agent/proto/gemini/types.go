@@ -13,6 +13,15 @@ type generateRequest struct {
 	GenerationConfig  *generationConfig `json:"generationConfig,omitempty"`
 	Tools             []toolDef         `json:"tools,omitempty"`
 	ToolConfig        *toolConfig       `json:"toolConfig,omitempty"`
+	// SafetySettings / CachedContent 是 Gemini 独有维度，其他协议都没有
+	// 对应槽位。收进来只为诊断可见（「给了但装不下」），不作映射。
+	SafetySettings []safetySetting `json:"safetySettings,omitempty"`
+	CachedContent  string          `json:"cachedContent,omitempty"`
+}
+
+type safetySetting struct {
+	Category  string `json:"category"`
+	Threshold string `json:"threshold"`
 }
 
 type content struct {

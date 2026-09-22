@@ -106,6 +106,10 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			}
 		}
 	}
+	out.CachedContent = req.CachedContent
+	for _, s := range req.SafetySettings {
+		out.SafetySettings = append(out.SafetySettings, ir.SafetySetting{Category: s.Category, Threshold: s.Threshold})
+	}
 
 	// Gemini 的 functionCall/functionResponse 历史上没有 ID。
 	// 为 functionCall 合成 call_N，functionResponse 按"同名称按顺序"关联回去

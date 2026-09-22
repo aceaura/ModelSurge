@@ -123,6 +123,8 @@ func TestEncodeGroundingPartIndex(t *testing.T) {
 }
 
 // 流式编码：引用走独立 chunk，parts 留空（重发正文会让客户端看到重复文字）。
+// partIndex 指全局拼接后的部件序号，区间相对该 part 自己的正文——
+// 「累积正文偏移 + partIndex 0」是自相矛盾的旧语义（偏移会超出 part 0 长度）。
 func TestStreamEncodeGrounding(t *testing.T) {
 	enc := codec{}.NewStreamEncoder()
 	feed := func(ev ir.Event) [][]byte {
@@ -152,11 +154,151 @@ func TestStreamEncodeGrounding(t *testing.T) {
 	if gm == nil || len(gm.GroundingSupports) != 1 {
 		t.Fatalf("流里没带 grounding：%s", payload)
 	}
-	if seg := gm.GroundingSupports[0].Segment; seg.StartIndex != 18 || seg.EndIndex != 30 {
-		t.Fatalf("流内区间 = [%d,%d)，want [18,30)：偏移量按累积正文算", seg.StartIndex, seg.EndIndex)
+	seg := gm.GroundingSupports[0].Segment
+	if seg.PartIndex != 1 {
+		t.Errorf("partIndex = %d, want 1（第二增量是 part 1）", seg.PartIndex)
+	}
+	if seg.StartIndex != 0 || seg.EndIndex != 12 {
+		t.Errorf("区间 = [%d,%d)，want [0,12)（相对 part 1 正文）", seg.StartIndex, seg.EndIndex)
+	}
+	if seg.Text != "明天有雨" {
+		t.Errorf("segment 文本 = %q", seg.Text)
 	}
 	if len(r.Candidates[0].Content.Parts) != 0 {
 		t.Errorf("引用 chunk 重发了正文：%s", payload)
+	}
+}
+
+// 横跨两个增量的引用按 part 边界切成多条 support，共享一个来源 chunk。
+func TestStreamEncodeGroundingSplitsAcrossParts(t *testing.T) {
+	enc := codec{}.NewStreamEncoder()
+	feed := func(ev ir.Event) [][]byte {
+		t.Helper()
+		frames, err := enc.Encode(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return frames
+	}
+	feed(ir.Event{Type: ir.EvMessageStart, MessageID: "r1", Model: "gemini"})
+	feed(ir.Event{Type: ir.EvTextDelta, Index: 0, Text: "北京今天晴，"})
+	feed(ir.Event{Type: ir.EvTextDelta, Index: 0, Text: "明天有雨。"})
+	frames := feed(ir.Event{Type: ir.EvCitation, Index: 0,
+		Citations: []ir.Citation{{URL: "https://w", CitedText: "晴，明天"}}})
+	var r generateResponse
+	if err := json.Unmarshal(frames[0][len("data: "):], &r); err != nil {
+		t.Fatal(err)
+	}
+	gm := r.Candidates[0].GroundingMetadata
+	if len(gm.GroundingChunks) != 1 {
+		t.Fatalf("来源数 = %d, want 1（同一 URL 共用一条 chunk）", len(gm.GroundingChunks))
+	}
+	if len(gm.GroundingSupports) != 2 {
+		t.Fatalf("support 数 = %d, want 2（跨 part 切分）", len(gm.GroundingSupports))
+	}
+	s0, s1 := gm.GroundingSupports[0].Segment, gm.GroundingSupports[1].Segment
+	if s0.PartIndex != 0 || s0.StartIndex != 12 || s0.EndIndex != 18 || s0.Text != "晴，" {
+		t.Errorf("第一段 = %+v, want part0 [12,18) \"晴，\"", s0)
+	}
+	if s1.PartIndex != 1 || s1.StartIndex != 0 || s1.EndIndex != 6 || s1.Text != "明天" {
+		t.Errorf("第二段 = %+v, want part1 [0,6) \"明天\"", s1)
+	}
+}
+
+// 思考 part 与签名 part 都占全局部件序号：正文前的每一个 part 都会推移
+// 引用的 partIndex，漏数任何一个都会把高亮打到思考或签名上。
+func TestStreamEncodeGroundingPartIndexShifts(t *testing.T) {
+	build := func() [][]byte {
+		enc := codec{}.NewStreamEncoder()
+		feed := func(ev ir.Event) {
+			t.Helper()
+			if _, err := enc.Encode(ev); err != nil {
+				t.Fatal(err)
+			}
+		}
+		feed(ir.Event{Type: ir.EvMessageStart, MessageID: "r1", Model: "gemini"})
+		feed(ir.Event{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{}}})
+		feed(ir.Event{Type: ir.EvThinkingDelta, Index: 0, Text: "想"})
+		feed(ir.Event{Type: ir.EvSigDelta, Index: 0, Text: "sig", SignatureFrom: Name})
+		feed(ir.Event{Type: ir.EvBlockStop, Index: 0})
+		feed(ir.Event{Type: ir.EvBlockStart, Index: 1, Block: &ir.Block{Type: ir.BlockText}})
+		feed(ir.Event{Type: ir.EvTextDelta, Index: 1, Text: "结论"})
+		frames, err := enc.Encode(ir.Event{Type: ir.EvCitation, Index: 1,
+			Citations: []ir.Citation{{URL: "https://w", CitedText: "结论"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return frames
+	}
+	var r generateResponse
+	if err := json.Unmarshal(build()[0][len("data: "):], &r); err != nil {
+		t.Fatal(err)
+	}
+	seg := r.Candidates[0].GroundingMetadata.GroundingSupports[0].Segment
+	if seg.PartIndex != 2 {
+		t.Errorf("partIndex = %d, want 2（thought part 0 + 签名 part 1）", seg.PartIndex)
+	}
+}
+
+// 被门控掉的外族签名不下发也就不占部件序号——partIndex 与实发 parts 对齐。
+func TestStreamEncodeGroundingGatedSigDoesNotShift(t *testing.T) {
+	enc := codec{}.NewStreamEncoder()
+	feed := func(ev ir.Event) {
+		t.Helper()
+		if _, err := enc.Encode(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	feed(ir.Event{Type: ir.EvMessageStart, MessageID: "r1", Model: "gemini"})
+	feed(ir.Event{Type: ir.EvSigDelta, Index: 0, Text: "sig", SignatureFrom: "anthropic"})
+	feed(ir.Event{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}})
+	feed(ir.Event{Type: ir.EvTextDelta, Index: 0, Text: "结论"})
+	frames, err := enc.Encode(ir.Event{Type: ir.EvCitation, Index: 0,
+		Citations: []ir.Citation{{URL: "https://w", CitedText: "结论"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r generateResponse
+	if err := json.Unmarshal(frames[0][len("data: "):], &r); err != nil {
+		t.Fatal(err)
+	}
+	if pi := r.Candidates[0].GroundingMetadata.GroundingSupports[0].Segment.PartIndex; pi != 0 {
+		t.Errorf("partIndex = %d, want 0（外族签名没下发不占位）", pi)
+	}
+}
+
+// 第二个正文块的引用必须指到自己的 part：硬编码 partIndex 0 会把块 1 的
+// 高亮打到块 0 的正文上。
+func TestStreamEncodeGroundingSecondTextBlock(t *testing.T) {
+	enc := codec{}.NewStreamEncoder()
+	feed := func(ev ir.Event) {
+		t.Helper()
+		if _, err := enc.Encode(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	feed(ir.Event{Type: ir.EvMessageStart, MessageID: "r1", Model: "gemini"})
+	feed(ir.Event{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}})
+	feed(ir.Event{Type: ir.EvTextDelta, Index: 0, Text: "第一段。"})
+	feed(ir.Event{Type: ir.EvTextDelta, Index: 0, Text: "续一段。"})
+	feed(ir.Event{Type: ir.EvBlockStop, Index: 0})
+	feed(ir.Event{Type: ir.EvBlockStart, Index: 1, Block: &ir.Block{Type: ir.BlockText}})
+	feed(ir.Event{Type: ir.EvTextDelta, Index: 1, Text: "第二块。"})
+	frames, err := enc.Encode(ir.Event{Type: ir.EvCitation, Index: 1,
+		Citations: []ir.Citation{{URL: "https://w", CitedText: "第二块"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r generateResponse
+	if err := json.Unmarshal(frames[0][len("data: "):], &r); err != nil {
+		t.Fatal(err)
+	}
+	seg := r.Candidates[0].GroundingMetadata.GroundingSupports[0].Segment
+	if seg.PartIndex != 2 {
+		t.Errorf("partIndex = %d, want 2（块 0 两个增量占了 part 0、1）", seg.PartIndex)
+	}
+	if seg.StartIndex != 0 || seg.EndIndex != 9 {
+		t.Errorf("区间 = [%d,%d)，want [0,9)", seg.StartIndex, seg.EndIndex)
 	}
 }
 
@@ -170,6 +312,69 @@ func TestStreamEncodeGroundingEmpty(t *testing.T) {
 	}
 	if len(frames) != 0 {
 		t.Fatalf("空引用却发了帧：%s", frames)
+	}
+}
+
+// 有 URL 但区间反推不出（引文不在正文里）：来源 chunk 必须留住，
+// 只是没有 support——把来源也丢了会让客户端连出处都看不到。
+func TestStreamEncodeGroundingKeepsChunkWithoutRange(t *testing.T) {
+	enc := codec{}.NewStreamEncoder()
+	feed := func(ev ir.Event) {
+		t.Helper()
+		if _, err := enc.Encode(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	feed(ir.Event{Type: ir.EvMessageStart, MessageID: "r1", Model: "gemini"})
+	feed(ir.Event{Type: ir.EvTextDelta, Index: 0, Text: "正文"})
+	frames, err := enc.Encode(ir.Event{Type: ir.EvCitation, Index: 0,
+		Citations: []ir.Citation{{URL: "https://w", Title: "W", CitedText: "不在正文里"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("来源 chunk 被丢了：%v", frames)
+	}
+	var r generateResponse
+	if err := json.Unmarshal(frames[0][len("data: "):], &r); err != nil {
+		t.Fatal(err)
+	}
+	gm := r.Candidates[0].GroundingMetadata
+	if len(gm.GroundingChunks) != 1 {
+		t.Errorf("来源数 = %d, want 1", len(gm.GroundingChunks))
+	}
+	if len(gm.GroundingSupports) != 0 {
+		t.Errorf("无区间却有 support：%+v", gm.GroundingSupports)
+	}
+}
+
+// functionCall part 同样占全局部件序号：工具调用在前时，正文块的引用
+// partIndex 要把它数进去，漏数会把高亮打到 functionCall 上。
+func TestStreamEncodeGroundingAfterFunctionCall(t *testing.T) {
+	enc := codec{}.NewStreamEncoder()
+	feed := func(ev ir.Event) {
+		t.Helper()
+		if _, err := enc.Encode(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	feed(ir.Event{Type: ir.EvMessageStart, MessageID: "r1", Model: "gemini"})
+	feed(ir.Event{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "t1", Name: "f"}}})
+	feed(ir.Event{Type: ir.EvToolInput, Index: 0, Text: `{"a":1}`})
+	feed(ir.Event{Type: ir.EvBlockStop, Index: 0}) // functionCall part 0
+	feed(ir.Event{Type: ir.EvBlockStart, Index: 1, Block: &ir.Block{Type: ir.BlockText}})
+	feed(ir.Event{Type: ir.EvTextDelta, Index: 1, Text: "结论"})
+	frames, err := enc.Encode(ir.Event{Type: ir.EvCitation, Index: 1,
+		Citations: []ir.Citation{{URL: "https://w", CitedText: "结论"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r generateResponse
+	if err := json.Unmarshal(frames[0][len("data: "):], &r); err != nil {
+		t.Fatal(err)
+	}
+	if pi := r.Candidates[0].GroundingMetadata.GroundingSupports[0].Segment.PartIndex; pi != 1 {
+		t.Errorf("partIndex = %d, want 1（functionCall 占了 part 0）", pi)
 	}
 }
 

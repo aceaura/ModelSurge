@@ -13,10 +13,19 @@ type streamEncoder struct {
 	id    string
 
 	pendingTool map[int]*encTool // block index -> 构建中的 functionCall
-	// text 各块已下发的正文。Gemini 的 groundingSupports 区间是相对**累积后**
-	// 的 part 正文，所以必须逐块累积才能算出区间。
-	text     map[int]string
-	finished bool
+	// texts 各正文块已下发的增量与各自占用的 part 序号。Gemini 的
+	// groundingSupports 区间相对**拼接后**的 part 正文、partIndex 指全局部件
+	// 序号，所以必须逐增量记录——partIndex 硬编码 0 会把多块/思考在前的
+	// 引用指到别的 part 上。
+	texts     map[int]*encText
+	partCount int
+	finished  bool
+}
+
+// encText 一个正文块的流式下发记录。
+type encText struct {
+	deltas []string // 逐增量正文（每个增量在客户端拼接后是一个 part）
+	parts  []int    // 每个增量对应的全局 part 序号
 }
 
 type encTool struct {
@@ -26,7 +35,7 @@ type encTool struct {
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{pendingTool: map[int]*encTool{}, text: map[int]string{}}
+	return &streamEncoder{pendingTool: map[int]*encTool{}, texts: map[int]*encText{}}
 }
 
 func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
@@ -36,15 +45,19 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.id = ev.MessageID
 		return nil, nil
 	case ir.EvTextDelta:
-		e.text[ev.Index] += ev.Text
+		t := e.texts[ev.Index]
+		if t == nil {
+			t = &encText{}
+			e.texts[ev.Index] = t
+		}
+		t.deltas = append(t.deltas, ev.Text)
+		t.parts = append(t.parts, e.partCount)
+		e.partCount++
 		return e.chunk([]part{{Text: ev.Text}}, ""), nil
 	case ir.EvCitation:
 		// 单独一个 chunk 承载 groundingMetadata（Gemini 原生也是在正文 chunk
 		// 之后的独立 chunk 里下发）。parts 留空：重发正文会让客户端看到重复文字。
-		// partIndex 恒 0：流式 chunk 里的 parts 数组就这一格。
-		gm := encodeGrounding(
-			[]ir.Block{{Type: ir.BlockText, Text: e.text[ev.Index], Citations: ev.Citations}},
-			map[int]int{0: 0})
+		gm := encodeGroundingStreamed(e.texts[ev.Index], ev.Citations)
 		if gm == nil {
 			return nil, nil
 		}
@@ -54,6 +67,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			ResponseID:   e.id,
 		}))}, nil
 	case ir.EvThinkingDelta:
+		e.partCount++ // thought part 也占拼接后的部件序号
 		return e.chunk([]part{{Text: ev.Text, Thought: true}}, ""), nil
 	case ir.EvSigDelta:
 		// thoughtSignature 作为独立 part 下发（Gemini 原生也是如此：
@@ -62,6 +76,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.SignatureFrom != Name {
 			return nil, nil
 		}
+		e.partCount++ // 签名 part 同样占部件序号
 		return e.chunk([]part{{ThoughtSignature: ev.Text}}, ""), nil
 	case ir.EvBlockStart:
 		if ev.Block != nil && ev.Block.Type == ir.BlockToolUse && ev.Block.ToolUse != nil {
@@ -81,6 +96,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			args, _ := ir.NormalizeToolInput(t.args)
 			p := content{Role: "model", Parts: []part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}}
 			ensureThoughtSignature(&p)
+			e.partCount++ // functionCall part 也占部件序号
 			return e.chunk(p.Parts, ""), nil
 		}
 		return nil, nil
@@ -127,6 +143,7 @@ func (e *streamEncoder) Finish() [][]byte {
 		args, _ := ir.NormalizeToolInput(t.args)
 		p := content{Role: "model", Parts: []part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}}
 		ensureThoughtSignature(&p)
+		e.partCount++
 		out = append(out, e.chunk(p.Parts, "")...)
 	}
 	if !e.finished {

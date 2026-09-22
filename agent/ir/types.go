@@ -249,6 +249,16 @@ type Tool struct {
 	// function.strict）。三态指针：nil=没给（上游默认），显式 false 是「明确
 	// 不要严格校验」，与没给语义不同。kiro 没有这一维。
 	Strict *bool
+	// 以下四维是 anthropic 工具定义的 2026 修饰槽位，其余协议的工具定义
+	// 一个都没有（跨族丢+报）：
+	// DeferLoading 工具不进初始 system prompt，由 tool search 按需加载。
+	DeferLoading bool
+	// EagerInputStreaming 细粒度流式入参（null=按 beta 头默认，三态指针）。
+	EagerInputStreaming *bool
+	// InputExamples 入参示例（不透明对象数组，原文透传）。
+	InputExamples []json.RawMessage
+	// AllowedCallers 允许的程序化调用方（direct / code_execution_*）。
+	AllowedCallers []string
 }
 
 // ChoiceMode 工具选择模式。

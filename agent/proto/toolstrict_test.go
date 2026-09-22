@@ -1,6 +1,7 @@
 package proto_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -90,3 +91,27 @@ func TestToolStrictNeverLeaksToKiro(t *testing.T) {
 		t.Errorf("kiro 泄漏 strict: %s", out)
 	}
 }
+
+// R62：anthropic 工具修饰四维跨族零泄漏。
+func TestToolModifiersNeverLeakToOtherFamilies(t *testing.T) {
+	fa := false
+	req := &ir.Request{Model: "m", MaxTokens: 100,
+		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+		Tools: []ir.Tool{{Name: "ping", InputSchema: []byte(`{"type":"object"}`),
+			DeferLoading: true, EagerInputStreaming: &fa,
+			InputExamples: []json.RawMessage{[]byte(`{"name":"x"}`)},
+			AllowedCallers: []string{"direct"}}}}
+	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+		out, err := proto.MustOutbound(name).EncodeRequest(req)
+		if err != nil {
+			t.Fatalf("%s EncodeRequest: %v", name, err)
+		}
+		body := string(out)
+		for _, probe := range []string{"defer_loading", "eager_input_streaming", "input_examples", "allowed_callers"} {
+			if strings.Contains(body, probe) {
+				t.Errorf("%s 泄漏 %q: %s", name, probe, body)
+			}
+		}
+	}
+}
+

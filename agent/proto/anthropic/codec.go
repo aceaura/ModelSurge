@@ -39,7 +39,7 @@ func (codec) Caps() proto.Capabilities {
 		// 缓存走显式 cache_control 断点。
 		ServiceTier: true, PromptCacheKey: false,
 		ToolStrict: true,
-		Citations:        true, // text.citations
+		Citations:  true, // text.citations
 		// tool_use.input 是 JSON 对象槽位。
 		ToolInputObject: true,
 		// metadata.user_id。
@@ -97,6 +97,11 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			CacheCtl:    ctl,
 			CacheTTL:    ttl,
 			Strict:      t.Strict,
+			// 2026 修饰四维原样进 IR（hosted 工具上也照收——出站按目标能力取舍）。
+			DeferLoading:        t.DeferLoading,
+			EagerInputStreaming: t.EagerInputStreaming,
+			InputExamples:       t.InputExamples,
+			AllowedCallers:      t.AllowedCallers,
 		})
 	}
 	if tc := req.ToolChoice; tc != nil {
@@ -353,11 +358,15 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			continue
 		}
 		out.Tools = append(out.Tools, tool{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
-			CacheCtl:    encodeCacheCtl(t.CacheCtl, t.CacheTTL),
-			Strict:      t.Strict,
+			Name:                t.Name,
+			Description:         t.Description,
+			InputSchema:         t.InputSchema,
+			CacheCtl:            encodeCacheCtl(t.CacheCtl, t.CacheTTL),
+			Strict:              t.Strict,
+			DeferLoading:        t.DeferLoading,
+			EagerInputStreaming: t.EagerInputStreaming,
+			InputExamples:       t.InputExamples,
+			AllowedCallers:      t.AllowedCallers,
 		})
 	}
 	if tc := r.ToolChoice; tc != nil {

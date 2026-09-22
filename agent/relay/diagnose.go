@@ -411,5 +411,20 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 				"dropped strict flag on %d tool(s): the target protocol has no schema-strictness switch, tool call arguments are not guaranteed to validate against the schema", n))
 		}
 	}
+	if protoName != "anthropic" {
+		// anthropic 工具定义的 2026 修饰四维（defer_loading / eager_input_streaming /
+		// input_examples / allowed_callers）其余协议一个都没有。数带修饰的工具数。
+		n := 0
+		for _, t := range req.Tools {
+			if t.DeferLoading || t.EagerInputStreaming != nil ||
+				len(t.InputExamples) > 0 || len(t.AllowedCallers) > 0 {
+				n++
+			}
+		}
+		if n > 0 {
+			notes = append(notes, fmt.Sprintf(
+				"dropped tool modifiers on %d tool(s): the target protocol has no defer-loading, eager-streaming, input-example or caller-restriction fields, tools behave with the upstream defaults", n))
+		}
+	}
 	return notes
 }

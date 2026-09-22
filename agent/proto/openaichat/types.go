@@ -54,6 +54,22 @@ type request struct {
 	Moderation json.RawMessage `json:"moderation,omitempty"`
 	// PromptCacheOptions 显式缓存断点控制 {mode, ttl, ...}。同样原文透传。
 	PromptCacheOptions json.RawMessage `json:"prompt_cache_options,omitempty"`
+	// Modalities 输出模态（"text"/"audio"），chat 一族专属。
+	Modalities []string `json:"modalities,omitempty"`
+	// Audio 音频输出配置（仅 modalities 含 "audio" 时有效）。voice 官方
+	// 两形态（内置名 string / 自定义 {id} 对象），RawMessage 延迟归一。
+	Audio *audioOutParam `json:"audio,omitempty"`
+	// Prediction 预测输出配置 {type:"content", content}，原文透传。
+	Prediction json.RawMessage `json:"prediction,omitempty"`
+	// WebSearchOptions 联网搜索选项 {search_context_size, user_location}，
+	// 原文透传。
+	WebSearchOptions json.RawMessage `json:"web_search_options,omitempty"`
+}
+
+// audioOutParam 音频输出配置。Voice 两形态（string / {"id":...}）。
+type audioOutParam struct {
+	Format string          `json:"format"`
+	Voice  json.RawMessage `json:"voice"`
 }
 
 // responseFormat 结构化输出：type 为 text / json_object / json_schema。

@@ -95,6 +95,13 @@ type Skill struct {
 // 中文引用整体错位。CitedText 是被引用的原文片段；两者互为冗余但都要保留，
 // 因为各协议只给其中一种，缺的那种在编码时按另一种反推（参照 new-api
 // claude_messages/citations.go 与 oai_chat/citations.go 的双向互推）。
+// AudioOutParam Chat 音频输出配置。Format 是 wav/aac/mp3/flac/opus/pcm16；
+// Voice 是内置音色名或自定义音色 id（对象形态已归一）。
+type AudioOutParam struct {
+	Format string
+	Voice  string
+}
+
 type Citation struct {
 	URL       string
 	Title     string
@@ -468,6 +475,21 @@ type Request struct {
 	// PromptCacheOptions 显式缓存断点控制（OpenAI 两系 {mode, ttl, ...}，
 	// gpt-5.6+）。不透明原文透传。omitempty 同 Moderation。
 	PromptCacheOptions json.RawMessage `json:",omitempty"`
+
+	// 以下四维只有 Chat 一族有（responses 全系无对应槽位，SDK 核对零命中）。
+	// 收进 IR 只为同协议回写 + 跨协议诊断，不作映射尝试。
+	// Modalities 输出模态（"text"/"audio"）。
+	Modalities []string
+	// AudioOut 音频输出配置 {format, voice}。voice 官方两形态（内置名 string
+	// 或自定义 {id} 对象），对象形态归一成 string（语义等价）；仅在
+	// Modalities 含 "audio" 时有效，同给与否都透传让上游判定。
+	AudioOut *AudioOutParam
+	// Prediction 预测输出配置（重生成场景提速，{type:"content", content:
+	// string|parts[]}）。嵌套内容数组，不透明原文透传（同 Moderation）。
+	Prediction json.RawMessage `json:",omitempty"`
+	// WebSearchOptions 联网搜索选项（{search_context_size, user_location}）。
+	// 不透明原文透传。
+	WebSearchOptions json.RawMessage `json:",omitempty"`
 }
 
 // PromptRef 服务端 prompt 模板引用（Responses 的 prompt 参数）。

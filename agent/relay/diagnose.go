@@ -379,6 +379,24 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 		notes = append(notes,
 			"dropped prompt cache options: the target protocol has no explicit cache breakpoint control, caching follows the upstream default policy")
 	}
+	if protoName != "openai-chat" {
+		// modalities/audio/prediction/web_search_options 四维是 chat 一族
+		// 专属（responses 全系 SDK 零命中）。audio 依附 modalities：模态
+		// 丢了音频配置必然随之丢，合并成一则报；prediction 与
+		// web_search_options 各自独立。
+		if len(req.Modalities) > 0 || req.AudioOut != nil {
+			notes = append(notes,
+				"dropped modalities/audio config: the target protocol cannot request audio output, the response will be text-only")
+		}
+		if len(req.Prediction) > 0 {
+			notes = append(notes,
+				"dropped prediction config: the target protocol has no predicted-output parameter, the regeneration speedup the client asked for will not happen")
+		}
+		if len(req.WebSearchOptions) > 0 {
+			notes = append(notes,
+				"dropped web_search_options: the target protocol has no web-search tuning parameter, search behavior follows the upstream default")
+		}
+	}
 	if protoName != "anthropic" {
 		// 缓存断点是 anthropic 专属维度（块级 cache_control + tools[].cache_control）。
 		// 跨族丢断点此前完全静默：客户端精心放置的断点蒸发后，缓存命中率与

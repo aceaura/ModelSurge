@@ -145,6 +145,30 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	if string(req.PromptCacheOptions) != "null" {
 		out.PromptCacheOptions = req.PromptCacheOptions
 	}
+	out.Modalities = req.Modalities
+	// voice 两形态归一成 string：内置名直取，{id} 对象取 id（语义等价）。
+	if req.Audio != nil {
+		ao := &ir.AudioOutParam{Format: req.Audio.Format}
+		var v string
+		if err := json.Unmarshal(req.Audio.Voice, &v); err == nil {
+			ao.Voice = v
+		} else {
+			var obj struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(req.Audio.Voice, &obj); err == nil {
+				ao.Voice = obj.ID
+			}
+		}
+		out.AudioOut = ao
+	}
+	// 显式 null 等同没给（同 Moderation 先例）。
+	if string(req.Prediction) != "null" {
+		out.Prediction = req.Prediction
+	}
+	if string(req.WebSearchOptions) != "null" {
+		out.WebSearchOptions = req.WebSearchOptions
+	}
 	return out, nil
 }
 
@@ -438,6 +462,14 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	out.SafetyIdentifier = r.SafetyIdentifier
 	out.Moderation = r.Moderation
 	out.PromptCacheOptions = r.PromptCacheOptions
+	out.Modalities = r.Modalities
+	// voice 恒写 string 形态（{id} 对象与 string 语义等价，取最简）。
+	if r.AudioOut != nil {
+		out.Audio = &audioOutParam{Format: r.AudioOut.Format,
+			Voice: json.RawMessage(marshal(r.AudioOut.Voice))}
+	}
+	out.Prediction = r.Prediction
+	out.WebSearchOptions = r.WebSearchOptions
 	return json.Marshal(out)
 }
 

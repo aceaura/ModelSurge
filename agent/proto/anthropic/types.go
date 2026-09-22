@@ -20,11 +20,16 @@ type request struct {
 	ToolChoice    *toolChoice     `json:"tool_choice,omitempty"`
 	Thinking      *thinkingCfg    `json:"thinking,omitempty"`
 	Metadata      *metadata       `json:"metadata,omitempty"`
-	// OutputConfig 2026 新增的输出控制：format 是结构化输出槽位。
-	// effort 子字段暂不解码（IR 没有 anthropic 输出级 effort 的对应维度）。
+	// OutputConfig 2026 新增的输出控制：format 是结构化输出槽位，
+	// effort 是思考档位（R63 起双向贯通）。
 	OutputConfig *outputConfig `json:"output_config,omitempty"`
 	// ServiceTier 服务质量档位：auto / standard_only。
 	ServiceTier string `json:"service_tier,omitempty"`
+	// CacheControl 顶层缓存便捷糖：自动给最后一个可缓存块打断点。
+	// 不展开成块级，原样进出（理由见 ir.Request.TopCacheCtl）。
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+	// InferenceGeo 推理地理偏好（如 "us"）；缺省按 workspace 默认。
+	InferenceGeo string `json:"inference_geo,omitempty"`
 }
 
 // outputConfig 输出控制。format 只定义了 json_schema 一种 type。

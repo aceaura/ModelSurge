@@ -394,9 +394,19 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 				n++
 			}
 		}
+		// 顶层 cache_control 便捷糖官方语义=自动一个断点，计入同一维度。
+		if req.TopCacheCtl != "" {
+			n++
+		}
 		if n > 0 {
 			notes = append(notes, fmt.Sprintf(
 				"dropped %d cache breakpoint(s): the target protocol has no prompt-caching breakpoint parameter, cached prefixes may be reprocessed and billed", n))
+		}
+		// 推理地理偏好同为 anthropic 专属：外族没有任何对应参数，
+		// 丢了请求会落到 workspace 默认区域，合规敏感的客户端必须知道。
+		if req.InferenceGeo != "" {
+			notes = append(notes,
+				"dropped inference_geo: the target protocol has no geographic-region preference, inference runs wherever the upstream's default region is")
 		}
 	}
 	if !caps.ToolStrict {

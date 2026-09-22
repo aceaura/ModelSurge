@@ -139,6 +139,12 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	}
 	// 原值进 IR，跨族映射是出站的事（proto.MapServiceTier）。
 	out.ServiceTier = req.ServiceTier
+	// 顶层缓存便捷糖与推理地理偏好原值进 IR；不展开、不映射。
+	if req.CacheControl != nil {
+		out.TopCacheCtl = req.CacheControl.Type
+		out.TopCacheTTL = req.CacheControl.TTL
+	}
+	out.InferenceGeo = req.InferenceGeo
 	return out, nil
 }
 
@@ -435,6 +441,10 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	if tier, ok := proto.MapServiceTier(r.ServiceTier, Name); ok {
 		out.ServiceTier = tier
 	}
+	if r.TopCacheCtl != "" {
+		out.CacheControl = &cacheControl{Type: r.TopCacheCtl, TTL: r.TopCacheTTL}
+	}
+	out.InferenceGeo = r.InferenceGeo
 	return json.Marshal(out)
 }
 

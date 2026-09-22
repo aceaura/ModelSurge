@@ -183,6 +183,13 @@ type streamEvent struct {
 	// Annotation response.output_text.annotation.added 携带的单条引用。
 	// 该事件没有 delta 字段，正文与标注是两个独立事件。
 	Annotation *annotation `json:"annotation,omitempty"`
+	// Text / Refusal / Annotations 是 done 事件携带的完整终态值：
+	// output_text.done 给 text+annotations，refusal.done 给 refusal，
+	// reasoning_summary_text.done / reasoning_text.done 给 text。
+	// 只发终态不发增量的上游全靠这三个字段，漏读就是整段正文静默丢失。
+	Text        string       `json:"text,omitempty"`
+	Refusal     string       `json:"refusal,omitempty"`
+	Annotations []annotation `json:"annotations,omitempty"`
 }
 
 type responseObj struct {

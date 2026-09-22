@@ -25,6 +25,12 @@ type streamDecoder struct {
 	// toolArgs 记录已发出的参数前缀（按 IR 块序号）。done 事件携带完整值时只补
 	// 缺失后缀，既覆盖 done-only 上游，又不把已有 delta 重复一遍。
 	toolArgs map[int]string
+	// blockText 已发出的正文/思考前缀（按 IR 块序号）。判据同 toolArgs：done
+	// 事件带的是完整值而不是新一份内容，只补缺失后缀。
+	blockText map[int]string
+	// cites 已发出的引用条数（按 IR 块序号）。done 事件里的 annotations 是全量
+	// 快照，只补 annotation.added 没给过的那几条（对齐 new-api AnnotationCount）。
+	cites map[int]int
 	// parts content part -> IR 块序号。IR 序号由本解码器稠密分配，不等于
 	// output_index：一条 message 的多个 part 要各占一块，而 output_index 相同。
 	parts map[partKey]int
@@ -50,6 +56,8 @@ type partKey struct {
 func (codec) NewStreamDecoder() proto.StreamDecoder {
 	return &streamDecoder{
 		toolArgs:  map[int]string{},
+		blockText: map[int]string{},
+		cites:     map[int]int{},
 		parts:     map[partKey]int{},
 		itemParts: map[int][]int{},
 		open:      map[int]bool{},
@@ -113,6 +121,85 @@ func deref(p *int) int {
 
 // idx 编码侧用：把索引写进 wire（含 0）。
 func idx(v int) *int { return &v }
+
+// backfill 用 part 级 done 事件携带的完整值补齐缺口，块尚未开时补开。
+// 块已关就不动：再发增量会让下游编码器把内容追加到已定稿的 item 上
+// （对齐 new-api mergeFinalValue 的 block.Stopped 判据）。
+func (d *streamDecoder) backfill(k partKey, blk *ir.Block, full string, typ ir.EventType) []ir.Event {
+	if full == "" {
+		return nil
+	}
+	i, out := d.assign(k, blk)
+	if !d.open[i] {
+		return nil
+	}
+	return append(out, completeValue(d.blockText, i, full, typ)...)
+}
+
+// backfillCites 补 done 事件里的全量引用快照，只发 annotation.added 没给过的部分。
+// 快照口径与增量口径都是「相对本 part 的正文」，落在同一块上索引才不错位。
+func (d *streamDecoder) backfillCites(k partKey, as []annotation) []ir.Event {
+	if len(as) == 0 {
+		return nil
+	}
+	i, out := d.assign(k, &ir.Block{Type: ir.BlockText})
+	if !d.open[i] || len(as) <= d.cites[i] {
+		return out
+	}
+	cs := decodeAnnotations(as[d.cites[i]:])
+	d.cites[i] = len(as)
+	if len(cs) == 0 {
+		return out
+	}
+	return append(out, ir.Event{Type: ir.EvCitation, Index: i, Citations: cs})
+}
+
+// completeItemParts 从 output_item.done 的 message content 回补正文与引用：
+// done-only 上游的整条正文只在这里出现，漏读等于一个字都到不了客户端。
+// part 在数组里的位置就是它的 content_index。
+func (d *streamDecoder) completeItemParts(oi int, raw json.RawMessage) []ir.Event {
+	if len(raw) == 0 {
+		return nil
+	}
+	var parts []contentPart
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return nil
+	}
+	var out []ir.Event
+	for n, p := range parts {
+		k := partKey{out: oi, content: n}
+		if p.Type == "refusal" {
+			// refusal 位必须置上：漏了就会与流式路径开的那块错开成两块，
+			// 同一段拒绝正文被下发两遍。
+			k.refusal = true
+			out = append(out, d.backfill(k, &ir.Block{Type: ir.BlockRefusal}, p.Refusal, ir.EvTextDelta)...)
+			continue
+		}
+		if p.Type != "" && p.Type != "output_text" {
+			continue
+		}
+		out = append(out, d.backfill(k, &ir.Block{Type: ir.BlockText}, p.Text, ir.EvTextDelta)...)
+		out = append(out, d.backfillCites(k, p.Annotations)...)
+	}
+	return out
+}
+
+// reasoningSummaryText 拼接 reasoning item 的 summary_text（对齐 new-api
+// reasoningOutputText：有正文用正文，否则退回 summary）。
+func reasoningSummaryText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var parts []summaryPart
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, p := range parts {
+		sb.WriteString(p.Text)
+	}
+	return sb.String()
+}
 
 func thinkingBlock() *ir.Block {
 	return &ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{}}
@@ -193,7 +280,14 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			return nil, nil
 		}
 		i, out := d.assign(partKey{out: oi, content: ci}, &ir.Block{Type: ir.BlockText})
+		d.blockText[i] += se.Delta
 		return append(out, ir.Event{Type: ir.EvTextDelta, Index: i, Text: se.Delta}), nil
+	case "response.output_text.done":
+		// 完整正文与全量引用都在这一帧。此前整个事件落到 default 被丢掉，
+		// 只发终态不发增量的上游整段正文一个字都到不了客户端。
+		k := partKey{out: oi, content: ci}
+		out := d.backfill(k, &ir.Block{Type: ir.BlockText}, se.Text, ir.EvTextDelta)
+		return append(out, d.backfillCites(k, se.Annotations)...), nil
 	case "response.output_text.annotation.added":
 		// 该事件没有 delta 字段：正文在 annotation 之外。此前与文本增量并档，
 		// 于是恒命中 delta 为空的分支被静默丢弃，引用一条都到不了客户端。
@@ -204,29 +298,48 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		// 索引口径是「相对本 part 的正文」，必须落到 content_index 对应的那一块。
 		// 并进合并块会让 start_index 指向前一个 part 的文字。
 		i, out := d.assign(partKey{out: oi, content: ci}, &ir.Block{Type: ir.BlockText})
+		d.cites[i] += len(cs)
 		return append(out, ir.Event{Type: ir.EvCitation, Index: i, Citations: cs}), nil
 	case "response.refusal.delta":
 		if se.Delta == "" {
 			return nil, nil
 		}
 		i, out := d.assign(partKey{out: oi, content: ci, refusal: true}, &ir.Block{Type: ir.BlockRefusal})
+		d.blockText[i] += se.Delta
 		return append(out, ir.Event{Type: ir.EvTextDelta, Index: i, Text: se.Delta}), nil
 	case "response.refusal.done":
-		return d.closePart(partKey{out: oi, content: ci, refusal: true}), nil
+		k := partKey{out: oi, content: ci, refusal: true}
+		out := d.backfill(k, &ir.Block{Type: ir.BlockRefusal}, se.Refusal, ir.EvTextDelta)
+		return append(out, d.closePart(k)...), nil
 	case "response.content_part.done":
 		// part 结束就关块，不等 output_item.done：同一条 message 的多个 part 若
 		// 一起延后关闭，下游会看到 start/start/stop/stop 的交叉嵌套。
 		k := partKey{out: oi, content: ci}
+		var out []ir.Event
 		if se.Part != nil && se.Part.Type == "refusal" {
 			k.refusal = true
+			out = d.backfill(k, &ir.Block{Type: ir.BlockRefusal}, se.Part.Refusal, ir.EvTextDelta)
+		} else if se.Part != nil {
+			out = d.backfill(k, &ir.Block{Type: ir.BlockText}, se.Part.Text, ir.EvTextDelta)
+			out = append(out, d.backfillCites(k, se.Part.Annotations)...)
 		}
-		return d.closePart(k), nil
+		return append(out, d.closePart(k)...), nil
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 		if se.Delta == "" {
 			return nil, nil
 		}
 		i, out := d.assign(partKey{out: oi}, thinkingBlock())
+		d.blockText[i] += se.Delta
 		return append(out, ir.Event{Type: ir.EvThinkingDelta, Index: i, Text: se.Delta}), nil
+	case "response.reasoning_summary_text.done", "response.reasoning_text.done":
+		// 不在这里关块：encrypted_content 要到 output_item.done 才给，提前关会丢
+		// signature_delta 并打断多轮缓存（对齐 sub2api responses_to_anthropic.go:238）。
+		return d.backfill(partKey{out: oi}, thinkingBlock(), se.Text, ir.EvThinkingDelta), nil
+	case "response.reasoning_summary_part.done":
+		if se.Part == nil {
+			return nil, nil
+		}
+		return d.backfill(partKey{out: oi}, thinkingBlock(), se.Part.Text, ir.EvThinkingDelta), nil
 	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		if se.Delta == "" {
 			return nil, nil
@@ -259,13 +372,22 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 				out = append(out, opened...)
 				out = append(out, d.completeToolArgs(i, full)...)
 				delete(d.toolArgs, i)
+			case "message":
+				// done-only 上游的整条正文只在 item.content 里，前面一帧增量都没有。
+				out = append(out, d.completeItemParts(oi, se.Item.Content)...)
 			case "reasoning":
 				// 关 thinking 块前先发 signature_delta（对齐 sub2api :688）
-				if se.Item.EncryptedContent != "" {
+				full := reasoningSummaryText(se.Item.Summary)
+				if full != "" || se.Item.EncryptedContent != "" {
 					i, opened := d.assign(partKey{out: oi}, thinkingBlock())
 					out = append(out, opened...)
-					out = append(out, ir.Event{Type: ir.EvSigDelta, Index: i, Text: se.Item.EncryptedContent,
-						SignatureFrom: ir.SigFrom(Name, se.Item.EncryptedContent)})
+					if d.open[i] {
+						out = append(out, completeValue(d.blockText, i, full, ir.EvThinkingDelta)...)
+					}
+					if se.Item.EncryptedContent != "" {
+						out = append(out, ir.Event{Type: ir.EvSigDelta, Index: i, Text: se.Item.EncryptedContent,
+							SignatureFrom: ir.SigFrom(Name, se.Item.EncryptedContent)})
+					}
 				}
 			}
 		}
@@ -319,21 +441,27 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	return nil, nil // response.queued / in_progress 等进度事件忽略
 }
 
-// completeToolArgs 用终态完整值补齐尚未收到的参数后缀。done 不是新一份参数，
-// 已由 delta 交付的前缀不得重复；终态比当前值短或分叉时也不能追加成畸形 JSON。
+// completeToolArgs 用终态完整值补齐尚未收到的参数后缀。
 func (d *streamDecoder) completeToolArgs(index int, full string) []ir.Event {
+	return completeValue(d.toolArgs, index, full, ir.EvToolInput)
+}
+
+// completeValue 用终态完整值补齐尚未收到的后缀。done 不是新一份内容，已由增量
+// 交付的前缀不得重复；终态比当前值短或与之分叉时也不能追加，否则拼出畸形内容。
+// new-api mergeFinalValue 与 cc-switch missing_suffix 用的是同一套判据。
+func completeValue(acc map[int]string, index int, full string, typ ir.EventType) []ir.Event {
 	if full == "" {
 		return nil
 	}
-	current := d.toolArgs[index]
+	current := acc[index]
 	if current == full {
 		return nil
 	}
 	if !strings.HasPrefix(full, current) {
 		return nil
 	}
-	d.toolArgs[index] = full
-	return []ir.Event{{Type: ir.EvToolInput, Index: index, Text: strings.TrimPrefix(full, current)}}
+	acc[index] = full
+	return []ir.Event{{Type: typ, Index: index, Text: strings.TrimPrefix(full, current)}}
 }
 
 // mapIncompleteReason 读 incomplete_details.reason 判断截断原因。

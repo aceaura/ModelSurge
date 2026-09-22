@@ -281,7 +281,35 @@ func (e *streamEncoder) blockStop(i int) [][]byte {
 			e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: oi, Item: e.doneItem(b)}),
 		}
 	}
-	return [][]byte{e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: oi, Item: e.doneItem(b)})}
+	// part 级终止帧，官方顺序是 *.done -> content_part.done -> output_item.done。
+	// 只发 output_item.done 的话，按 part 事件关块的下游永远等不到块结束
+	// （cc-switch 把 output_text.done 直接映射成 content_block_stop）。
+	var out [][]byte
+	switch b.typ {
+	case ir.BlockThinking:
+		out = append(out,
+			e.frame(streamEvent{Type: "response.reasoning_summary_text.done", OutputIndex: oi,
+				SummaryIndex: idx(0), Text: b.text}),
+			e.frame(streamEvent{Type: "response.reasoning_summary_part.done", OutputIndex: oi,
+				SummaryIndex: idx(0), Part: &contentPart{Type: "summary_text", Text: b.text}}),
+		)
+	case ir.BlockRefusal:
+		out = append(out,
+			e.frame(streamEvent{Type: "response.refusal.done", OutputIndex: oi, ContentIndex: idx(0),
+				Refusal: b.text}),
+			e.frame(streamEvent{Type: "response.content_part.done", OutputIndex: oi, ContentIndex: idx(0),
+				Part: &contentPart{Type: "refusal", Refusal: b.text}}),
+		)
+	default:
+		as := encodeAnnotations(b.text, b.cites)
+		out = append(out,
+			e.frame(streamEvent{Type: "response.output_text.done", OutputIndex: oi, ContentIndex: idx(0),
+				Text: b.text, Annotations: as}),
+			e.frame(streamEvent{Type: "response.content_part.done", OutputIndex: oi, ContentIndex: idx(0),
+				Part: &contentPart{Type: "output_text", Text: b.text, Annotations: as}}),
+		)
+	}
+	return append(out, e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: oi, Item: e.doneItem(b)}))
 }
 
 // doneItem 由累积状态构造完整 item。

@@ -23,6 +23,8 @@ type request struct {
 	// OutputConfig 2026 新增的输出控制：format 是结构化输出槽位。
 	// effort 子字段暂不解码（IR 没有 anthropic 输出级 effort 的对应维度）。
 	OutputConfig *outputConfig `json:"output_config,omitempty"`
+	// ServiceTier 服务质量档位：auto / standard_only。
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 // outputConfig 输出控制。format 只定义了 json_schema 一种 type。

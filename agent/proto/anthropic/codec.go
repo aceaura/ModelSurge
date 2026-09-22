@@ -35,6 +35,9 @@ func (codec) Caps() proto.Capabilities {
 		// output_config.format（2026 新增）只接 json_schema 一种形态，
 		// 纯 JSON 模式没有槽位。
 		StructuredOutput: true, StructuredOutputSchemaOnly: true,
+		// service_tier（auto/standard_only）。没有 prompt_cache_key：
+		// 缓存走显式 cache_control 断点。
+		ServiceTier: true, PromptCacheKey: false,
 		Citations:        true, // text.citations
 		// tool_use.input 是 JSON 对象槽位。
 		ToolInputObject: true,
@@ -114,6 +117,8 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		f.Format.Type == "json_schema" && len(f.Format.Schema) > 0 && string(f.Format.Schema) != "null" {
 		out.ResponseFormat = &ir.ResponseFormat{Schema: f.Format.Schema, Strict: true}
 	}
+	// 原值进 IR，跨族映射是出站的事（proto.MapServiceTier）。
+	out.ServiceTier = req.ServiceTier
 	return out, nil
 }
 
@@ -374,6 +379,10 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	if r.ResponseFormat != nil && r.ResponseFormat.IsSchema() {
 		out.OutputConfig = &outputConfig{Format: &jsonOutputFormat{
 			Type: "json_schema", Schema: r.ResponseFormat.Schema}}
+	}
+	// 值集装不下的档位（flex/scale/priority/fast 等）丢弃，由诊断报出。
+	if tier, ok := proto.MapServiceTier(r.ServiceTier, Name); ok {
+		out.ServiceTier = tier
 	}
 	return json.Marshal(out)
 }

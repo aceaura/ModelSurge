@@ -37,6 +37,8 @@ func (codec) Caps() proto.Capabilities {
 		StructuredOutput: true, // response_format
 		Citations:        true, // message.annotations
 		UserID:           true, // user
+		// service_tier 与 prompt_cache_key 都有原生槽位。
+		ServiceTier: true, PromptCacheKey: true,
 	}
 }
 
@@ -127,6 +129,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	if req.User != "" {
 		out.Metadata = map[string]string{"user_id": req.User}
 	}
+	// 原值进 IR，跨族映射是出站的事（proto.MapServiceTier）。
+	out.ServiceTier = req.ServiceTier
+	out.PromptCacheKey = req.PromptCacheKey
 	return out, nil
 }
 
@@ -410,6 +415,11 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	if uid := r.Metadata["user_id"]; uid != "" {
 		out.User = uid
 	}
+	// ultrafast 是 responses 专属，chat 值集 provably 装不下：丢弃由诊断报出。
+	if tier, ok := proto.MapServiceTier(r.ServiceTier, Name); ok {
+		out.ServiceTier = tier
+	}
+	out.PromptCacheKey = r.PromptCacheKey
 	return json.Marshal(out)
 }
 

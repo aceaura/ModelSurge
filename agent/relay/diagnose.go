@@ -200,7 +200,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	if req.TopK != nil && !caps.TopK {
 		notes = append(notes, "dropped top_k: upstream protocol has no equivalent field")
 	}
-	notes = append(notes, samplingNotes(req, caps)...)
+	notes = append(notes, samplingNotes(req, protoName, caps)...)
 	if rf := req.ResponseFormat; rf != nil {
 		// 这一条比别的更要紧：客户端会直接 JSON.parse 响应，拿到自由文本就是
 		// 硬失败而非降级。读者能做的是把 schema 写进 system 提示自行约束。
@@ -254,7 +254,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 //
 // 措辞要说清后果而不只是字段名：读者看到 "dropped n" 读不出「按数组取第二个
 // 候选会越界」，而那才是它要改的代码。
-func samplingNotes(req *ir.Request, caps proto.Capabilities) []string {
+func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) []string {
 	var notes []string
 	if !caps.Penalties {
 		if req.PresencePenalty != nil {
@@ -323,6 +323,25 @@ func samplingNotes(req *ir.Request, caps proto.Capabilities) []string {
 		// 裸消息——模板里的指令全部丢失。
 		notes = append(notes,
 			"dropped prompt template reference: the template content lives server-side and the target protocol cannot resolve it, its instructions will not reach the upstream")
+	}
+	if req.ServiceTier != "" {
+		switch {
+		case !caps.ServiceTier:
+			notes = append(notes,
+				"dropped service tier: the target protocol has no capacity tier field, scheduling falls back to the upstream default")
+		default:
+			// 有槽位不代表装得下：三家值集不同，provably 无等价的档位
+			// （如 anthropic 的 priority、chat 的 ultrafast）照实报出。
+			if _, ok := proto.MapServiceTier(req.ServiceTier, protoName); !ok {
+				notes = append(notes, fmt.Sprintf(
+					"dropped service tier %q: the target protocol's tier set has no equivalent, scheduling falls back to the upstream default", req.ServiceTier))
+			}
+		}
+	}
+	if req.PromptCacheKey != "" && !caps.PromptCacheKey {
+		// 值是客户端自选串，不回显（与 user id 同款纪律）。
+		notes = append(notes,
+			"dropped prompt cache key: the target protocol has no cache routing field, repeated prefixes may recompute instead of hitting the cache")
 	}
 	return notes
 }

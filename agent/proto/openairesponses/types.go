@@ -37,6 +37,10 @@ type request struct {
 	Background *bool `json:"background,omitempty"`
 	// Prompt 服务端 prompt 模板引用 {id, version?, variables?}。
 	Prompt *promptRef `json:"prompt,omitempty"`
+	// ServiceTier 服务质量档位（chat 值集 + ultrafast）。
+	ServiceTier string `json:"service_tier,omitempty"`
+	// PromptCacheKey 提示缓存路由键。
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 	// TopLogProbs 兼任开关与档位：Responses 没有独立的 logprobs 布尔。
 	TopLogProbs *int `json:"top_logprobs,omitempty"`
 }

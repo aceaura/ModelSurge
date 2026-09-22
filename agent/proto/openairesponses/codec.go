@@ -42,6 +42,8 @@ func (codec) Caps() proto.Capabilities {
 		ResponseChain: true,
 		// include / background / prompt 模板 / conversation。
 		ResponsesExtras: true,
+		// service_tier（值集含 ultrafast）与 prompt_cache_key。
+		ServiceTier: true, PromptCacheKey: true,
 	}
 }
 
@@ -116,6 +118,8 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	out.ConversationID = decodeConversation(req.Conversation)
 	out.Background = req.Background
 	out.Include = req.Include
+	out.ServiceTier = req.ServiceTier
+	out.PromptCacheKey = req.PromptCacheKey
 	if req.Prompt != nil {
 		out.Prompt = &ir.PromptRef{ID: req.Prompt.ID, Version: req.Prompt.Version, Variables: req.Prompt.Variables}
 	}
@@ -408,6 +412,11 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		f := false
 		out.Store = &f
 	}
+	// 本族值集是 chat 的超集，只有 anthropic 方言 standard_only 需要翻译。
+	if tier, ok := proto.MapServiceTier(r.ServiceTier, Name); ok {
+		out.ServiceTier = tier
+	}
+	out.PromptCacheKey = r.PromptCacheKey
 	return json.Marshal(out)
 }
 

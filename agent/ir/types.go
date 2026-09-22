@@ -368,6 +368,13 @@ type Request struct {
 	// Prompt 服务端 prompt 模板引用。模板内容存在上游服务端，代理展开不了；
 	// 丢了它上游只能看到裸消息（模板指令全丢）。
 	Prompt *PromptRef
+	// ServiceTier 服务质量档位原值（anthropic auto/standard_only；OpenAI 两系
+	// auto/default/flex/scale/priority/fast，responses 另有 ultrafast）。
+	// 保留原值不规整：跨族映射在出站编码按目标协议值集进行（proto.MapServiceTier）。
+	ServiceTier string
+	// PromptCacheKey 提示缓存路由键（OpenAI 两系的 prompt_cache_key）。
+	// 值可能是客户端自选串，诊断与日志一律不回显值本身。
+	PromptCacheKey string
 }
 
 // PromptRef 服务端 prompt 模板引用（Responses 的 prompt 参数）。

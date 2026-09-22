@@ -39,6 +39,10 @@ type request struct {
 	LogProbs         *bool              `json:"logprobs,omitempty"`
 	TopLogProbs      *int               `json:"top_logprobs,omitempty"`
 	LogitBias        map[string]float64 `json:"logit_bias,omitempty"`
+	// ServiceTier 服务质量档位（auto/default/flex/scale/priority/fast）。
+	ServiceTier string `json:"service_tier,omitempty"`
+	// PromptCacheKey 提示缓存路由键。
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 }
 
 // responseFormat 结构化输出：type 为 text / json_object / json_schema。

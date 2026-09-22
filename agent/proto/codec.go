@@ -132,6 +132,57 @@ type Capabilities struct {
 	// （含 codex 别名）有；其他三族连「对应物不存在」都谈不上——
 	// 这些概念只在 Responses 里有。conversation 锚点归 ResponseChain 位。
 	ResponsesExtras bool
+
+	// ServiceTier 有服务质量档位槽位。Anthropic（auto/standard_only）、
+	// Chat 与 Responses（auto/default/flex/scale/priority/fast，Responses
+	// 另有 ultrafast）三家值集不同：有槽位不代表装得下所有值，跨族
+	// 可映射性由 MapServiceTier 判定。kiro 没有这一维。
+	ServiceTier bool
+
+	// PromptCacheKey 有提示缓存路由键槽位（OpenAI 两系的
+	// prompt_cache_key）。Anthropic 走显式 cache_control 断点，
+	// 没有路由键概念；kiro 没有。
+	PromptCacheKey bool
+}
+
+// MapServiceTier 把 service_tier 原值映射到目标协议值集。
+// 返回 ok=false 表示目标协议的值集里 provably 没有等价物（出站丢 + 诊断）。
+// 映射规则：
+//   - auto 三家都有，恒通；
+//   - standard_only（anthropic 方言）与 default（OpenAI 方言）互译，
+//     语义同为「只用标准容量，不占优先级」；
+//   - ultrafast 是 responses 专属（gpt-5.6-sol 审批制），chat 与 anthropic
+//     的值集 provably 没有它；
+//   - 其余 OpenAI 方言值（flex/scale/priority/fast）去 anthropic 无等价；
+//   - 目标族内不认识的值原样透传——可能是我们核对 SDK 之后官方新增的档位，
+//     丢了比让上游照实 400 更糟（只报不拒）。
+func MapServiceTier(tier, protoName string) (string, bool) {
+	if tier == "auto" {
+		return "auto", true
+	}
+	switch protoName {
+	case "anthropic":
+		switch tier {
+		case "standard_only":
+			return tier, true
+		case "default":
+			return "standard_only", true
+		}
+		return "", false
+	case "openai-chat":
+		switch tier {
+		case "standard_only":
+			return "default", true
+		case "ultrafast":
+			return "", false
+		}
+		return tier, true
+	default: // openai-responses / codex：值集是 chat 的超集
+		if tier == "standard_only" {
+			return "default", true
+		}
+		return tier, true
+	}
 }
 
 // InboundCodec 客户端入口协议编解码器。

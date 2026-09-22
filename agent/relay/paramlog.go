@@ -47,6 +47,11 @@ func requestParams(clientProto string, req *ir.Request) string {
 		b.WriteString(" thinking=absent")
 	case !req.Thinking.Enabled:
 		b.WriteString(" thinking=off")
+		// 显式关（effort=none）与「只给了摘要偏好」都落到这一支，档位带上才看得出
+		// 线上写的是 none 还是压根没写档位。
+		if req.Thinking.Effort != "" {
+			fmt.Fprintf(&b, " effort=%s", req.Thinking.Effort)
+		}
 	default:
 		fmt.Fprintf(&b, " thinking=on budget=%d", req.Thinking.BudgetTokens)
 		if req.Thinking.Effort != "" {

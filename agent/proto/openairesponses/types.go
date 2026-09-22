@@ -72,6 +72,10 @@ type promptRef struct {
 type reasoning struct {
 	Effort  string `json:"effort,omitempty"`
 	Summary string `json:"summary,omitempty"`
+	// Context 推理带多少会话上下文（auto/current_turn/all_turns）。
+	// Mode 推理模式（standard/pro）。两者值形态仍在演进，按原文透传不解析。
+	Context json.RawMessage `json:"context,omitempty"`
+	Mode    json.RawMessage `json:"mode,omitempty"`
 }
 
 // textConfig text.format 结构化输出：Responses 把 Chat 的 response_format

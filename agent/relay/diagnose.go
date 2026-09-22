@@ -532,6 +532,23 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 				"dropped thinking display preference: the target protocol has no visibility control for reasoning content, thinking is echoed in the upstream default form")
 		}
 	}
+	if t := req.Thinking; t != nil && protoName != "openai-responses" && protoName != "codex" {
+		// reasoning 的摘要详略与 context/mode 只有 responses 一族有槽位：chat 的
+		// reasoning_effort 是单值、anthropic 的 thinking 块只管开关与预算、kiro 的
+		// effort 片段同理，三维都装不下，丢弃并报出。
+		if t.Summary != "" {
+			notes = append(notes, fmt.Sprintf(
+				"dropped reasoning summary preference %q: the target protocol has no summary-verbosity field, reasoning summaries come in the upstream default form", t.Summary))
+		}
+		if len(t.Context) > 0 {
+			notes = append(notes,
+				"dropped reasoning context scope: the target protocol's reasoning parameter takes only an effort level, reasoning runs over the upstream default context")
+		}
+		if len(t.Mode) > 0 {
+			notes = append(notes,
+				"dropped reasoning mode: the target protocol's reasoning parameter takes only an effort level, reasoning runs in the upstream default mode")
+		}
+	}
 	if t := req.Thinking; t != nil && protoName == "anthropic" {
 		// anthropic 的 effort 值集封闭五值（low/medium/high/xhigh/max）：
 		// minimal 与未知值 provably 装不下；"none" 与未开思考同义，静默。

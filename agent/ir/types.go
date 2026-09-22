@@ -393,6 +393,18 @@ type ThinkingConfig struct {
 	// 三元语义（未给 / true / false）里只有显式 false 需要动作，所以用正向
 	// 的「隐藏」而不是「包含」，零值即「客户端没表态，照常回显」。
 	HideThoughts bool
+
+	// Summary 思考摘要的啰嗦程度（OpenAI Responses reasoning.summary：
+	// auto/concise/detailed）。与 Display 不同轴：Display 管可见性，Summary 管
+	// 摘要详略，两者不构成等价物。仅 responses 一族有槽位。
+	Summary string
+	// Context / Mode reasoning 的另两维（context: auto/current_turn/all_turns；
+	// mode: standard/pro）。值形态仍在演进，按原文收下不解析（与 Conversation /
+	// Moderation 同款约定），仅 responses 一族能回写。
+	// omitempty 是必须的：Clone 走 JSON 往返，nil 不带标签会变成非空 "null"，
+	// 出站据此判断「客户端给过」就会凭空写出一个 reasoning 对象。
+	Context json.RawMessage `json:",omitempty"`
+	Mode    json.RawMessage `json:",omitempty"`
 }
 
 // ResponseFormat 结构化输出约束。两档语义：JSON 模式（只要求合法 JSON）与

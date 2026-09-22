@@ -40,6 +40,23 @@ func TestRequestParams(t *testing.T) {
 	}
 }
 
+// 显式关（effort=none）要在日志里看得出档位：光一个 thinking=off 分不清
+// 「客户端显式要求不思考」（线上会写出 none）与「只给了摘要偏好、没表态档位」
+// （线上压根不写档位），排查上游为什么思考/不思考时无从下手。
+func TestRequestParamsLogsExplicitNoneEffort(t *testing.T) {
+	req := &ir.Request{Model: "gpt-5.6-sol", Messages: make([]ir.Message, 1)}
+	req.Thinking = &ir.ThinkingConfig{Enabled: false, Effort: ir.EffortNone}
+	s := requestParams("openai-chat", req)
+	if !strings.Contains(s, "thinking=off effort=none") {
+		t.Errorf("显式 none 没进参数日志：%q", s)
+	}
+	// 没表态档位时不得凭空打出 effort= 键。
+	req.Thinking = &ir.ThinkingConfig{Enabled: false}
+	if s = requestParams("openai-responses", req); strings.Contains(s, "effort=") {
+		t.Errorf("没给档位却打出 effort：%q", s)
+	}
+}
+
 func TestRespSummarizerEvents(t *testing.T) {
 	s := newRespSummarizer(true, "req-1", "ark-6", "sse", time.Now())
 	s.observe(ir.Event{Type: ir.EvMessageStart, Model: "glm-5.3-flash", Usage: &ir.Usage{InputTokens: 100, CacheReadTokens: 50}})

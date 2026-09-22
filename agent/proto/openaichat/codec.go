@@ -449,11 +449,24 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		if r.ToolChoice != nil && (r.ToolChoice.Mode == ir.ChoiceAny || r.ToolChoice.Mode == ir.ChoiceTool) {
 			out.ToolChoice = "auto"
 		}
-		effort := r.Thinking.Effort
-		if effort == "" {
-			effort = "medium"
+	}
+	// 档位与「开思考」是两个轴，只有两种情形该写 reasoning_effort：
+	if r.Thinking != nil {
+		switch {
+		case r.Thinking.Enabled:
+			effort := r.Thinking.Effort
+			if effort == "" {
+				// 本族没有独立的思考开关，档位是表达「要思考」的唯一手段。
+				effort = "medium"
+			}
+			out.ReasoningEffort = effort
+		case r.Thinking.Effort == "none":
+			// 显式关也要写出来：省略 reasoning_effort 不等于「不思考」，上游会按
+			// 自己的默认档思考，客户端要的「别思考」就成了「中档思考」。kiro 出站
+			// 早就照此办理（effortFragment 在思考关闭时显式写 "none"）。
+			out.ReasoningEffort = "none"
 		}
-		out.ReasoningEffort = effort
+		// 关着却带别的档位（账号覆盖强制关）时不写：写出去等于把「关」翻译成「开」。
 	}
 	out.ResponseFormat = encodeResponseFormat(r.ResponseFormat)
 	if uid := r.Metadata["user_id"]; uid != "" {

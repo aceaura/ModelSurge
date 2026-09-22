@@ -295,6 +295,16 @@ type StreamDecoder interface {
 	Finish() []ir.Event
 }
 
+// DecoderNoteReporter 是流式解码器的可选损耗上报缝。
+type DecoderNoteReporter interface {
+	Notes() []string
+}
+
+// ResponseDecoderWithNotes 是完整响应解码器的可选损耗上报缝。
+type ResponseDecoderWithNotes interface {
+	DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error)
+}
+
 // StreamEncoder IR 事件 -> 客户端 SSE 字节。
 type StreamEncoder interface {
 	// Encode 把一个 IR 事件编码为 0..N 段已按本协议帧格式的 SSE 字节。
@@ -422,6 +432,11 @@ func AudioOutputDropNote() string {
 func CustomToolDowngradeNote(n int) string {
 	return fmt.Sprintf(
 		"downgraded %d custom tool call(s) to function calls: this protocol has no free-form tool-input item, input is wrapped as {input:string}", n)
+}
+
+func AdditionalChoicesDropNote(n int) string {
+	return fmt.Sprintf(
+		"discarded %d additional response choice(s): the internal response model carries one candidate, only one OpenAI Chat choice was preserved", n)
 }
 
 // SigDropNote 流式编码器的外族签名丢弃注记（计数由编码器在门控分支累计）。

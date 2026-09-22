@@ -531,7 +531,14 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		if readErr != nil {
 			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: readErr.Error(), Retryable: true}
 		}
-		irResp, decErr := cand.codec.DecodeResponse(full)
+		var irResp *ir.Response
+		var respNotes []string
+		var decErr error
+		if dec, ok := cand.codec.(proto.ResponseDecoderWithNotes); ok {
+			irResp, respNotes, decErr = dec.DecodeResponseWithNotes(full)
+		} else {
+			irResp, decErr = cand.codec.DecodeResponse(full)
+		}
 		if decErr != nil {
 			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "decode upstream response: " + decErr.Error(), Retryable: true}
 		}
@@ -544,7 +551,7 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		sum.log()
 		csum := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), req.Stream, requestLogFrom(ctx).started)
 		csum.fill(irResp)
-		writeResponse(w, clientCodec, irResp, req.Stream, nil, csum)
+		writeResponse(w, clientCodec, irResp, req.Stream, respNotes, csum)
 		csum.log()
 		return true, nil
 	}
@@ -566,6 +573,13 @@ func (f *Forwarder) recordTruncation(dec proto.StreamDecoder, upName string) {
 		return
 	}
 	f.trunc.Record(upName, tr.TruncatedTools(), tr.ContentTruncated(), tr.TruncatedContent())
+}
+
+func decoderNotes(dec proto.StreamDecoder) []string {
+	if reporter, ok := dec.(proto.DecoderNoteReporter); ok {
+		return reporter.Notes()
+	}
+	return nil
 }
 
 func (f *Forwarder) candidateFirstTokenTimeout(candidate, *ir.Request) time.Duration {
@@ -713,9 +727,10 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 		csum.wrote(n)
 	}
 	// 响应侧损耗收尾：流已开始，头写不了，落 SSE 注释帧 + 日志。
-	encNotes := enc.Notes()
-	logRespNotes(clientCodec.Name(), encNotes)
-	for _, fr := range proto.SSENoteFrames(encNotes) {
+	respNotes := decoderNotes(dec)
+	respNotes = append(respNotes, enc.Notes()...)
+	logRespNotes(clientCodec.Name(), respNotes)
+	for _, fr := range proto.SSENoteFrames(respNotes) {
 		n, _ := w.Write(fr)
 		csum.wrote(n)
 	}
@@ -806,7 +821,9 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 		aggErr.Retryable = true
 		return nil, nil, aggErr
 	}
-	return resp, agg.Notes(), nil
+	notes := decoderNotes(dec)
+	notes = append(notes, agg.Notes()...)
+	return resp, notes, nil
 }
 
 // CountTokens 处理 Anthropic count_tokens 请求：优先转发给 anthropic 账号

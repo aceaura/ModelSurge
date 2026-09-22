@@ -177,6 +177,70 @@ func TestAggregatorNotesShapeMatchesDelivery(t *testing.T) {
 
 // —— 端到端投递：三条泵各至少一条通路 ——
 
+func forwardMultiChoiceChat(t *testing.T, upstreamStream, clientStream bool) *httptest.ResponseRecorder {
+	t.Helper()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !upstreamStream {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl_1","model":"native","choices":[{"index":1,"message":{"role":"assistant","content":"B"},"finish_reason":"length"},{"index":0,"message":{"role":"assistant","content":"A"},"finish_reason":"stop"}]}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, data := range []string{
+			`{"id":"chatcmpl_1","model":"native","choices":[{"index":1,"delta":{"content":"B"}},{"index":0,"delta":{"content":"A"}}]}`,
+			`{"id":"chatcmpl_1","model":"native","choices":[{"index":1,"delta":{},"finish_reason":"length"},{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			`[DONE]`,
+		} {
+			_, _ = w.Write([]byte("data: " + data + "\n\n"))
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(up.Close)
+
+	replay := &thinkNotesReplay{lease: replayv1.TargetLease{
+		RequestID: "req", GroupID: "g", TargetID: "chat-1", Protocol: "openai-chat",
+		NativeModel: "native", BaseURL: up.URL, Credential: "sk-up",
+	}}
+	f := NewForwarder(&config.Config{}, replay, nil)
+	w := httptest.NewRecorder()
+	f.Forward(t.Context(), w, proto.MustInbound("anthropic"), &ir.Request{
+		Model: "m", MaxTokens: 64, Stream: clientStream,
+		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+	}, "client-key")
+	return w
+}
+
+func TestJSONFallbackCarriesDecoderChoiceNote(t *testing.T) {
+	w := forwardMultiChoiceChat(t, false, false)
+	if h := w.Header().Get("X-ModelSurge-Notes"); !strings.Contains(h, "discarded 1 additional response choice") {
+		t.Fatalf("JSON 解码损耗未进响应头：%q", h)
+	}
+	if body := w.Body.String(); !strings.Contains(body, `"text":"A"`) || strings.Contains(body, `"text":"B"`) {
+		t.Fatalf("JSON 主候选选择错误：%s", body)
+	}
+}
+
+func TestMainCollectPathCarriesDecoderChoiceNote(t *testing.T) {
+	w := forwardMultiChoiceChat(t, true, false)
+	if h := w.Header().Get("X-ModelSurge-Notes"); !strings.Contains(h, "discarded 1 additional response choice") {
+		t.Fatalf("SSE 聚合解码损耗未进响应头：%q", h)
+	}
+	if body := w.Body.String(); !strings.Contains(body, `"text":"A"`) || strings.Contains(body, `"text":"B"`) {
+		t.Fatalf("SSE 聚合主候选选择错误：%s", body)
+	}
+}
+
+func TestMainStreamPathCarriesDecoderChoiceNote(t *testing.T) {
+	w := forwardMultiChoiceChat(t, true, true)
+	body := w.Body.String()
+	if !strings.Contains(body, ": modelsurge-note: discarded 1 additional response choice") {
+		t.Fatalf("SSE 解码损耗注释帧缺失：\n%s", body)
+	}
+	if !strings.Contains(body, `"text":"A"`) || strings.Contains(body, `"text":"B"`) {
+		t.Fatalf("SSE 主候选选择错误：\n%s", body)
+	}
+}
+
 // 主 SSE 泵：anthropic 上游带真签名，chat 客户端无签名槽位，
 // 编码器丢弃计数必须变成流尾的 SSE 注释帧。
 func TestMainPumpEmitsNoteFrameForDroppedSignature(t *testing.T) {

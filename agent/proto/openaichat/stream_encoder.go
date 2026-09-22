@@ -282,14 +282,20 @@ func encodeUsage(u *ir.Usage) *usage {
 
 // ---- 非流式响应 ----
 
-func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
+func (c codec) DecodeResponse(body []byte) (*ir.Response, error) {
+	resp, _, err := c.DecodeResponseWithNotes(body)
+	return resp, err
+}
+
+func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error) {
 	var r response
 	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, fmt.Errorf("openai-chat: decode response: %w", err)
+		return nil, nil, fmt.Errorf("openai-chat: decode response: %w", err)
 	}
 	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier}
-	if len(r.Choices) > 0 && r.Choices[0].Message != nil {
-		m := r.Choices[0].Message
+	selected := primaryChoice(r.Choices)
+	if selected != nil && selected.Message != nil {
+		m := selected.Message
 		if len(m.Audio) > 0 && string(m.Audio) != "null" {
 			var a audioOutput
 			if json.Unmarshal(m.Audio, &a) == nil {
@@ -310,12 +316,32 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 				Input: json.RawMessage(tc.Function.Arguments),
 			}})
 		}
-		out.StopReason = MapFinishReason(r.Choices[0].FinishReason)
+		out.StopReason = MapFinishReason(selected.FinishReason)
 	}
 	if r.Usage != nil {
 		out.Usage = decodeUsage(r.Usage)
 	}
-	return out, nil
+	var notes []string
+	if len(r.Choices) > 1 {
+		notes = append(notes, proto.AdditionalChoicesDropNote(len(r.Choices)-1))
+	}
+	return out, notes, nil
+}
+
+func primaryChoice(choices []choice) *choice {
+	if len(choices) == 0 {
+		return nil
+	}
+	selected := 0
+	for i := range choices {
+		if choices[i].Index == 0 {
+			return &choices[i]
+		}
+		if choices[i].Index < choices[selected].Index {
+			selected = i
+		}
+	}
+	return &choices[selected]
 }
 
 func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {

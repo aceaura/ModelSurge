@@ -5,7 +5,37 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/aceaura/ModelSurge/agent/ir"
 )
+
+func TestDecodeResponseKeepsPrimaryChoice(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl_1","model":"m","choices":[{"index":1,"message":{"role":"assistant","content":"B"},"finish_reason":"length"},{"index":0,"message":{"role":"assistant","content":"A"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`)
+	resp, notes, err := (codec{}).DecodeResponseWithNotes(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "A" {
+		t.Fatalf("content = %+v, want choice index 0", resp.Content)
+	}
+	if resp.StopReason != ir.StopEndTurn {
+		t.Fatalf("stop = %q, want %q", resp.StopReason, ir.StopEndTurn)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "discarded 1 additional response choice") {
+		t.Fatalf("notes = %v", notes)
+	}
+
+	fallback, fallbackNotes, err := (codec{}).DecodeResponseWithNotes([]byte(`{"choices":[{"index":4,"message":{"content":"D"}},{"index":2,"message":{"content":"C"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fallback.Content) != 1 || fallback.Content[0].Text != "C" {
+		t.Fatalf("fallback content = %+v, want smallest choice index", fallback.Content)
+	}
+	if len(fallbackNotes) != 1 {
+		t.Fatalf("fallback notes = %v", fallbackNotes)
+	}
+}
 
 // 扁平 + 标准混合数组：扁平 {name,description,input_schema} 映射为 function 工具。
 func TestDecodeRequestFlatTools(t *testing.T) {

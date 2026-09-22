@@ -50,3 +50,57 @@ func TestDecodeStreamToolCallPendingArgs(t *testing.T) {
 		t.Fatalf("tool arguments = %q, want %q", args, `{"city":"北京"}`)
 	}
 }
+
+func TestDecodeStreamFallsBackToSmallestChoiceIndex(t *testing.T) {
+	dec := codec{}.NewStreamDecoder()
+	events, err := dec.Feed("data", `{"choices":[{"index":4,"delta":{"content":"D"}},{"index":2,"delta":{"content":"C"}}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	for _, ev := range events {
+		if ev.Type == ir.EvTextDelta {
+			text += ev.Text
+		}
+	}
+	if text != "C" {
+		t.Fatalf("text = %q, want smallest choice index C", text)
+	}
+}
+
+func TestDecodeStreamKeepsOneChoice(t *testing.T) {
+	dec := codec{}.NewStreamDecoder()
+	events, err := dec.Feed("data", `{"id":"c1","choices":[{"index":1,"delta":{"content":"B","tool_calls":[{"index":0,"id":"wrong","function":{"name":"wrong","arguments":"{}"}}]},"finish_reason":"length"},{"index":0,"delta":{"content":"A"},"finish_reason":"stop"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events = append(events, dec.Finish()...)
+	var text string
+	var stop ir.StopReason
+	for _, ev := range events {
+		switch ev.Type {
+		case ir.EvTextDelta:
+			text += ev.Text
+		case ir.EvBlockStart:
+			if ev.Block != nil && ev.Block.Type == ir.BlockToolUse {
+				t.Fatalf("discarded choice leaked tool call: %+v", ev.Block.ToolUse)
+			}
+		case ir.EvMessageDelta:
+			stop = ev.StopReason
+		}
+	}
+	if text != "A" {
+		t.Fatalf("text = %q, want A", text)
+	}
+	if stop != ir.StopEndTurn {
+		t.Fatalf("stop = %q, want %q", stop, ir.StopEndTurn)
+	}
+	reporter := dec.(interface{ Notes() []string })
+	notes := reporter.Notes()
+	if len(notes) != 1 || notes[0] == "" {
+		t.Fatalf("discard note = %v", notes)
+	}
+	if again := reporter.Notes(); len(again) != 0 {
+		t.Fatalf("notes did not drain: %v", again)
+	}
+}

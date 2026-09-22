@@ -29,10 +29,13 @@ type streamDecoder struct {
 
 	tools map[int]*pendingTool // OpenAI tool index -> 状态
 
-	usage        ir.Usage
-	finishReason string
-	gotFinish    bool
-	done         bool
+	usage          ir.Usage
+	finishReason   string
+	gotFinish      bool
+	done           bool
+	primaryChoice  int
+	choiceSelected bool
+	droppedChoices map[int]struct{}
 }
 
 type pendingTool struct {
@@ -43,7 +46,10 @@ type pendingTool struct {
 }
 
 func (codec) NewStreamDecoder() proto.StreamDecoder {
-	return &streamDecoder{textIdx: -1, thinkIdx: -1, refusalIdx: -1, tools: map[int]*pendingTool{}}
+	return &streamDecoder{
+		textIdx: -1, thinkIdx: -1, refusalIdx: -1,
+		tools: map[int]*pendingTool{}, droppedChoices: map[int]struct{}{},
+	}
 }
 
 func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
@@ -72,7 +78,26 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	if chunk.Usage != nil {
 		d.usage.MergeNonZero(decodeUsage(chunk.Usage))
 	}
+	if !d.choiceSelected && len(chunk.Choices) > 0 {
+		d.primaryChoice = chunk.Choices[0].Index
+		foundZero := d.primaryChoice == 0
+		for _, ch := range chunk.Choices[1:] {
+			if ch.Index == 0 {
+				d.primaryChoice = 0
+				foundZero = true
+				break
+			}
+			if !foundZero && ch.Index < d.primaryChoice {
+				d.primaryChoice = ch.Index
+			}
+		}
+		d.choiceSelected = true
+	}
 	for _, ch := range chunk.Choices {
+		if ch.Index != d.primaryChoice {
+			d.droppedChoices[ch.Index] = struct{}{}
+			continue
+		}
 		if ch.Delta != nil {
 			out = append(out, d.feedDelta(ch.Delta)...)
 		}
@@ -227,6 +252,15 @@ func (d *streamDecoder) Finish() []ir.Event {
 		ir.Event{Type: ir.EvMessageStop},
 	)
 	return out
+}
+
+func (d *streamDecoder) Notes() []string {
+	if len(d.droppedChoices) == 0 {
+		return nil
+	}
+	n := len(d.droppedChoices)
+	d.droppedChoices = map[int]struct{}{}
+	return []string{proto.AdditionalChoicesDropNote(n)}
 }
 
 // decodeUsage OpenAI usage -> IR（input 口径换算：prompt 含 cached，需拆出）。

@@ -770,7 +770,8 @@ func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.
 
 // aggregateUpstream 消费上游流并聚合为完整 IR 响应：首事件超时、
 // web_search 拦截（先于调用方可能紧跟的严格工具校验）、截断上报。
-// 不向客户端写任何字节。聚合失败强制可重试（未写字节可换上游重发）。
+// 不向客户端写任何字节。聚合失败的可重试性按规范类型判（未写字节可换上游重发，
+// 但换谁都会被同样拒绝的错误不重试）。
 // cancel 供首事件超时杀掉阻塞中的 body 读取（openUpstream 返回的）。
 // 第二个返回值是聚合期损耗注记（畸形工具参数挪键）——挪键发生在客户端
 // 编码之前，编码器扫描响应体已看不出，必须由这里带出去。
@@ -821,8 +822,12 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 	f.recordTruncation(dec, cand.name)
 	resp, aggErr := agg.Finish()
 	if aggErr != nil {
-		// 未写任何字节：强制可重试，换上游重发
-		aggErr.Retryable = true
+		// 未写任何字节，换上游重发是**安全**的——但安全不等于有用。可重试性按规范
+		// 类型判（与解码器共用 StreamRetryable 同一张表），不再一律置真：非法请求 /
+		// 未找到 / 内容过滤换谁都会被同样拒绝，强制可重试只会把账号池白烧一遍
+		// （实测一个 invalid_request 打满全部目标才停下）。传输与解码失败是
+		// upstream_error，照旧可重试，换账号确实可能成功。
+		aggErr.Retryable = ir.StreamRetryable(aggErr.Type)
 		return nil, nil, aggErr
 	}
 	notes := decoderNotes(dec)

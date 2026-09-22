@@ -256,7 +256,11 @@ func (f *Forwarder) aggregateKiro(ctx context.Context, cand candidate, req *ir.R
 			break
 		}
 		if event.Type == ir.EvError && event.Err != nil {
-			event.Err.Retryable = true
+			// 不覆盖 Retryable：kiro 的可重试性由 Upstream 判，它手上有
+			// ClassifyKiroError 认得的 kiro 原因码，agent 只看得到规范类型，
+			// 按类型重推等于把信息量更大的一方结论丢掉。与 openKiroReplay 的
+			// HTTP 路径同一条原则（那里的 Retryable 也取信封值）。
+			// 注意这里不能换成 forward.go 聚合路径用的 ir.StreamRetryable。
 			return nil, nil, event.Err
 		}
 		tail = append(tail, event)
@@ -267,7 +271,8 @@ func (f *Forwarder) aggregateKiro(ctx context.Context, cand candidate, req *ir.R
 	}
 	response, aggregateErr := aggregator.Finish()
 	if aggregateErr != nil {
-		aggregateErr.Retryable = true
+		// 同上：这里的错误只可能是首事件就是 Upstream 发来的 EvError，可重试性
+		// 归 Upstream 判，agent 不按规范类型覆盖。
 		return nil, nil, aggregateErr
 	}
 	return response, aggregator.Notes(), nil

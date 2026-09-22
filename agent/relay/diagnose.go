@@ -372,5 +372,32 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 		notes = append(notes,
 			"dropped prompt cache options: the target protocol has no explicit cache breakpoint control, caching follows the upstream default policy")
 	}
+	if protoName != "anthropic" {
+		// 缓存断点是 anthropic 专属维度（块级 cache_control + tools[].cache_control）。
+		// 跨族丢断点此前完全静默：客户端精心放置的断点蒸发后，缓存命中率与
+		// 计费都变，客户端却看不到任何迹象。数清块与工具两处。
+		n := 0
+		for _, b := range req.System {
+			if b.CacheCtl != "" {
+				n++
+			}
+		}
+		for _, m := range req.Messages {
+			for _, b := range m.Content {
+				if b.CacheCtl != "" {
+					n++
+				}
+			}
+		}
+		for _, t := range req.Tools {
+			if t.CacheCtl != "" {
+				n++
+			}
+		}
+		if n > 0 {
+			notes = append(notes, fmt.Sprintf(
+				"dropped %d cache breakpoint(s): the target protocol has no prompt-caching breakpoint parameter, cached prefixes may be reprocessed and billed", n))
+		}
+	}
 	return notes
 }

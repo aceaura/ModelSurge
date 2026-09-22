@@ -107,6 +107,9 @@ type mediaSource struct {
 
 type cacheControl struct {
 	Type string `json:"type"` // "ephemeral"
+	// TTL 缓存存活档位（"5m"/"1h"，缺省 5m）。官方 extended-cache-ttl
+	// 能力，丢了会让 1h 断点静默降级成 5m——计费与命中率都变。
+	TTL string `json:"ttl,omitempty"`
 }
 
 type tool struct {
@@ -114,6 +117,8 @@ type tool struct {
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 	Type        string          `json:"type,omitempty"` // 服务端托管工具，如 "web_search_20250305"
+	// CacheCtl 工具定义上的缓存断点（官方 Tool.cache_control）。
+	CacheCtl *cacheControl `json:"cache_control,omitempty"`
 }
 
 type toolChoice struct {

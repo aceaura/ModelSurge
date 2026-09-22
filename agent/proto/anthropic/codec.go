@@ -87,11 +87,14 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		if t.Type != "" && t.Type != "custom" {
 			hosted = ir.CanonicalHosted(t.Type)
 		}
+		ctl, ttl := decodeCacheCtl(t.CacheCtl)
 		out.Tools = append(out.Tools, ir.Tool{
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: t.InputSchema,
 			Hosted:      hosted,
+			CacheCtl:    ctl,
+			CacheTTL:    ttl,
 		})
 	}
 	if tc := req.ToolChoice; tc != nil {
@@ -168,7 +171,8 @@ func decodeBlocks(bs []block) []ir.Block {
 }
 
 func decodeBlock(b block) ir.Block {
-	out := ir.Block{CacheCtl: cacheCtlString(b.CacheCtl)}
+	out := ir.Block{}
+	out.CacheCtl, out.CacheTTL = decodeCacheCtl(b.CacheCtl)
 	switch b.Type {
 	case "text":
 		out.Type = ir.BlockText
@@ -269,11 +273,11 @@ func decodeWebSearchToolResult(toolUseID string, raw json.RawMessage) *ir.WebSea
 	return out
 }
 
-func cacheCtlString(c *cacheControl) string {
+func decodeCacheCtl(c *cacheControl) (string, string) {
 	if c == nil {
-		return ""
+		return "", ""
 	}
-	return c.Type
+	return c.Type, c.TTL
 }
 
 // ---- 请求编码：IR -> Anthropic ----
@@ -350,6 +354,7 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: t.InputSchema,
+			CacheCtl:    encodeCacheCtl(t.CacheCtl, t.CacheTTL),
 		})
 	}
 	if tc := r.ToolChoice; tc != nil {
@@ -430,7 +435,7 @@ func encodeMedia(b ir.Block, out block) block {
 }
 
 func encodeBlock(b ir.Block) block {
-	out := block{CacheCtl: encodeCacheCtl(b.CacheCtl)}
+	out := block{CacheCtl: encodeCacheCtl(b.CacheCtl, b.CacheTTL)}
 	switch b.Type {
 	case ir.BlockText:
 		out.Type = "text"
@@ -505,11 +510,11 @@ func encodeBlock(b ir.Block) block {
 	return out
 }
 
-func encodeCacheCtl(s string) *cacheControl {
+func encodeCacheCtl(s, ttl string) *cacheControl {
 	if s == "" {
 		return nil
 	}
-	return &cacheControl{Type: s}
+	return &cacheControl{Type: s, TTL: ttl}
 }
 
 // ---- 错误渲染 ----

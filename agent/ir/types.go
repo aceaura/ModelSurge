@@ -57,6 +57,10 @@ type Block struct {
 	// 有意义——跨块累加会在块被重排或降级时全部错位。
 	Citations []Citation
 	CacheCtl  string // 如 "ephemeral"，仅 Anthropic 方向保留
+	// CacheTTL 缓存断点的存活档位（"5m"/"1h"，空=官方默认 5m）。
+	// 仅 Anthropic 方向保留；与 CacheCtl 并列而非合并进字符串，
+	// 是因为 type 与 ttl 是 cache_control 对象里两个独立键。
+	CacheTTL string
 }
 
 // Citation 正文中一段文字的来源标注。
@@ -237,6 +241,10 @@ type Tool struct {
 	Description string
 	InputSchema json.RawMessage
 	Hosted      string
+	// CacheCtl/CacheTTL 工具定义上的缓存断点（Anthropic tools[].cache_control）。
+	// 其余协议的工具定义没有这一维。
+	CacheCtl string
+	CacheTTL string
 }
 
 // ChoiceMode 工具选择模式。

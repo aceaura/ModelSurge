@@ -426,5 +426,31 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 				"dropped tool modifiers on %d tool(s): the target protocol has no defer-loading, eager-streaming, input-example or caller-restriction fields, tools behave with the upstream defaults", n))
 		}
 	}
+	if t := req.Thinking; t != nil && protoName != "anthropic" {
+		// adaptive（模型自主决定思考量）与 display（思考回显形态）都是
+		// anthropic 专属维度：OpenAI 的 effort 是显式档位、reasoning.summary
+		// 是啰嗦程度而非可见性，都不构成等价物，不映射只报出。
+		if t.Adaptive {
+			notes = append(notes,
+				"dropped adaptive thinking: the target protocol only takes an explicit effort level, a fixed level will be used instead of the model choosing")
+		}
+		if t.Display != "" {
+			notes = append(notes,
+				"dropped thinking display preference: the target protocol has no visibility control for reasoning content, thinking is echoed in the upstream default form")
+		}
+	}
+	if t := req.Thinking; t != nil && protoName == "anthropic" {
+		// anthropic 的 effort 值集封闭五值（low/medium/high/xhigh/max）：
+		// minimal 与未知值 provably 装不下；"none" 与未开思考同义，静默。
+		switch t.Effort {
+		case "", "none", "low", "medium", "high", "xhigh", "max":
+		case "minimal":
+			notes = append(notes,
+				"dropped minimal thinking effort: the target protocol's effort set starts at low, the upstream default level applies")
+		default:
+			notes = append(notes, fmt.Sprintf(
+				"dropped thinking effort %q: the target protocol only accepts low, medium, high, xhigh or max, the upstream default level applies", t.Effort))
+		}
+	}
 	return notes
 }

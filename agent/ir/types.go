@@ -279,12 +279,21 @@ type ToolChoice struct {
 }
 
 // ThinkingConfig 推理配置。Effort 为 OpenAI 风格的等级
-// （minimal/low/medium/high/xhigh），BudgetTokens 为 Anthropic 风格预算，
+// （minimal/low/medium/high/xhigh/max），BudgetTokens 为 Anthropic 风格预算，
 // 两者可并存，codec 按目标协议取用。
 type ThinkingConfig struct {
 	Enabled      bool
 	Effort       string
 	BudgetTokens int
+
+	// Adaptive 模型自主决定思考量（Anthropic thinking.type=adaptive，
+	// 官方已标 enabled 废弃）。与 BudgetTokens 互斥：adaptive 不带预算。
+	// 其余协议没有「自适应」这一档——OpenAI 的 effort 是显式档位。
+	Adaptive bool
+	// Display 思考内容回显形态（Anthropic thinking.display：
+	// "summarized"=正常回显 / "omitted"=只回签名供多轮续接）。
+	// 仅 Anthropic 有；与 HideThoughts 不同义——omitted 仍要回显签名。
+	Display string
 
 	// HideThoughts 客户端要求思考内容不回显。Gemini 的
 	// thinkingConfig.includeThoughts=false 是唯一能表达这一点的入站形态；

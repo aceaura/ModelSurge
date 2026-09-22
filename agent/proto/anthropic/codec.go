@@ -113,7 +113,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	}
 	if req.Thinking != nil {
 		out.Thinking = &ir.ThinkingConfig{
-			Enabled:      req.Thinking.Type == "enabled",
+			Enabled:      req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive",
+			Adaptive:     req.Thinking.Type == "adaptive",
+			Display:      req.Thinking.Display,
 			BudgetTokens: req.Thinking.BudgetTokens,
 		}
 	}
@@ -126,6 +128,14 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	if f := req.OutputConfig; f != nil && f.Format != nil &&
 		f.Format.Type == "json_schema" && len(f.Format.Schema) > 0 && string(f.Format.Schema) != "null" {
 		out.ResponseFormat = &ir.ResponseFormat{Schema: f.Format.Schema, Strict: true}
+	}
+	// output_config.effort 原值进 IR Thinking.Effort（值集是 OpenAI 的
+	// 子集，无需翻译）。effort 独立出现也算开了思考。
+	if f := req.OutputConfig; f != nil && f.Effort != "" {
+		if out.Thinking == nil {
+			out.Thinking = &ir.ThinkingConfig{Enabled: true}
+		}
+		out.Thinking.Effort = f.Effort
 	}
 	// 原值进 IR，跨族映射是出站的事（proto.MapServiceTier）。
 	out.ServiceTier = req.ServiceTier
@@ -377,16 +387,22 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		}
 	}
 	if r.Thinking != nil && r.Thinking.Enabled {
-		budget := r.Thinking.BudgetTokens
-		if budget <= 0 {
-			budget = 4096
+		if r.Thinking.Adaptive {
+			// adaptive 是官方推荐的现代形态（enabled 已废弃）：模型自主
+			// 决定思考量，不带预算；display 仅在本族有意义。
+			out.Thinking = &thinkingCfg{Type: "adaptive", Display: r.Thinking.Display}
+		} else {
+			budget := r.Thinking.BudgetTokens
+			if budget <= 0 {
+				budget = 4096
+			}
+			// Anthropic 约束 budget_tokens < max_tokens：账号级覆盖的强制预算
+			// 可能与客户端 max_tokens 冲突，越界时夹紧（夹紧到 0 则 omitempty 丢弃）。
+			if budget >= out.MaxTokens {
+				budget = out.MaxTokens - 1
+			}
+			out.Thinking = &thinkingCfg{Type: "enabled", BudgetTokens: budget, Display: r.Thinking.Display}
 		}
-		// Anthropic 约束 budget_tokens < max_tokens：账号级覆盖的强制预算
-		// 可能与客户端 max_tokens 冲突，越界时夹紧（夹紧到 0 则 omitempty 丢弃）。
-		if budget >= out.MaxTokens {
-			budget = out.MaxTokens - 1
-		}
-		out.Thinking = &thinkingCfg{Type: "enabled", BudgetTokens: budget}
 	}
 	uid := r.Metadata["user_id"]
 	if uid == "" {
@@ -402,6 +418,18 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	if r.ResponseFormat != nil && r.ResponseFormat.IsSchema() {
 		out.OutputConfig = &outputConfig{Format: &jsonOutputFormat{
 			Type: "json_schema", Schema: r.ResponseFormat.Schema}}
+	}
+	// effort 在 anthropic 是封闭五值集（low/medium/high/xhigh/max，
+	// 没有 none/minimal）：装不下的档位丢弃，由诊断报出；"none" 与
+	// 未开思考同义，静默即可。
+	if r.Thinking != nil {
+		switch r.Thinking.Effort {
+		case "low", "medium", "high", "xhigh", "max":
+			if out.OutputConfig == nil {
+				out.OutputConfig = &outputConfig{}
+			}
+			out.OutputConfig.Effort = r.Thinking.Effort
+		}
 	}
 	// 值集装不下的档位（flex/scale/priority/fast 等）丢弃，由诊断报出。
 	if tier, ok := proto.MapServiceTier(r.ServiceTier, Name); ok {

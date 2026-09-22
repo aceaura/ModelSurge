@@ -30,6 +30,9 @@ type request struct {
 // outputConfig 输出控制。format 只定义了 json_schema 一种 type。
 type outputConfig struct {
 	Format *jsonOutputFormat `json:"format,omitempty"`
+	// Effort 思考档位（low/medium/high/xhigh/max，官方 OutputConfig.effort，
+	// 与 OpenAI reasoning_effort 值集的交集——没有 none/minimal）。
+	Effort string `json:"effort,omitempty"`
 }
 
 type jsonOutputFormat struct {
@@ -42,8 +45,10 @@ type metadata struct {
 }
 
 type thinkingCfg struct {
-	Type         string `json:"type"` // "enabled" / "disabled"
+	Type         string `json:"type"` // "enabled" / "disabled" / "adaptive"
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	// Display 思考内容回显形态（"summarized"/"omitted"）。
+	Display string `json:"display,omitempty"`
 }
 
 type message struct {

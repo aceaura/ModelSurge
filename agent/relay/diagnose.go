@@ -258,5 +258,17 @@ func samplingNotes(req *ir.Request, caps proto.Capabilities) []string {
 		// cachedContent 同理：缓存是服务端资源 id，换协议后引用不到。
 		notes = append(notes, "dropped cached content reference: upstream protocol has no context-caching parameter, the full context will be sent and billed")
 	}
+	if req.PreviousResponseID != "" && !caps.ResponseChain {
+		notes = append(notes, "dropped previous_response_id: upstream protocol has no response-chaining parameter, only the items in this request will reach the model")
+	}
+	if req.Store != nil && *req.Store && !caps.ResponseChain {
+		notes = append(notes, "dropped store=true: upstream protocol has no response-storage switch, the response will not be retrievable later")
+	}
+	if req.ItemRefs > 0 {
+		// item_reference 恒报：代理无状态解析不了引用，展开成 IR 后即便回
+		// responses 出站也无法复原——被引用的内容不会到达上游。
+		notes = append(notes, fmt.Sprintf(
+			"unresolved %d item reference(s): the proxy is stateless and cannot expand them, referenced content will not reach the upstream", req.ItemRefs))
+	}
 	return notes
 }

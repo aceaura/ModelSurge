@@ -37,6 +37,8 @@ func (codec) Caps() proto.Capabilities {
 		StructuredOutput: true, // text.format
 		Citations:        true, // output_text.annotations
 		UserID:           true, // user
+		// previous_response_id + store。
+		ResponseChain: true,
 	}
 }
 
@@ -103,6 +105,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	if req.User != "" {
 		out.Metadata = map[string]string{"user_id": req.User}
 	}
+	out.PreviousResponseID = req.PreviousResponseID
+	// store 三态透传：客户端显式给了就记住，没给保持 nil（出站再决定兜底值）。
+	out.Store = req.Store
 	return out, nil
 }
 
@@ -168,6 +173,10 @@ func decodeItem(req *ir.Request, it inputItem) {
 			return
 		}
 		appendAssistantBlock(req, ir.Block{Type: ir.BlockThinking, Thinking: th})
+	case "item_reference":
+		// 引用的是上游存着的条目，代理无状态解析不了。记数让 Diagnose
+		// 报出「有内容没进来」，静默丢弃会让上游看到残缺的上下文。
+		req.ItemRefs++
 	case "compaction_trigger":
 		// Codex CLI 显式压缩请求标记：不进 IR 消息流（无内容可转），
 		// 仅置 Compact 供 relay 压缩回退识别。其余字段透传语义由
@@ -343,9 +352,16 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	if uid := r.Metadata["user_id"]; uid != "" {
 		out.User = uid
 	}
-	// 订阅端点（Codex 形态）要求 store=false；对官方 API 无害
-	f := false
-	out.Store = &f
+	// 会话链同协议回写：链锚点是上游侧资源，只有 responses 系出站接得住。
+	out.PreviousResponseID = r.PreviousResponseID
+	// 订阅端点（Codex 形态）要求 store=false；对官方 API 无害。
+	// 客户端显式给了值就透传（显式 true 是客户端的选择，不该替它改）。
+	if r.Store != nil {
+		out.Store = r.Store
+	} else {
+		f := false
+		out.Store = &f
+	}
 	return json.Marshal(out)
 }
 

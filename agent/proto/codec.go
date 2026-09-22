@@ -113,6 +113,10 @@ type Capabilities struct {
 	// UserID 有终端用户标识槽位（Anthropic metadata.user_id、
 	// Chat/Responses 的 user）。kiro 没有这一维。
 	UserID bool
+
+	// ResponseChain 有服务端会话链槽位（Responses 的 previous_response_id
+	// 与 store）。只有 responses 一族（含 codex 别名）有。
+	ResponseChain bool
 }
 
 // InboundCodec 客户端入口协议编解码器。

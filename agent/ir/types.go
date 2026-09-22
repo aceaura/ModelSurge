@@ -340,6 +340,17 @@ type Request struct {
 	SafetySettings []SafetySetting
 	// CachedContent 服务端缓存名（context caching 的资源 id）。
 	CachedContent string
+
+	// 以下三维是 Responses 一族的服务端会话链语义。PreviousResponseID 与
+	// Store 在同协议出站时原样回写（链确实能接上）；ItemRefs 恒为诊断
+	// 载体：item_reference 指向服务端存着的条目，代理无状态解析不了，
+	// 展开成 IR 后引用已失，即便回 responses 出站也无法复原。
+	// PreviousResponseID 上一轮响应 id（链式增量请求的锚点）。
+	PreviousResponseID string
+	// Store 是否要求上游留存响应。三态：nil = 客户端没提。
+	Store *bool
+	// ItemRefs input 里 item_reference 条目的计数（内容拿不到，只记数）。
+	ItemRefs int
 }
 
 // SafetySetting 一条内容安全档位（Gemini safetySettings 的等价物）。

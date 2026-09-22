@@ -171,6 +171,12 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		return nil, nil
 	case ir.EvError:
 		e.finished = true
+		// 错误帧之后不得再吐新内容。Gemini 的 functionCall 是攒到块结束才整块下发，
+		// 错误到达时缓冲里的工具调用参数必然被截断（形如 `{"q":`），照旧冲刷会让
+		// 客户端在错误之后收到一个会真去执行的畸形调用。块已终止，直接丢。
+		for idx := range e.pendingTool {
+			delete(e.pendingTool, idx)
+		}
 		c := codec{}
 		return [][]byte{c.RenderStreamError(ev.Err)}, nil
 	}

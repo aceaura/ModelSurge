@@ -152,6 +152,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvPing:
 		return nil, nil
 	case ir.EvError:
+		// 错误帧就是终止帧，且 RenderStreamError 自带 [DONE]。不置 stopped 的话
+		// Finish() 会再补一个 finish_reason="length" 的 chunk 加第二个 [DONE]：
+		// 限流被报成「输出超长」，流末出现两个 [DONE] 也让严格的 SDK 解析失败。
+		e.stopped = true
 		return [][]byte{New().RenderStreamError(ev.Err)}, nil
 	}
 	return nil, fmt.Errorf("openai-chat: encode unknown event %q", ev.Type)

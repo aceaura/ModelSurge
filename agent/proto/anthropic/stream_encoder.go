@@ -30,6 +30,10 @@ type streamEncoder struct {
 	tierSent         bool
 	messageDeltaSent bool
 	stopped          bool
+	// sawError 已下发错误帧。错误帧就是终止帧，Finish() 不得再补
+	// message_delta+message_stop，否则限流会被告诉客户端「你输出超长了」，
+	// 紧接的 message_stop 又把失败伪装成正常结束。
+	sawError bool
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
@@ -131,12 +135,14 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvPing:
 		return [][]byte{sseFrame("ping", marshal(streamEvent{Type: "ping"}))}, nil
 	case ir.EvError:
+		e.sawError = true
 		return [][]byte{New().RenderStreamError(ev.Err)}, nil
 	}
 	return nil, fmt.Errorf("anthropic: encode unknown event %q", ev.Type)
 }
 
 // Finish 冲刷：关闭所有打开的 block，补 message_delta + message_stop。
+// 已下发错误帧时只关块——不给客户端留永不结束的 content block，但不再补收尾事件。
 func (e *streamEncoder) Finish() [][]byte {
 	var out [][]byte
 	idxs := make([]int, 0, len(e.open))
@@ -148,6 +154,9 @@ func (e *streamEncoder) Finish() [][]byte {
 		out = append(out, e.finishToolArgs(i)...)
 		out = append(out, sseFrame("content_block_stop", marshal(streamEvent{Type: "content_block_stop", Index: i})))
 		delete(e.open, i)
+	}
+	if e.sawError {
+		return out
 	}
 	if !e.messageDeltaSent {
 		// 走到这里说明上游没给出终止事件（EvMessageDelta 会置位）。按中断档

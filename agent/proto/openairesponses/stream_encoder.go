@@ -28,7 +28,9 @@ type streamEncoder struct {
 
 	stopReason ir.StopReason
 	usage      *ir.Usage
-	completed  bool
+	// droppedSigs 被门控的外族/合成签名数，Notes() 收尾时报出。
+	droppedSigs int
+	completed   bool
 }
 
 type encBlock struct {
@@ -107,6 +109,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		// 只收本族真签名：外族/合成签名放进 encrypted_content 会被客户端当成
 		// 可回传的 reasoning 凭据，下一轮必被上游拒。
 		if ev.SignatureFrom != Name {
+			e.droppedSigs++
 			return nil, nil
 		}
 		if b := e.blocks[ev.Index]; b != nil {
@@ -269,6 +272,16 @@ func (e *streamEncoder) Finish() [][]byte {
 	return out
 }
 
+// Notes 排干损耗注记（被门控的外族/合成签名）。
+func (e *streamEncoder) Notes() []string {
+	if e.droppedSigs == 0 {
+		return nil
+	}
+	n := proto.SigDropNote(e.droppedSigs, false)
+	e.droppedSigs = 0
+	return []string{n}
+}
+
 func (e *streamEncoder) frame(ev streamEvent) []byte {
 	return []byte("data: " + string(marshal(ev)) + "\n\n")
 }
@@ -352,4 +365,9 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		out.IncompleteDetails = &incompleteDetails{Reason: reason}
 	}
 	return json.Marshal(out)
+}
+
+// ResponseNotes 非流式编码损耗扫描：外族签名丢弃；arguments 字符串槽位无损。
+func (codec) ResponseNotes(resp *ir.Response) []string {
+	return proto.ScanResponseLosses(resp, Name, false, false)
 }

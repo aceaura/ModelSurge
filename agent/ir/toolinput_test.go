@@ -73,3 +73,12 @@ func TestRawArgsKeyIsSelfExplanatory(t *testing.T) {
 		t.Errorf("键名 %q 不含 raw_args，不可自解释", RawArgsKey)
 	}
 }
+
+// RewrapNote 是三条挪键路径（聚合器冲刷、gemini 流式编码、对象槽位响应
+// 扫描）共用的措辞：键名必须出现在注记里，客户端才知道原文被挪去了哪。
+func TestRewrapNoteMentionsKey(t *testing.T) {
+	n := RewrapNote(2)
+	if !strings.Contains(n, "2") || !strings.Contains(n, RawArgsKey) {
+		t.Errorf("注记缺计数或键名：%q", n)
+	}
+}

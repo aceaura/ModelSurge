@@ -6,6 +6,7 @@ package proto
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
 )
@@ -131,6 +132,10 @@ type InboundCodec interface {
 	NewStreamEncoder() StreamEncoder
 	// EncodeResponse 把聚合的 IR 响应编码为本协议非流式响应体。
 	EncodeResponse(resp *ir.Response) ([]byte, error)
+	// ResponseNotes 报告把该响应编码给本协议客户端会发生的损耗
+	// （外族签名丢弃、畸形工具参数挪键）。编码前的纯扫描，不产字节；
+	// relay 用同一份扫描结果填响应头，与各 codec 的实编行为同源。
+	ResponseNotes(resp *ir.Response) []string
 	// RenderError 按本协议外形渲染错误响应体与状态码。
 	RenderError(e *ir.Error) (status int, body []byte)
 	// RenderStreamError 渲染流内错误事件（SSE 字节）。
@@ -176,6 +181,74 @@ type StreamEncoder interface {
 	// Finish 流结束冲刷：强制关闭所有打开的 block、补终止事件。
 	// 幂等；正常结束后调用应返回空。
 	Finish() [][]byte
+	// Notes 排干编码过程中累积的响应侧损耗注记（被门控的外族签名等）。
+	// 流已经开始后响应头写不了，relay 把注记渲染成 SSE 注释帧收尾。
+	Notes() []string
+}
+
+// SSENoteFrames 把响应侧损耗注记渲染为 SSE 注释帧（": " 前缀行）。
+// 四个入站协议都是 SSE；注释帧客户端会忽略，但抓包与日志可见——
+// 流式方向注记没有别的诚实通道（头已发，事件 schema 里没有注记位）。
+func SSENoteFrames(notes []string) [][]byte {
+	if len(notes) == 0 {
+		return nil
+	}
+	out := make([][]byte, 0, len(notes))
+	for _, n := range notes {
+		n = strings.ReplaceAll(n, "\n", " ")
+		n = strings.ReplaceAll(n, "\r", " ")
+		out = append(out, []byte(": modelsurge-note: "+n+"\n\n"))
+	}
+	return out
+}
+
+// ScanResponseLosses 响应侧损耗扫描：编码给客户端前预判会丢什么。
+// sigSlotless=协议没有签名槽位（chat，签名全丢）；否则只丢外族签名。
+// objArgs=工具参数是对象槽位（anthropic/gemini/kiro），非法参数会被挪进
+// ir.RawArgsKey；字符串槽位原样透传无损耗。
+// 与各 codec 的编码分支用同一判定（SignatureGenuineFor / NormalizeToolInput），
+// 扫描结果即实编结果。
+func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArgs bool) []string {
+	var sigs, badArgs int
+	for _, b := range resp.Content {
+		switch b.Type {
+		case ir.BlockThinking:
+			if b.Thinking != nil && b.Thinking.Signature != "" &&
+				(sigSlotless || !b.Thinking.SignatureGenuineFor(protoName)) {
+				sigs++
+			}
+		case ir.BlockToolUse:
+			if objArgs && b.ToolUse != nil {
+				if _, ok := ir.NormalizeToolInput(b.ToolUse.Input); !ok {
+					badArgs++
+				}
+			}
+		}
+	}
+	var notes []string
+	if sigs > 0 {
+		if sigSlotless {
+			notes = append(notes, fmt.Sprintf(
+				"dropped %d thought signature(s): this protocol has no signature slot, the client cannot replay the thinking chain", sigs))
+		} else {
+			notes = append(notes, fmt.Sprintf(
+				"dropped %d thought signature(s): signed by a different protocol family, sending them would fail the client's signature validation", sigs))
+		}
+	}
+	if badArgs > 0 {
+		notes = append(notes, ir.RewrapNote(badArgs))
+	}
+	return notes
+}
+
+// SigDropNote 流式编码器的外族签名丢弃注记（计数由编码器在门控分支累计）。
+func SigDropNote(n int, sigSlotless bool) string {
+	if sigSlotless {
+		return fmt.Sprintf(
+			"dropped %d thought signature(s): this protocol has no signature slot, the client cannot replay the thinking chain", n)
+	}
+	return fmt.Sprintf(
+		"dropped %d thought signature(s): signed by a different protocol family, sending them would fail the client's signature validation", n)
 }
 
 // TruncatedTool 一次被上游截断的工具调用（kiro 上游会截断大工具参数）。

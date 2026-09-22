@@ -182,6 +182,14 @@ func (f *Forwarder) streamKiroToClient(ctx context.Context, w http.ResponseWrite
 		bytesWritten += int64(written)
 		clientSummary.wrote(written)
 	}
+	// 响应侧损耗收尾：头已发出，落 SSE 注释帧 + 日志（与主流式泵一致）。
+	encNotes := encoder.Notes()
+	logRespNotes(clientCodec.Name(), encNotes)
+	for _, frame := range proto.SSENoteFrames(encNotes) {
+		written, _ := w.Write(frame)
+		bytesWritten += int64(written)
+		clientSummary.wrote(written)
+	}
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -189,7 +197,7 @@ func (f *Forwarder) streamKiroToClient(ctx context.Context, w http.ResponseWrite
 }
 
 func (f *Forwarder) collectKiroToClient(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
-	response, err := f.aggregateKiro(ctx, cand, req, body)
+	response, aggNotes, err := f.aggregateKiro(ctx, cand, req, body)
 	if err != nil {
 		return false, err
 	}
@@ -202,16 +210,18 @@ func (f *Forwarder) collectKiroToClient(ctx context.Context, w http.ResponseWrit
 	upstreamSummary.log()
 	clientSummary := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), false, requestLogFrom(ctx).started)
 	clientSummary.fill(response)
-	writeResponse(w, clientCodec, response, false, clientSummary)
+	writeResponse(w, clientCodec, response, false, aggNotes, clientSummary)
 	clientSummary.log()
 	return true, nil
 }
 
-func (f *Forwarder) aggregateKiro(ctx context.Context, cand candidate, req *ir.Request, body io.Reader) (*ir.Response, *ir.Error) {
+// aggregateKiro 聚合 kiro NDJSON 事件流；第二个返回值是聚合期损耗注记
+// （畸形工具参数挪键），与 aggregateUpstream 同一约定。
+func (f *Forwarder) aggregateKiro(ctx context.Context, cand candidate, req *ir.Request, body io.Reader) (*ir.Response, []string, *ir.Error) {
 	reader := bufio.NewReader(body)
 	first, err := readKiroIREvent(reader)
 	if err != nil {
-		return nil, kiroNDJSONError("first event", err)
+		return nil, nil, kiroNDJSONError("first event", err)
 	}
 	aggregator := ir.NewAggregator()
 	aggregator.Feed(first)
@@ -220,13 +230,13 @@ func (f *Forwarder) aggregateKiro(ctx context.Context, cand candidate, req *ir.R
 		event, readErr := readKiroIREvent(reader)
 		if readErr != nil {
 			if readErr != io.EOF {
-				return nil, kiroNDJSONError("stream read", readErr)
+				return nil, nil, kiroNDJSONError("stream read", readErr)
 			}
 			break
 		}
 		if event.Type == ir.EvError && event.Err != nil {
 			event.Err.Retryable = true
-			return nil, event.Err
+			return nil, nil, event.Err
 		}
 		tail = append(tail, event)
 	}
@@ -237,9 +247,9 @@ func (f *Forwarder) aggregateKiro(ctx context.Context, cand candidate, req *ir.R
 	response, aggregateErr := aggregator.Finish()
 	if aggregateErr != nil {
 		aggregateErr.Retryable = true
-		return nil, aggregateErr
+		return nil, nil, aggregateErr
 	}
-	return response, nil
+	return response, aggregator.Notes(), nil
 }
 
 func (f *Forwarder) attemptKiroStrict(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, upReq *ir.Request, policy *ir.ToolChoice, notes []string, onUsage func(*ir.Usage)) (bool, *ir.Error) {
@@ -256,7 +266,7 @@ func (f *Forwarder) attemptKiroStrict(ctx context.Context, w http.ResponseWriter
 		if openErr != nil {
 			return false, openErr
 		}
-		response, aggregateErr := f.aggregateKiro(ctx, cand, req, resp.Body)
+		response, aggNotes, aggregateErr := f.aggregateKiro(ctx, cand, req, resp.Body)
 		resp.Body.Close()
 		if aggregateErr != nil {
 			return false, aggregateErr
@@ -278,7 +288,7 @@ func (f *Forwarder) attemptKiroStrict(ctx context.Context, w http.ResponseWriter
 		clientSummary := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), req.Stream, requestLogFrom(ctx).started)
 		clientSummary.fill(response)
 		writeLossyNotes(w, cand.name, notes)
-		writeResponse(w, clientCodec, response, req.Stream, clientSummary)
+		writeResponse(w, clientCodec, response, req.Stream, aggNotes, clientSummary)
 		clientSummary.log()
 		return true, nil
 	}

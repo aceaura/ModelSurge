@@ -153,6 +153,7 @@ func (r *recordEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	return nil, nil
 }
 func (r *recordEncoder) Finish() [][]byte { return nil }
+func (r *recordEncoder) Notes() []string  { return nil }
 
 type recordCodec struct {
 	proto.InboundCodec

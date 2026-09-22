@@ -23,7 +23,9 @@ type streamEncoder struct {
 	// text 各块已下发的正文，供 annotations 反推 cited_text 与字符索引。
 	text     map[int]string
 	nextTool int
-	stopped  bool
+	// droppedSigs 丢弃的签名增量数：Chat 没有签名槽位，全丢，Notes() 报出。
+	droppedSigs int
+	stopped     bool
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
@@ -78,6 +80,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvThinkingDelta:
 		return [][]byte{e.chunk(&message{ReasoningContent: ev.Text}, "")}, nil
 	case ir.EvSigDelta:
+		e.droppedSigs++
 		return nil, nil // OpenAI 无签名概念，丢弃
 	case ir.EvToolInput:
 		if e.skipIdx[ev.Index] {
@@ -124,6 +127,16 @@ func (e *streamEncoder) Finish() [][]byte {
 		e.chunk(&message{}, UnmapFinishReason(ir.StopAborted)),
 		[]byte("data: [DONE]\n\n"),
 	}
+}
+
+// Notes 排干损耗注记（Chat 无签名槽位，签名增量全丢）。
+func (e *streamEncoder) Notes() []string {
+	if e.droppedSigs == 0 {
+		return nil
+	}
+	n := proto.SigDropNote(e.droppedSigs, true)
+	e.droppedSigs = 0
+	return []string{n}
 }
 
 func (e *streamEncoder) chunk(delta *message, finishReason string) []byte {
@@ -240,4 +253,10 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		Choices: []choice{{Index: 0, Message: msg, FinishReason: UnmapFinishReason(resp.StopReason)}},
 		Usage:   encodeUsage(&resp.Usage),
 	})
+}
+
+// ResponseNotes 非流式编码损耗扫描：Chat 无签名槽位（签名全丢），
+// arguments 是字符串槽位（透传无损）。
+func (codec) ResponseNotes(resp *ir.Response) []string {
+	return proto.ScanResponseLosses(resp, Name, true, false)
 }

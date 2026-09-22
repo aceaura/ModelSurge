@@ -19,3 +19,4 @@ type notImplEncoder struct{}
 
 func (notImplEncoder) Encode(_ ir.Event) ([][]byte, error) { return nil, errStreamNotImplemented }
 func (notImplEncoder) Finish() [][]byte                    { return nil }
+func (notImplEncoder) Notes() []string                   { return nil }

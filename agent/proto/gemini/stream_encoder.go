@@ -19,7 +19,11 @@ type streamEncoder struct {
 	// 引用指到别的 part 上。
 	texts     map[int]*encText
 	partCount int
-	finished  bool
+	// droppedSigs 被门控的外族/合成签名数；rewrappedArgs 畸形工具参数挪键数。
+	// 两者由 Notes() 收尾时报出。
+	droppedSigs   int
+	rewrappedArgs int
+	finished      bool
 }
 
 // encText 一个正文块的流式下发记录。
@@ -74,6 +78,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		// 签名在思考文本结束后的单独 part 中到达）。只下发本族真签名：
 		// 外族/合成签名占了这一格，客户端下一轮回传必被 Gemini 拒。
 		if ev.SignatureFrom != Name {
+			e.droppedSigs++
 			return nil, nil
 		}
 		e.partCount++ // 签名 part 同样占部件序号
@@ -93,7 +98,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			delete(e.pendingTool, ev.Index)
 			// 截断/非对象参数放进 RawMessage 槽位会让这个 chunk marshal
 			// 失败，整块 functionCall 丢失；原文挪进 RawArgsKey 保真。
-			args, _ := ir.NormalizeToolInput(t.args)
+			args, ok := ir.NormalizeToolInput(t.args)
+			if !ok {
+				e.rewrappedArgs++
+			}
 			p := content{Role: "model", Parts: []part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}}
 			ensureThoughtSignature(&p)
 			e.partCount++ // functionCall part 也占部件序号
@@ -140,7 +148,10 @@ func (e *streamEncoder) Finish() [][]byte {
 	var out [][]byte
 	for idx, t := range e.pendingTool {
 		delete(e.pendingTool, idx)
-		args, _ := ir.NormalizeToolInput(t.args)
+		args, ok := ir.NormalizeToolInput(t.args)
+		if !ok {
+			e.rewrappedArgs++
+		}
 		p := content{Role: "model", Parts: []part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}}
 		ensureThoughtSignature(&p)
 		e.partCount++
@@ -152,4 +163,18 @@ func (e *streamEncoder) Finish() [][]byte {
 		out = append(out, e.finishChunk(ir.StopAborted, nil)...)
 	}
 	return out
+}
+
+// Notes 排干损耗注记（被门控的签名 + 被挪键的畸形工具参数）。
+func (e *streamEncoder) Notes() []string {
+	var notes []string
+	if e.droppedSigs > 0 {
+		notes = append(notes, proto.SigDropNote(e.droppedSigs, false))
+		e.droppedSigs = 0
+	}
+	if e.rewrappedArgs > 0 {
+		notes = append(notes, ir.RewrapNote(e.rewrappedArgs))
+		e.rewrappedArgs = 0
+	}
+	return notes
 }

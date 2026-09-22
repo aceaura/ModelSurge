@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -81,5 +82,56 @@ func TestAggregator_Error(t *testing.T) {
 	_, err := a.Finish()
 	if err == nil || err.StatusCode != 429 {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// 聚合期挪键记账：截断的工具参数在 BlockStop（或 Finish 冲刷残余块）时被
+// 挪进 RawArgsKey，这条损耗只发生在聚合器，codec 看到的是规整后的合法对象——
+// 注记必须由 Aggregator.Notes 带出，否则非流式客户端路径上它彻底不可见。
+func TestAggregatorNotesOnMalformedToolArgs(t *testing.T) {
+	feed := func(a *Aggregator) {
+		a.Feed(Event{Type: EvMessageStart, MessageID: "m1", Model: "m"})
+		a.Feed(Event{Type: EvBlockStart, Index: 0, Block: &Block{Type: BlockToolUse, ToolUse: &ToolUse{ID: "c1", Name: "f"}}})
+		a.Feed(Event{Type: EvToolInput, Index: 0, Text: `{"a": 1`})
+	}
+	// 正常 BlockStop 收尾。
+	a := NewAggregator()
+	feed(a)
+	a.Feed(Event{Type: EvBlockStop, Index: 0})
+	a.Feed(Event{Type: EvMessageDelta, StopReason: StopToolUse})
+	a.Feed(Event{Type: EvMessageStop})
+	if _, err := a.Finish(); err != nil {
+		t.Fatalf("Finish err=%v", err)
+	}
+	notes := a.Notes()
+	if len(notes) != 1 || !strings.Contains(notes[0], "rewrapped 1 malformed tool call argument(s)") {
+		t.Fatalf("BlockStop 路径挪键未报：%v", notes)
+	}
+	if again := a.Notes(); len(again) != 0 {
+		t.Errorf("Notes 未排干：%v", again)
+	}
+	// 断流由 Finish 冲刷残余块，同样要记账。
+	b := NewAggregator()
+	feed(b)
+	if _, err := b.Finish(); err != nil {
+		t.Fatalf("Finish err=%v", err)
+	}
+	if notes := b.Notes(); len(notes) != 1 {
+		t.Errorf("Finish 冲刷路径挪键未报：%v", notes)
+	}
+}
+
+// 合法参数不记账：Notes 默认为空，安静是常态。
+func TestAggregatorNotesSilentOnValidArgs(t *testing.T) {
+	a := NewAggregator()
+	a.Feed(Event{Type: EvMessageStart, MessageID: "m1", Model: "m"})
+	a.Feed(Event{Type: EvBlockStart, Index: 0, Block: &Block{Type: BlockToolUse, ToolUse: &ToolUse{ID: "c1", Name: "f"}}})
+	a.Feed(Event{Type: EvToolInput, Index: 0, Text: `{"a": 1}`})
+	a.Feed(Event{Type: EvBlockStop, Index: 0})
+	a.Feed(Event{Type: EvMessageDelta, StopReason: StopToolUse})
+	a.Feed(Event{Type: EvMessageStop})
+	a.Finish()
+	if notes := a.Notes(); len(notes) != 0 {
+		t.Errorf("合法参数误报：%v", notes)
 	}
 }

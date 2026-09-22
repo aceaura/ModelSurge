@@ -1,6 +1,9 @@
 package ir
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // RawArgsKey 非法工具参数的原文落位键。工具调用的参数槽必须是 JSON 对象，
 // 但模型上一轮可能吐出截断/非对象 JSON（max_tokens 截断是最常见来源）。
@@ -30,4 +33,12 @@ func NormalizeToolInput(raw json.RawMessage) (json.RawMessage, bool) {
 		return out, false
 	}
 	return raw, true
+}
+
+// RewrapNote 参数挪键损耗的诊断措辞。挪键发生在三处（聚合器冲刷、gemini
+// 流式编码、对象槽位响应扫描），共用同一句，客户端无论从哪条路收到都一样。
+func RewrapNote(n int) string {
+	return fmt.Sprintf(
+		"rewrapped %d malformed tool call argument(s) into %s: the client will not receive them as parameters",
+		n, RawArgsKey)
 }

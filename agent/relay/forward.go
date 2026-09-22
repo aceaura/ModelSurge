@@ -544,7 +544,7 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		sum.log()
 		csum := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), req.Stream, requestLogFrom(ctx).started)
 		csum.fill(irResp)
-		writeResponse(w, clientCodec, irResp, req.Stream, csum)
+		writeResponse(w, clientCodec, irResp, req.Stream, nil, csum)
 		csum.log()
 		return true, nil
 	}
@@ -712,6 +712,13 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 		n, _ := w.Write(fr)
 		csum.wrote(n)
 	}
+	// 响应侧损耗收尾：流已开始，头写不了，落 SSE 注释帧 + 日志。
+	encNotes := enc.Notes()
+	logRespNotes(clientCodec.Name(), encNotes)
+	for _, fr := range proto.SSENoteFrames(encNotes) {
+		n, _ := w.Write(fr)
+		csum.wrote(n)
+	}
 	if flush != nil {
 		flush.Flush()
 	}
@@ -724,7 +731,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 // 聚合期间不向客户端写任何字节，因此聚合失败仍可换上游重试
 // （代价是失败上游可能已计费——pre-write 重试的固有取舍）。
 func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {
-	resp, aerr := f.aggregateUpstream(ctx, cand, req, dec, body, cancel)
+	resp, aggNotes, aerr := f.aggregateUpstream(ctx, cand, req, dec, body, cancel)
 	if aerr != nil {
 		return false, aerr
 	}
@@ -737,7 +744,7 @@ func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.
 	sum.log()
 	csum := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), false, requestLogFrom(ctx).started)
 	csum.fill(resp)
-	writeResponse(w, clientCodec, resp, false, csum)
+	writeResponse(w, clientCodec, resp, false, aggNotes, csum)
 	csum.log()
 	return true, nil
 }
@@ -746,23 +753,25 @@ func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.
 // web_search 拦截（先于调用方可能紧跟的严格工具校验）、截断上报。
 // 不向客户端写任何字节。聚合失败强制可重试（未写字节可换上游重发）。
 // cancel 供首事件超时杀掉阻塞中的 body 读取（openUpstream 返回的）。
-func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, cancel context.CancelFunc) (*ir.Response, *ir.Error) {
+// 第二个返回值是聚合期损耗注记（畸形工具参数挪键）——挪键发生在客户端
+// 编码之前，编码器扫描响应体已看不出，必须由这里带出去。
+func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *ir.Request, dec proto.StreamDecoder, body io.Reader, cancel context.CancelFunc) (*ir.Response, []string, *ir.Error) {
 	er := NewEventReader(body)
 	first, ok, firstErr := f.awaitFirstEvent(er, cancel, f.candidateFirstTokenTimeout(cand, req))
 	if firstErr != nil {
-		return nil, firstErr
+		return nil, nil, firstErr
 	}
 	if !ok {
-		return nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream closed stream without any event", Retryable: true}
+		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream closed stream without any event", Retryable: true}
 	}
 
 	agg := ir.NewAggregator()
 	firstEvents, err := dec.Feed(first.Event, first.Data)
 	if err != nil {
-		return nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event decode: " + err.Error(), Retryable: true}
+		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event decode: " + err.Error(), Retryable: true}
 	}
 	if len(firstEvents) == 0 {
-		return nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event produced no IR event", Retryable: true}
+		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event produced no IR event", Retryable: true}
 	}
 	for _, e := range firstEvents {
 		agg.Feed(e)
@@ -795,9 +804,9 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 	if aggErr != nil {
 		// 未写任何字节：强制可重试，换上游重发
 		aggErr.Retryable = true
-		return nil, aggErr
+		return nil, nil, aggErr
 	}
-	return resp, nil
+	return resp, agg.Notes(), nil
 }
 
 // CountTokens 处理 Anthropic count_tokens 请求：优先转发给 anthropic 账号
@@ -858,8 +867,9 @@ func (f *Forwarder) estimateUsageOnEvent(req *ir.Request, outText *strings.Build
 }
 
 // writeResponse 非流式输出；clientStream 为 true 时（上游返回了非 SSE 的兜底响应
-// 而客户端要流式）把完整响应合成为一次性事件流。
-func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, resp *ir.Response, clientStream bool, summary ...*clientSummarizer) {
+// 而客户端要流式）把完整响应合成为一次性事件流。respNotes 是聚合阶段已记下
+// 的响应侧损耗（聚合器把畸形参数挪键发生在编码之前，扫响应体已看不出来）。
+func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, resp *ir.Response, clientStream bool, respNotes []string, summary ...*clientSummarizer) {
 	var clientSummary *clientSummarizer
 	if len(summary) > 0 {
 		clientSummary = summary[0]
@@ -873,6 +883,8 @@ func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, resp *
 			writeError(w, clientCodec, ir.NewHTTPError(500, "encode response: "+err.Error()))
 			return
 		}
+		// 头还能写：损耗注记并入 X-ModelSurge-Notes（请求侧注记可能已在里面）。
+		writeRespNotes(w, clientCodec.Name(), append(respNotes, clientCodec.ResponseNotes(resp)...))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		n, _ := w.Write(body)
@@ -907,6 +919,16 @@ func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, resp *
 		clientSummary.framesAdd(len(finished))
 	}
 	for _, fr := range finished {
+		n, _ := w.Write(fr)
+		if clientSummary != nil {
+			clientSummary.wrote(n)
+		}
+	}
+	// 编码过程实际发生的损耗（签名门控/参数挪键）由编码器计数；加上聚合
+	// 阶段的注记一起落 SSE 注释帧——头已发出，写不进 X-ModelSurge-Notes。
+	streamNotes := append(respNotes, enc.Notes()...)
+	logRespNotes(clientCodec.Name(), streamNotes)
+	for _, fr := range proto.SSENoteFrames(streamNotes) {
 		n, _ := w.Write(fr)
 		if clientSummary != nil {
 			clientSummary.wrote(n)

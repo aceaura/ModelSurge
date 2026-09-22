@@ -330,6 +330,11 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	})
 }
 
+// ResponseNotes 非流式编码损耗扫描：外族签名丢弃 + 对象槽位的畸形参数挪键。
+func (codec) ResponseNotes(resp *ir.Response) []string {
+	return proto.ScanResponseLosses(resp, Name, false, true)
+}
+
 // mediaBlock 按 MIME 分流 inlineData / fileData。Gemini 的这两个字段能装
 // 任意 MIME（音频、PDF、视频），此前一律解成 BlockImage：音频会被写进目标协议的
 // 图片槽位，上游按图片解码后 400。空 MIME 也不猜图片——它在 Gemini 里是可选字段。

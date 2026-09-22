@@ -20,6 +20,29 @@ func writeLossyNotes(w http.ResponseWriter, target string, notes []string) {
 	w.Header().Set("X-ModelSurge-Notes", joined)
 }
 
+// writeRespNotes 响应侧损耗注记：非流式方向在 WriteHeader 前并入
+// X-ModelSurge-Notes（与请求侧注记同头，"; " 连接）。
+func writeRespNotes(w http.ResponseWriter, client string, notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	joined := strings.Join(notes, "; ")
+	log.Printf("relay: client %s response-side loss: %s", client, joined)
+	if prev := w.Header().Get("X-ModelSurge-Notes"); prev != "" {
+		joined = prev + "; " + joined
+	}
+	w.Header().Set("X-ModelSurge-Notes", joined)
+}
+
+// logRespNotes 流式方向的响应侧注记只能进日志（头已发）；
+// 客户端可见部分由 proto.SSENoteFrames 的注释帧承担。
+func logRespNotes(client string, notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	log.Printf("relay: client %s response-side loss: %s", client, strings.Join(notes, "; "))
+}
+
 // countMedia 按大类累计附件。nil 也计入 MediaOther：块类型已经是 media，
 // 载荷却没有内容，这本身就是该丢的东西，静默跳过会漏报。
 func countMedia(m *ir.Media, into map[ir.MediaKind]int) {

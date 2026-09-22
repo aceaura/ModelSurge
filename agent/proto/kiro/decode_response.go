@@ -127,6 +127,23 @@ func (Codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// ResponseNotes 响应侧损耗扫描。kiro 的签名槽位不做家族门控（透传字符串，
+// 见 EncodeResponse 的 signatureEventJSON），只有畸形工具参数挪键一类损耗。
+func (Codec) ResponseNotes(resp *ir.Response) []string {
+	var badArgs int
+	for _, b := range resp.Content {
+		if b.Type == ir.BlockToolUse && b.ToolUse != nil {
+			if _, ok := ir.NormalizeToolInput(b.ToolUse.Input); !ok {
+				badArgs++
+			}
+		}
+	}
+	if badArgs == 0 {
+		return nil
+	}
+	return []string{ir.RewrapNote(badArgs)}
+}
+
 func ptrInt64(v int64) *int64 { return &v }
 
 // drainEvents 驱动解码器消费完整事件数据并返回全部 IR 事件。

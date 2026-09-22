@@ -1,6 +1,8 @@
 package ir
 
-import "encoding/json"
+import (
+	"encoding/json"
+)
 
 // Response 非流式完整响应（由事件流聚合而成）。
 type Response struct {
@@ -19,6 +21,8 @@ type Aggregator struct {
 	resp    Response
 	open    map[int]*Block // index -> 构建中的块
 	rawJSON map[int]*jsonRawBuilder
+	// badArgs 聚合时被挪进 RawArgsKey 的畸形工具参数数，Notes() 报出。
+	badArgs int
 	started bool
 	stopped bool
 	err     *Error
@@ -88,7 +92,7 @@ func (a *Aggregator) Feed(ev Event) bool {
 	case EvBlockStop:
 		if b := a.open[ev.Index]; b != nil {
 			if rb := a.rawJSON[ev.Index]; rb != nil && b.ToolUse != nil {
-				b.ToolUse.Input = normalizeJSON(rb.buf)
+				b.ToolUse.Input = a.normalizeArgs(rb.buf)
 			}
 			a.resp.Content = append(a.resp.Content, *b)
 			delete(a.open, ev.Index)
@@ -130,7 +134,7 @@ func (a *Aggregator) Finish() (*Response, *Error) {
 	for _, i := range idxs {
 		b := a.open[i]
 		if rb := a.rawJSON[i]; rb != nil && b.ToolUse != nil {
-			b.ToolUse.Input = normalizeJSON(rb.buf)
+			b.ToolUse.Input = a.normalizeArgs(rb.buf)
 		}
 		a.resp.Content = append(a.resp.Content, *b)
 	}
@@ -139,10 +143,24 @@ func (a *Aggregator) Finish() (*Response, *Error) {
 	return &a.resp, a.err
 }
 
-// normalizeJSON 把累积的 JSON 片段规整为对象形态。截断的流式参数
-// （max_tokens 截断是最常见来源）与「对象槽位合法值」共享同一规则：
-// 原文挪进 RawArgsKey，而不是凭空清空——空 {} 会让工具不带参数执行。
-func normalizeJSON(raw []byte) json.RawMessage {
-	out, _ := NormalizeToolInput(raw)
+// normalizeArgs 规整并记账：畸形/非对象参数挪进 RawArgsKey 时计数。
+// 截断的流式参数（max_tokens 截断是最常见来源）与「对象槽位合法值」共享
+// 同一规则：原文挪进 RawArgsKey，而不是凭空清空——空 {} 会让工具不带参数执行。
+func (a *Aggregator) normalizeArgs(raw []byte) json.RawMessage {
+	out, ok := NormalizeToolInput(raw)
+	if !ok {
+		a.badArgs++
+	}
 	return out
+}
+
+// Notes 排干聚合损耗注记。非流式客户端路径上畸形工具参数在聚合时
+// 已被挪键（codec 看到的是规整后的合法对象），注记只能在这里产生。
+func (a *Aggregator) Notes() []string {
+	if a.badArgs == 0 {
+		return nil
+	}
+	n := RewrapNote(a.badArgs)
+	a.badArgs = 0
+	return []string{n}
 }

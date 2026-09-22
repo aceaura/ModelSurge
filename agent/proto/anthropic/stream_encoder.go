@@ -16,7 +16,9 @@ type streamEncoder struct {
 	open map[int]ir.BlockType
 	// text 各块已下发的正文。citations_delta 的 cited_text 与字符索引只能在
 	// 正文上反推，而引用总在正文之后到达，所以必须逐块累积。
-	text             map[int]string
+	text map[int]string
+	// droppedSigs 被门控掉的外族/合成签名数，Notes() 收尾时报出。
+	droppedSigs      int
 	messageDeltaSent bool
 	stopped          bool
 }
@@ -58,6 +60,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		// 只转本族真签名。外族/合成签名下发到 signature 位就是冒充：客户端
 		// 会在下一轮原样回传，Anthropic 的签名校验必拒整个请求。
 		if ev.SignatureFrom != Name {
+			e.droppedSigs++
 			return nil, nil
 		}
 		frames := e.ensureOpen(ev.Index, ir.BlockThinking)
@@ -114,6 +117,16 @@ func (e *streamEncoder) Finish() [][]byte {
 		e.stopped = true
 	}
 	return out
+}
+
+// Notes 排干损耗注记（被门控的外族/合成签名）。
+func (e *streamEncoder) Notes() []string {
+	if e.droppedSigs == 0 {
+		return nil
+	}
+	n := proto.SigDropNote(e.droppedSigs, false)
+	e.droppedSigs = 0
+	return []string{n}
 }
 
 // ensureOpen delta 到达未开启的 index 时先补 block_start。
@@ -208,4 +221,9 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		},
 	}
 	return json.Marshal(out)
+}
+
+// ResponseNotes 非流式编码损耗扫描：外族签名丢弃 + 对象槽位的畸形参数挪键。
+func (codec) ResponseNotes(resp *ir.Response) []string {
+	return proto.ScanResponseLosses(resp, Name, false, true)
 }

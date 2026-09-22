@@ -168,7 +168,7 @@ func (f *Forwarder) fetchSummary(ctx context.Context, cand candidate, req *ir.Re
 		}
 		irResp = decoded
 	} else {
-		aggregated, aerr := f.aggregateUpstream(ctx, cand, upReq, f.newDecoder(cand, upReq), upBody, cancel)
+		aggregated, _, aerr := f.aggregateUpstream(ctx, cand, upReq, f.newDecoder(cand, upReq), upBody, cancel)
 		if aerr != nil {
 			return "", replayv1.Usage{}, aerr
 		}
@@ -194,7 +194,7 @@ func (f *Forwarder) fetchKiroSummary(ctx context.Context, cand candidate, req *i
 		return "", replayv1.Usage{}, openErr
 	}
 	defer resp.Body.Close()
-	irResp, aerr := f.aggregateKiro(ctx, cand, upReq, resp.Body)
+	irResp, _, aerr := f.aggregateKiro(ctx, cand, upReq, resp.Body)
 	if aerr != nil {
 		return "", replayv1.Usage{}, aerr
 	}

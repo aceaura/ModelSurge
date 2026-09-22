@@ -223,7 +223,8 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 		// 音频文档都有，kiro 一个都没有。三者全真或全假都是漏洞。
 		"anthropic": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true, ToolResultError: true,
-			StructuredOutput: false,
+			// output_config.format 只有 json_schema 形态：结构化输出有槽位但纯 JSON 模式没有
+			StructuredOutput: true, StructuredOutputSchemaOnly: true,
 			Documents:        true, Audio: false, Video: false, Refusal: false, Citations: true,
 			ToolInputObject: true, UserID: true},
 		// 调参五位刻意不一致：Chat 全有，Responses 只有对数概率且没有独立开关
@@ -257,11 +258,12 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 }
 
 // 结构化输出装不下时必须报出来：客户端会直接 JSON.parse 响应，拿到自由文本
-// 是硬失败。anthropic 与 kiro 的载荷里没有这一维，OpenAI 两系有，不得误报。
+// 是硬失败。只有 kiro 的载荷里没有这一维（anthropic 2026 起有
+// output_config.format），其余三家不得误报。
 func TestDiagnoseStructuredOutputPerProtocol(t *testing.T) {
 	const want = "no structured output field"
 	for name, shouldWarn := range map[string]bool{
-		"anthropic": true, "kiro": true,
+		"anthropic": false, "kiro": true,
 		"openai-chat": false, "openai-responses": false,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -275,17 +277,27 @@ func TestDiagnoseStructuredOutputPerProtocol(t *testing.T) {
 
 // 两档语义分开报：带 schema 与只要求合法 JSON，读者的补救动作不同
 // （前者要把 schema 写进提示，后者只需一句话要求输出 JSON）。
+// kiro 两档都装不下；anthropic 只装得下 schema 档，纯 JSON 模式要报受限措辞。
 func TestDiagnoseDistinguishesSchemaFromJSONMode(t *testing.T) {
-	withSchema := strings.Join(Diagnose(formatReq(true), "anthropic", capsOf(t, "anthropic")), "; ")
+	withSchema := strings.Join(Diagnose(formatReq(true), "kiro", capsOf(t, "kiro")), "; ")
 	if !strings.Contains(withSchema, "JSON schema constraint") {
 		t.Errorf("带 schema 未报成 schema 约束：%q", withSchema)
 	}
-	jsonMode := strings.Join(Diagnose(formatReq(false), "anthropic", capsOf(t, "anthropic")), "; ")
+	jsonMode := strings.Join(Diagnose(formatReq(false), "kiro", capsOf(t, "kiro")), "; ")
 	if !strings.Contains(jsonMode, "JSON output mode") {
 		t.Errorf("无 schema 未报成 JSON 模式：%q", jsonMode)
 	}
 	if strings.Contains(jsonMode, "schema") {
 		t.Errorf("无 schema 却报成 schema 约束：%q", jsonMode)
+	}
+	// anthropic 的 output_config.format 只有 json_schema 一种 type：
+	// schema 档直接送达不报；纯 JSON 模式档要说清「只接 schema 约束形态」。
+	if notes := Diagnose(formatReq(true), "anthropic", capsOf(t, "anthropic")); len(notes) != 0 {
+		t.Errorf("anthropic 接得住 schema 档，误报：%v", notes)
+	}
+	anthJSONMode := strings.Join(Diagnose(formatReq(false), "anthropic", capsOf(t, "anthropic")), "; ")
+	if !strings.Contains(anthJSONMode, "only schema-constrained structured output") {
+		t.Errorf("anthropic 纯 JSON 模式未报受限措辞：%q", anthJSONMode)
 	}
 }
 

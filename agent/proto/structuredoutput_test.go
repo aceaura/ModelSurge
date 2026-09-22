@@ -11,8 +11,9 @@ import (
 
 // structuredoutput_test.go 结构化输出（JSON 模式 / JSON Schema）跨协议投影。
 //
-// 三种入站形态：Chat 的 response_format、Responses 的 text.format、
-// Gemini 的 responseMimeType + responseSchema。Anthropic 与 kiro 没有落点，
+// 四种入站形态：Chat 的 response_format、Responses 的 text.format、
+// Gemini 的 responseMimeType + responseSchema、Anthropic 的 output_config.format
+// （2026 新增，仅 json_schema 形态）。kiro 没有落点，
 // 由 Capabilities.StructuredOutput + 诊断兜底（见 relay 侧测试）。
 
 const schemaLiteral = `{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`
@@ -299,10 +300,11 @@ func TestGeminiSchemaSurvivesToOpenAI(t *testing.T) {
 	}
 }
 
-// 无落点的上游（anthropic / kiro）必须声明能力缺失，由诊断层报出。
+// 无落点的上游（kiro）必须声明能力缺失，由诊断层报出；anthropic 2026 起
+// 有 output_config.format 槽位（仅 schema 约束形态），声明时要带受限位。
 func TestProtocolsWithoutStructuredOutputDeclareIt(t *testing.T) {
 	for name, want := range map[string]bool{
-		"anthropic": false, "kiro": false,
+		"anthropic": true, "kiro": false,
 		"openai-chat": true, "openai-responses": true,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -311,6 +313,108 @@ func TestProtocolsWithoutStructuredOutputDeclareIt(t *testing.T) {
 			}
 		})
 	}
+	// 受限位只有 anthropic 置真：其余三家两种形态都能表达。
+	for name, want := range map[string]bool{
+		"anthropic": true, "kiro": false,
+		"openai-chat": false, "openai-responses": false,
+	} {
+		t.Run(name+"/schema-only", func(t *testing.T) {
+			if got := proto.MustOutbound(name).Caps().StructuredOutputSchemaOnly; got != want {
+				t.Errorf("StructuredOutputSchemaOnly = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// ---- anthropic output_config.format ----
+
+func TestAnthropicDecodesOutputConfig(t *testing.T) {
+	body := []byte(`{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],` +
+		`"output_config":{"format":{"type":"json_schema","schema":` + schemaLiteral + `}}}`)
+	req, err := proto.MustInbound("anthropic").DecodeRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	// anthropic 的 json_schema 恒为严格语义，没有 strict 开关也没有名称位。
+	assertSchemaFormat(t, req.ResponseFormat, "", true)
+}
+
+// 非 json_schema 的 type 与空 schema 都按没给处理：空约束写出来上游也是
+// 自由文本，不能 invent 一个不存在的诉求进 IR。
+func TestAnthropicIgnoresUnusableOutputConfig(t *testing.T) {
+	for _, c := range []struct{ name, body string }{
+		{"unknown-type", `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"output_config":{"format":{"type":"json_mode","schema":` + schemaLiteral + `}}}`},
+		{"empty-schema", `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"output_config":{"format":{"type":"json_schema"}}}`},
+		{"effort-only", `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"high"}}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			req, err := proto.MustInbound("anthropic").DecodeRequest([]byte(c.body))
+			if err != nil {
+				t.Fatalf("DecodeRequest: %v", err)
+			}
+			if req.ResponseFormat != nil {
+				t.Errorf("%s 不该进 IR：%+v", c.name, req.ResponseFormat)
+			}
+		})
+	}
+}
+
+func TestAnthropicEncodesOutputConfig(t *testing.T) {
+	body := encodeReq(t, "anthropic", schemaReq(true))
+	var got struct {
+		OutputConfig *struct {
+			Format *struct {
+				Type   string          `json:"type"`
+				Schema json.RawMessage `json:"schema"`
+			} `json:"format"`
+		} `json:"output_config"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, body)
+	}
+	if got.OutputConfig == nil || got.OutputConfig.Format == nil {
+		t.Fatalf("output_config 没写出去：%s", body)
+	}
+	if got.OutputConfig.Format.Type != "json_schema" {
+		t.Errorf("type = %q, want json_schema", got.OutputConfig.Format.Type)
+	}
+	assertSameSchema(t, got.OutputConfig.Format.Schema)
+	// anthropic 没有 name/strict 槽位：不得把 OpenAI 形态的键带过去
+	if strings.Contains(string(body), `"strict"`) || strings.Contains(string(body), `"name":"weather"`) {
+		t.Errorf("把 OpenAI 形态字段写进了 anthropic 载荷：%s", body)
+	}
+}
+
+// 纯 JSON 模式（没给 schema）在 anthropic 没有对应物：一个字节都不写，
+// 由诊断层报出（SchemaOnly 位）。
+func TestAnthropicOmitsJSONModeWithoutSchema(t *testing.T) {
+	req := &ir.Request{Model: "m", MaxTokens: 100, Messages: []ir.Message{userMsg("hi")}, ResponseFormat: &ir.ResponseFormat{}}
+	body := string(encodeReq(t, "anthropic", req))
+	if strings.Contains(body, "output_config") {
+		t.Errorf("纯 JSON 模式不该写出 output_config：%s", body)
+	}
+}
+
+// 跨协议往返：chat 入站的 schema 经 anthropic 出站再回解，约束不丢。
+func TestChatSchemaSurvivesThroughAnthropic(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_schema","json_schema":{"name":"weather","strict":true,"schema":` + schemaLiteral + `}}}`)
+	req, err := proto.MustInbound("openai-chat").DecodeRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	req.MaxTokens = 100
+	out := encodeReq(t, "anthropic", req)
+	if !strings.Contains(string(out), `"city"`) {
+		t.Fatalf("schema 本体没过去：%s", out)
+	}
+	back, err := proto.MustInbound("anthropic").DecodeRequest(out)
+	if err != nil {
+		t.Fatalf("回解: %v", err)
+	}
+	if !back.ResponseFormat.IsSchema() {
+		t.Fatalf("往返后约束丢了：%+v", back.ResponseFormat)
+	}
+	assertSameSchema(t, back.ResponseFormat.Schema)
 }
 
 // ---- 夹具 ----

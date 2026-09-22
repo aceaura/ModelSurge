@@ -32,8 +32,9 @@ func (codec) Caps() proto.Capabilities {
 		Documents: true, Audio: false, Video: false,
 		// 没有 refusal 槽位：只有 stop_reason=refusal，正文得并进 text。
 		Refusal: false,
-		// 载荷里没有 response_format 之类的字段。
-		StructuredOutput: false,
+		// output_config.format（2026 新增）只接 json_schema 一种形态，
+		// 纯 JSON 模式没有槽位。
+		StructuredOutput: true, StructuredOutputSchemaOnly: true,
 		Citations:        true, // text.citations
 		// tool_use.input 是 JSON 对象槽位。
 		ToolInputObject: true,
@@ -105,6 +106,13 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	}
 	if req.Metadata != nil && req.Metadata.UserID != "" {
 		out.Metadata = map[string]string{"user_id": req.Metadata.UserID}
+	}
+	// output_config.format 只有 json_schema 一种 type，且恒为严格语义
+	// （没有 strict 开关也没有名称位，与 gemini 的 responseSchema 同款）。
+	// schema 为空按没给处理：空约束写出来上游也是自由文本，不发明诉求。
+	if f := req.OutputConfig; f != nil && f.Format != nil &&
+		f.Format.Type == "json_schema" && len(f.Format.Schema) > 0 && string(f.Format.Schema) != "null" {
+		out.ResponseFormat = &ir.ResponseFormat{Schema: f.Format.Schema, Strict: true}
 	}
 	return out, nil
 }
@@ -360,6 +368,12 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	}
 	if uid := r.Metadata["user_id"]; uid != "" {
 		out.Metadata = &metadata{UserID: uid}
+	}
+	// 只回写 schema 约束形态：纯 JSON 模式（没给 schema）在 anthropic 没有
+	// 对应物，写出来上游也读不懂——那一档由诊断报出（SchemaOnly 位）。
+	if r.ResponseFormat != nil && r.ResponseFormat.IsSchema() {
+		out.OutputConfig = &outputConfig{Format: &jsonOutputFormat{
+			Type: "json_schema", Schema: r.ResponseFormat.Schema}}
 	}
 	return json.Marshal(out)
 }

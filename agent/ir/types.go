@@ -275,8 +275,9 @@ type ThinkingConfig struct {
 // JSON Schema（要求符合给定 schema）。Schema 为空即前者。
 //
 // 各协议形态：Chat 的 response_format、Responses 的 text.format、
-// Gemini 的 generationConfig.responseMimeType + responseSchema。
-// Anthropic 与 kiro 原生没有这一维——官方做法是把 schema 塞进 system 提示或
+// Gemini 的 generationConfig.responseMimeType + responseSchema、
+// Anthropic 的 output_config.format（仅 json_schema 形态，2026 新增）。
+// kiro 原生没有这一维——官方做法是把 schema 塞进 system 提示或
 // 声明一个单工具后强制调用，两者都是改写请求语义，不在本层做。
 type ResponseFormat struct {
 	// Name schema 名称（OpenAI json_schema.name），无对应形态的协议会丢掉。

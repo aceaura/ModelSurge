@@ -40,10 +40,17 @@ type Capabilities struct {
 
 	// StructuredOutput 结构化输出约束（JSON 模式 / JSON Schema）能随请求送达。
 	// Chat 是 response_format，Responses 是 text.format，Gemini 是
-	// responseMimeType + responseSchema。Anthropic 与 kiro 的载荷里没有这一维：
-	// 官方做法是把 schema 写进 system 提示或声明单工具后强制调用，两者都在改写
-	// 请求语义，本层不做——客户端拿到的会是自由文本，JSON.parse 会失败。
+	// responseMimeType + responseSchema，Anthropic 是 output_config.format
+	// （2026 年新增）。只有 kiro 的载荷里没有这一维：官方做法是把 schema
+	// 写进 system 提示或声明单工具后强制调用，两者都在改写请求语义，本层
+	// 不做——客户端拿到的会是自由文本，JSON.parse 会失败。
 	StructuredOutput bool
+
+	// StructuredOutputSchemaOnly 结构化输出只接 schema 约束形态，纯 JSON
+	// 模式（只要求合法 JSON、不给 schema）没有槽位。Anthropic 的
+	// output_config.format 只有 json_schema 一种 type，是唯一的受限者；
+	// 其余三家两种形态都能表达。
+	StructuredOutputSchemaOnly bool
 
 	// Documents PDF 等文档附件输入。Anthropic 是 document 块，Chat 是 file 部分，
 	// Responses 是 input_file，Gemini 是 inlineData（MIME 白名单含 application/pdf）。

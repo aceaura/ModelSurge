@@ -20,6 +20,19 @@ type request struct {
 	ToolChoice    *toolChoice     `json:"tool_choice,omitempty"`
 	Thinking      *thinkingCfg    `json:"thinking,omitempty"`
 	Metadata      *metadata       `json:"metadata,omitempty"`
+	// OutputConfig 2026 新增的输出控制：format 是结构化输出槽位。
+	// effort 子字段暂不解码（IR 没有 anthropic 输出级 effort 的对应维度）。
+	OutputConfig *outputConfig `json:"output_config,omitempty"`
+}
+
+// outputConfig 输出控制。format 只定义了 json_schema 一种 type。
+type outputConfig struct {
+	Format *jsonOutputFormat `json:"format,omitempty"`
+}
+
+type jsonOutputFormat struct {
+	Type   string          `json:"type"` // "json_schema"
+	Schema json.RawMessage `json:"schema,omitempty"`
 }
 
 type metadata struct {

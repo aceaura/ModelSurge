@@ -401,11 +401,15 @@ func localResultAction(cand candidate, err *ir.Error, attempt, sameTargetRetries
 		if (err.StatusCode == http.StatusUnauthorized || err.StatusCode == http.StatusForbidden) && attempt == 0 {
 			return replayv1.ActionRetryTarget
 		}
-		if err.StatusCode == http.StatusPaymentRequired || err.Reason == "INVALID_MODEL_ID" {
+		if err.Reason == "INVALID_MODEL_ID" {
 			return replayv1.ActionSwitchTarget
 		}
 	}
-	if err.StatusCode == http.StatusTooManyRequests {
+	// 402（余额/配额耗尽）与 429 同样直接换目标：账号没钱不会因为再问一次就有钱，
+	// 同目标重试只是白烧一轮。此前 402 只在上面的 kiro 专属分支里换目标，普通协议
+	// 走 ClassifyStatus 的 default 判成不可重试直接 stop——同一个欠费上游，走 kiro
+	// 目标会换号、走 anthropic 直连就放弃，池子里明明还有可用账号。
+	if err.StatusCode == http.StatusTooManyRequests || err.StatusCode == http.StatusPaymentRequired {
 		return replayv1.ActionSwitchTarget
 	}
 	if err.Retryable {

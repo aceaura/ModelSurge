@@ -31,16 +31,32 @@ const (
 )
 
 // ClassifyStatus 按 HTTP 状态码推断规范错误类型与可重试性。
+//
+// 402 与 413 单列，不落到 default 的 upstream_error：
+//   - 402 是账号余额/配额耗尽，不是「上游坏了」。Upstream 侧 kiro 分类表
+//     （upstream/account/errors.go ClassifyKiroError）早已把 402 与 403/429 同列
+//     为 RECOVERABLE=换号可救；两个参考仓也一致（sub2api 把 401/402/403/429/5xx
+//     同归 UpstreamFailoverError，new-api 的默认重试区间 401-407 含 402）。判成
+//     upstream_error 会让客户端读到「服务端故障」，而按 5xx 语义自行重试同一个
+//     欠费账号，永远得到同一个 402。
+//   - 413 是请求体过大，换谁都会被同样拒绝。relay 自己造 413 的两处
+//     （contexterr.go 的上下文超限、replayDispatchError 的 CodeContextTooLarge）
+//     都写 invalid_request_error；上游真发 413 时却判成 upstream_error，同一个
+//     状态码因来源不同拿到两个规范类型。
 func ClassifyStatus(status int) (typ string, retryable bool) {
 	switch {
 	case status == 400:
 		return ErrTypeInvalidReq, false
 	case status == 401:
 		return ErrTypeAuth, true
+	case status == 402:
+		return ErrTypeRateLimit, true
 	case status == 403:
 		return ErrTypePermission, true
 	case status == 404:
 		return ErrTypeNotFound, false
+	case status == 413:
+		return ErrTypeInvalidReq, false
 	case status == 429:
 		return ErrTypeRateLimit, true
 	case status >= 500:

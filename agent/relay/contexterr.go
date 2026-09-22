@@ -10,13 +10,17 @@ import (
 const ReasonContextExceeded = "context_exceeded"
 
 // classifyContextError 判定上游错误是否为上下文超限。
-// 仅认 400/413（超限类错误不会以 5xx 出现），消息小写化后按特征匹配；
+// 仅认 400/413（超限类错误不会以 5xx 出现），消息与错误码小写化后按特征匹配；
 // 特征集参考 sub2api isOpenAIContextWindowError 与主流上游真实报文。
-func classifyContextError(status int, msg string) bool {
+//
+// code 也要进 haystack：OpenAI 系把 "context_length_exceeded" 放在 error.code，
+// 而 message 是各家自撰的一句人话，只扫 message 会漏掉那些 code 明确、message
+// 泛泛的上游（R86 起 relay 会把上游错误体解析进 Code，不再整段塞进 Message）。
+func classifyContextError(status int, msg, code string) bool {
 	if status != http.StatusBadRequest && status != http.StatusRequestEntityTooLarge {
 		return false
 	}
-	m := strings.ToLower(msg)
+	m := strings.ToLower(strings.TrimSpace(msg + " " + code))
 	if m == "" {
 		return false
 	}

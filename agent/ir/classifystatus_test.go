@@ -16,6 +16,10 @@ func TestClassifyStatusQuotaAndTooLarge(t *testing.T) {
 	}{
 		{402, ErrTypeRateLimit, true},
 		{413, ErrTypeInvalidReq, false},
+		// 408/425 与 504/524 同为连接级瞬时故障，必须可重试：修复前落 default 判
+		// 不可重试，实测第一个目标就放弃（dispatch=1），而 504 换满整池（dispatch=6）。
+		{408, ErrTypeOverloaded, true},
+		{425, ErrTypeOverloaded, true},
 		// 既有档位一并钉住，防止补码时顺带改错邻居
 		{400, ErrTypeInvalidReq, false},
 		{401, ErrTypeAuth, true},
@@ -24,6 +28,7 @@ func TestClassifyStatusQuotaAndTooLarge(t *testing.T) {
 		{429, ErrTypeRateLimit, true},
 		{500, ErrTypeOverloaded, true},
 		{503, ErrTypeOverloaded, true},
+		{504, ErrTypeOverloaded, true},
 	}
 	for _, c := range cases {
 		typ, retry := ClassifyStatus(c.status)
@@ -37,7 +42,7 @@ func TestClassifyStatusQuotaAndTooLarge(t *testing.T) {
 // StreamRetryable(它产出的类型) 一致，否则同一个错误在流式与非流式两条路径上得出
 // 相反的重试结论（R83 之后聚合路径正是按 StreamRetryable 重算可重试性的）。
 func TestClassifyStatusCoveredCodesAgreeWithStreamRetryable(t *testing.T) {
-	for _, status := range []int{400, 401, 402, 403, 404, 413, 429, 500, 502, 503, 504} {
+	for _, status := range []int{400, 401, 402, 403, 404, 408, 413, 425, 429, 500, 502, 503, 504} {
 		typ, retry := ClassifyStatus(status)
 		if got := StreamRetryable(typ); got != retry {
 			t.Errorf("status=%d type=%q：ClassifyStatus 判 retryable=%v，StreamRetryable 判 %v（两条路径口径相反）",
@@ -51,10 +56,32 @@ func TestClassifyStatusCoveredCodesAgreeWithStreamRetryable(t *testing.T) {
 // 被 relay 用来表示传输/解码失败（那类确实可重试），仅凭类型区分不了两个来源。
 // 把现状钉住，将来改 default 必须是有意的（并同步改 StreamRetryable 的输入口径）。
 func TestClassifyStatusUncoveredCodesStayNonRetryable(t *testing.T) {
-	for _, status := range []int{405, 408, 409, 410, 418, 422, 425, 451} {
+	for _, status := range []int{405, 409, 410, 418, 422, 451} {
 		typ, retry := ClassifyStatus(status)
 		if typ != ErrTypeUpstream || retry {
 			t.Errorf("ClassifyStatus(%d) = (%q, %v)，want (%q, false)", status, typ, retry, ErrTypeUpstream)
+		}
+	}
+}
+
+// 超时家族必须整体同调：408（请求超时）、425（0-RTT 重放被拒）、504/524（网关
+// 超时）都是「换一条连接就可能成」的瞬时故障。修复前只有 >=500 那一半可重试，
+// 同一种故障因状态码差一位拿到相反的调度动作。
+//
+// 这条是不变量测试（同 R84 的跨路径口径测试）：将来再往 default 里掉一个超时码，
+// 或把 4xx 超时单独判死，都会在这里炸，而不是等到线上池子只用了一个账号才发现。
+func TestClassifyStatusTimeoutFamilyIsUniformlyRetryable(t *testing.T) {
+	for _, status := range []int{408, 425, 504, 524, 598, 599} {
+		typ, retry := ClassifyStatus(status)
+		if !retry {
+			t.Errorf("ClassifyStatus(%d) retryable=false，超时家族必须可重试（类型 %q）", status, typ)
+		}
+		if typ != ErrTypeOverloaded {
+			t.Errorf("ClassifyStatus(%d) type=%q，want %q（同族必须同规范类型，否则客户端退避策略分叉）",
+				status, typ, ErrTypeOverloaded)
+		}
+		if got := StreamRetryable(typ); !got {
+			t.Errorf("status=%d：ClassifyStatus 判可重试但 StreamRetryable(%q)=false，两条路径口径相反", status, typ)
 		}
 	}
 }

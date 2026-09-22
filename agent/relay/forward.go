@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -317,7 +318,7 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 			})
 			report := replayv1.ResultReport{ReportID: uuid.NewString(), RequestID: requestID, GroupID: lease.GroupID, TargetID: lease.TargetID, Outcome: "normal", Usage: usage, At: time.Now(), Attempt: attempt}
 			if aerr != nil {
-				if aerr.Reason == "" && classifyContextError(aerr.StatusCode, aerr.Message) {
+				if aerr.Reason == "" && classifyContextError(aerr.StatusCode, aerr.Message, aerr.Code) {
 					aerr.Reason = ReasonContextExceeded
 				}
 				report.Outcome = "abnormal"
@@ -454,14 +455,18 @@ func (f *Forwarder) openUpstream(ctx context.Context, cand candidate, upReq *ir.
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+		retryAfter := resp.Header.Get("Retry-After")
 		resp.Body.Close()
 		cancel()
-		msg := excerpt(string(errBody))
-		log.Printf("agent: target %s upstream %d: %s", cand.name, resp.StatusCode, msg)
-		e := ir.NewHTTPError(resp.StatusCode, msg)
+		// 日志留原文（诊断要看上游到底吐了什么），客户端拿解析后的消息与错误码：
+		// 整段 JSON 塞进 error.message 会让 SDK 读到一坨转义字符串，上游自报的
+		// context_length_exceeded / RESOURCE_EXHAUSTED 也只糊在文本里，Code 恒空。
+		log.Printf("agent: target %s upstream %d: %s", cand.name, resp.StatusCode, excerpt(string(errBody)))
 		if resp.StatusCode == http.StatusNotFound {
 			log.Printf("agent: target %s returned 404 (endpoint mismatch)", cand.name)
 		}
+		e := ir.ParseUpstreamError(resp.StatusCode, errBody)
+		e.RetryAfter = sanitizeRetryAfter(retryAfter)
 		return nil, nil, e
 	}
 	return resp, cancel, nil
@@ -1029,6 +1034,7 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 func writeError(w http.ResponseWriter, clientCodec proto.InboundCodec, e *ir.Error) {
 	status, body := clientCodec.RenderError(e)
 	w.Header().Set("Content-Type", "application/json")
+	setRetryAfter(w, e)
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
 }
@@ -1036,11 +1042,41 @@ func writeError(w http.ResponseWriter, clientCodec proto.InboundCodec, e *ir.Err
 func (f *Forwarder) writeClientError(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, stream bool, e *ir.Error) {
 	status, body := clientCodec.RenderError(e)
 	w.Header().Set("Content-Type", "application/json")
+	setRetryAfter(w, e)
 	w.WriteHeader(status)
 	written, _ := w.Write(body)
 	if f.paramLog {
 		log.Printf("agent phase=client_out request_id=%s proto=%s stream=%t status=%d bytes=%d error=true latency=%s", requestIDFrom(ctx), clientCodec.Name(), stream, status, written, requestLatencyFrom(ctx))
 	}
+}
+
+// setRetryAfter 把上游的退避提示原样转给客户端。只在错误响应上写：正常响应里
+// 上游没给过这个头，凭空造一个会让客户端以为被限流。
+func setRetryAfter(w http.ResponseWriter, e *ir.Error) {
+	if e != nil && e.RetryAfter != "" {
+		w.Header().Set("Retry-After", e.RetryAfter)
+	}
+}
+
+// sanitizeRetryAfter 校验上游给的 Retry-After 值。RFC 9110 只允许两种形态：
+// 非负十进制秒数（delay-seconds）或 HTTP 日期。上游是外部边界，值可能带控制字符或
+// 随意文本，直接透传等于把上游的话写进我们自己的响应头，所以不认识的形态一律丢掉
+// （丢掉只是少了个提示，客户端退回自己的默认退避）。
+func sanitizeRetryAfter(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		if n < 0 {
+			return ""
+		}
+		return v
+	}
+	if _, err := http.ParseTime(v); err == nil {
+		return v
+	}
+	return ""
 }
 
 // excerpt 截取上游错误文本前 500 字符，避免刷屏与泄露。

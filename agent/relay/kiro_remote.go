@@ -78,14 +78,15 @@ func (f *Forwarder) openKiroReplay(ctx context.Context, cand candidate, request 
 	}
 	defer resp.Body.Close()
 	errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+	retryAfter := sanitizeRetryAfter(resp.Header.Get("Retry-After"))
 	var envelope replayv1.ErrorEnvelope
 	if json.Unmarshal(errBody, &envelope) == nil && envelope.Error.Code != "" {
 		status := envelope.Error.Status
 		if status == 0 {
 			status = resp.StatusCode
 		}
-		// 规范类型按状态码推，与普通协议路径（forward.go 的 ir.NewHTTPError）同一条
-		// 规则。此前一律写死 upstream_error：同一个上游 429，走 anthropic 直连的客户端
+		// 规范类型按状态码推，与普通协议路径（forward.go 的 ir.ParseUpstreamError）
+		// 同一条规则。此前一律写死 upstream_error：同一个上游 429，走 anthropic 直连的客户端
 		// 收到 rate_limit_error、走 kiro 目标的收到 upstream_error，按 type 决定是否
 		// 退避重试的 SDK 与客户端工具于是得到相反结论。
 		//
@@ -101,13 +102,16 @@ func (f *Forwarder) openKiroReplay(ctx context.Context, cand candidate, request 
 			Message:    envelope.Error.Message,
 			Reason:     envelope.Error.Reason,
 			Retryable:  envelope.Error.Retryable,
+			RetryAfter: retryAfter,
 		}
 	}
 	// 不是 ModelSurge 的信封（代理插的 502、HTML 错误页、空 body）：按状态码走
-	// 与普通路径完全相同的推断。此前这里用 status >= 500 判可重试，与
+	// 与普通路径完全相同的推断与解析。此前这里用 status >= 500 判可重试，与
 	// ClassifyStatus 冲突——401 会被判成不可重试，于是同一个 401 仅仅因为
 	// 有没有信封，在 attempt > 0 时一个换目标重试、一个直接放弃。
-	return nil, ir.NewHTTPError(resp.StatusCode, excerpt(string(errBody)))
+	e := ir.ParseUpstreamError(resp.StatusCode, errBody)
+	e.RetryAfter = retryAfter
+	return nil, e
 }
 
 func (f *Forwarder) streamKiroToClient(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, body io.Reader, onUsage func(*ir.Usage)) (bool, *ir.Error) {

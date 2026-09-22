@@ -1,7 +1,8 @@
 package ir
 
 // Error 统一错误模型。codec 在出口处按客户端协议渲染，
-// 在入口处从上游任意错误外形解析（万能解析参考 new-api GeneralErrorResponse）。
+// 在入口处由 ParseUpstreamError 从上游任意错误外形解析（万能解析参考
+// new-api relaykit/dto.GeneralErrorResponse）。
 type Error struct {
 	StatusCode int    // HTTP 状态码；流内错误时为推断值
 	Type       string // 规范错误类型，如 "rate_limit_error"、"invalid_request_error"
@@ -9,6 +10,10 @@ type Error struct {
 	Reason     string // 上游错误原因码（如 Kiro "INVALID_MODEL_ID"），调度决策用
 	Message    string // 脱敏后的用户可读信息
 	Retryable  bool   // 是否可换上游重试
+	// RetryAfter 上游在错误响应头里给出的退避提示（Retry-After 原文，秒数或
+	// HTTP 日期）。429/503 时 SDK 靠它决定等多久；不透传客户端只能瞎猜，于是要么
+	// 立刻重试撞第二次限流，要么按自己的默认值等过头。
+	RetryAfter string
 }
 
 func (e *Error) Error() string {
@@ -43,6 +48,16 @@ const (
 //     （contexterr.go 的上下文超限、replayDispatchError 的 CodeContextTooLarge）
 //     都写 invalid_request_error；上游真发 413 时却判成 upstream_error，同一个
 //     状态码因来源不同拿到两个规范类型。
+//
+// 408/425 单列进可重试的超时家族，不落 default：408（请求超时）与 425（Too Early，
+// 0-RTT 重放被拒）都是连接级瞬时故障，与 504/524 同类——换一个目标、换一条连接
+// 就可能成。修复前它们落到 default 判不可重试，实测第一个目标就放弃（dispatch=1），
+// 而同为超时的 504 会换满整池（dispatch=6）：同一种故障因状态码差一位拿到相反的
+// 处置。sub2api 的错误分类表也把 408 与 504 并列归瞬时
+// （channel_monitor_v2_error_taxonomy.go）。
+//
+// 不按消息文本（"timeout"/"deadline exceeded"）放宽可重试性：那会把客户端自己造成的
+// 400/422 也拖进重试，正是 R83 要防的「白烧账号池」。
 func ClassifyStatus(status int) (typ string, retryable bool) {
 	switch {
 	case status == 400:
@@ -55,6 +70,8 @@ func ClassifyStatus(status int) (typ string, retryable bool) {
 		return ErrTypePermission, true
 	case status == 404:
 		return ErrTypeNotFound, false
+	case status == 408, status == 425:
+		return ErrTypeOverloaded, true
 	case status == 413:
 		return ErrTypeInvalidReq, false
 	case status == 429:

@@ -16,6 +16,9 @@ type Response struct {
 	// ServiceTier 上游回显的实际服务档位原值（anthropic standard/priority/
 	// batch；OpenAI auto/default/flex/scale/priority/fast/ultrafast）。
 	ServiceTier string
+	// Container 实际使用的代码执行容器回显（仅 anthropic：id/expires_at/
+	// 已加载技能）。nil = 上游没用容器。客户端要靠它复用容器续话。
+	Container *Container
 }
 
 // Aggregator 把 IR 事件流聚合成完整 Response。
@@ -52,6 +55,9 @@ func (a *Aggregator) Feed(ev Event) bool {
 		a.resp.Model = ev.Model
 		if ev.ServiceTier != "" {
 			a.resp.ServiceTier = ev.ServiceTier
+		}
+		if ev.Container != nil {
+			a.resp.Container = ev.Container
 		}
 		if ev.Usage != nil {
 			a.resp.Usage.MergeNonZero(*ev.Usage)
@@ -113,6 +119,10 @@ func (a *Aggregator) Feed(ev Event) bool {
 		// 晚到的非空值补上；同值重复无害。
 		if ev.ServiceTier != "" {
 			a.resp.ServiceTier = ev.ServiceTier
+		}
+		// anthropic 的 container 回显也可能落在 message_delta 上。
+		if ev.Container != nil {
+			a.resp.Container = ev.Container
 		}
 		if ev.Usage != nil {
 			a.resp.Usage.MergeNonZero(*ev.Usage)

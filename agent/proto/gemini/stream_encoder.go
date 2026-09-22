@@ -25,7 +25,10 @@ type streamEncoder struct {
 	rewrappedArgs int
 	// droppedTier 没送出去的档位回显原值：Gemini 响应没有该槽位，恒丢。
 	droppedTier string
-	finished    bool
+	// droppedContainer 容器回显（anthropic 专属维度）被丢标记：Gemini 响应
+	// 没有 container 槽位。
+	droppedContainer bool
+	finished         bool
 }
 
 // encText 一个正文块的流式下发记录。
@@ -51,6 +54,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.id = ev.MessageID
 		if ev.ServiceTier != "" {
 			e.droppedTier = ev.ServiceTier
+		}
+		if ev.Container != nil {
+			e.droppedContainer = true
 		}
 		return nil, nil
 	case ir.EvTextDelta:
@@ -117,6 +123,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.finished = true
 		if ev.ServiceTier != "" && e.droppedTier == "" {
 			e.droppedTier = ev.ServiceTier
+		}
+		if ev.Container != nil {
+			e.droppedContainer = true
 		}
 		return e.finishChunk(ev.StopReason, ev.Usage), nil
 	case ir.EvMessageStop, ir.EvPing:
@@ -187,6 +196,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedTier != "" {
 		notes = append(notes, proto.TierEchoDropNote(e.droppedTier))
 		e.droppedTier = ""
+	}
+	if e.droppedContainer {
+		notes = append(notes, proto.ContainerDropNote())
+		e.droppedContainer = false
 	}
 	return notes
 }

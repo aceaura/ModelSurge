@@ -408,6 +408,12 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 			notes = append(notes,
 				"dropped inference_geo: the target protocol has no geographic-region preference, inference runs wherever the upstream's default region is")
 		}
+		// 代码执行容器复用标识与技能声明：外族没有容器概念，丢了上游
+		// 只能开新容器、技能不加载，客户端期待的状态全丢。
+		if req.Container != nil {
+			notes = append(notes,
+				"dropped container parameter: the target protocol has no code-execution container reuse or skill declaration, the upstream starts with a fresh container and no skills loaded")
+		}
 	}
 	if !caps.ToolStrict {
 		n := 0

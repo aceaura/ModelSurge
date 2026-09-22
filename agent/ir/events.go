@@ -33,7 +33,10 @@ type Event struct {
 	// ServiceTier 上游回显的实际服务档位（EvMessageStart 携带；chat chunk
 	// 可能到得比首帧晚，EvMessageDelta 上也收）。保留原值不规整：跨族映射
 	// 在出站编码按目标协议回显值集进行（proto.MapServiceTierEcho）。
-	ServiceTier      string
+	ServiceTier string
+	// Container 代码执行容器回显（EvMessageStart 首帧携带；anthropic 的
+	// message_delta 也可能晚到，EvMessageDelta 上也收，后值覆盖）。
+	Container        *Container
 	Err              *Error     // EvError
 	Citations        []Citation // EvCitation
 	TruncatedTools   []TruncatedTool

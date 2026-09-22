@@ -373,7 +373,17 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 			notes = append(notes, TierEchoDropNote(resp.ServiceTier))
 		}
 	}
+	// 代码执行容器回显是 anthropic 专属：外族响应没有 container 槽位，
+	// 客户端拿不到容器 id/过期时间，下一轮无法复用容器续话。
+	if resp.Container != nil && protoName != "anthropic" {
+		notes = append(notes, ContainerDropNote())
+	}
 	return notes
+}
+
+// ContainerDropNote 容器回显丢失注记：外族无 container 槽位时共用。
+func ContainerDropNote() string {
+	return "dropped container info: this protocol's response has no container field, the client cannot see or reuse the code-execution container that served the request"
 }
 
 // SigDropNote 流式编码器的外族签名丢弃注记（计数由编码器在门控分支累计）。

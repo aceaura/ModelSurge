@@ -19,9 +19,11 @@ type streamEncoder struct {
 	created     int64
 	tier        string // 已映射待回显的档位（chunk 逐帧携带）
 	droppedTier string
-	toolIdx     map[int]int  // block index -> dense tool index
-	skipIdx     map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
-	refusalIdx  map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
+	// droppedContainer 容器回显（anthropic 专属）被丢标记：Chat 无该槽位。
+	droppedContainer bool
+	toolIdx          map[int]int  // block index -> dense tool index
+	skipIdx          map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
+	refusalIdx       map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
 	// text 各块已下发的正文，供 annotations 反推 cited_text 与字符索引。
 	text     map[int]string
 	nextTool int
@@ -45,6 +47,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			e.model = ev.Model
 		}
 		e.mapTier(ev.ServiceTier)
+		if ev.Container != nil {
+			e.droppedContainer = true
+		}
 		return [][]byte{e.chunk(&message{Role: "assistant"}, "")}, nil
 	case ir.EvBlockStart:
 		if ev.Block != nil && ev.Block.Type == ir.BlockToolUse && ev.Block.ToolUse != nil {
@@ -104,6 +109,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		// 晚到的档位回显（EvMessageStart 之后才解码出来）在 chat 还补得上：
 		// 后续 chunk 都带 service_tier。
 		e.mapTier(ev.ServiceTier)
+		if ev.Container != nil {
+			e.droppedContainer = true
+		}
 		var frames [][]byte
 		frames = append(frames, e.chunk(&message{}, UnmapFinishReason(ev.StopReason)))
 		if ev.Usage != nil {
@@ -145,6 +153,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedTier != "" {
 		notes = append(notes, proto.TierEchoDropNote(e.droppedTier))
 		e.droppedTier = ""
+	}
+	if e.droppedContainer {
+		notes = append(notes, proto.ContainerDropNote())
+		e.droppedContainer = false
 	}
 	return notes
 }

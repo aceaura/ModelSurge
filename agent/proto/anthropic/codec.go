@@ -145,7 +145,58 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		out.TopCacheTTL = req.CacheControl.TTL
 	}
 	out.InferenceGeo = req.InferenceGeo
+	// container 两形态（string 简写 / {id,skills} 对象）统一进 IR。
+	ct, err := decodeContainerParam(req.Container)
+	if err != nil {
+		return nil, err
+	}
+	out.Container = ct
 	return out, nil
+}
+
+// decodeContainerParam 解请求侧 container：string 简写（仅 id）或
+// {id, skills} 对象。空/显式 null 都视为没给。
+func decodeContainerParam(raw json.RawMessage) (*ir.Container, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var id string
+	if err := json.Unmarshal(raw, &id); err == nil {
+		return &ir.Container{ID: id}, nil
+	}
+	var p containerParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, fmt.Errorf("anthropic: decode container: %w", err)
+	}
+	ct := &ir.Container{ID: p.ID}
+	for _, s := range p.Skills {
+		ct.Skills = append(ct.Skills, ir.Skill{SkillID: s.SkillID, Type: s.Type, Version: s.Version})
+	}
+	return ct, nil
+}
+
+// decodeContainer 响应侧容器回显进 IR。
+func decodeContainer(c *container) *ir.Container {
+	if c == nil {
+		return nil
+	}
+	ct := &ir.Container{ID: c.ID, ExpiresAt: c.ExpiresAt}
+	for _, s := range c.Skills {
+		ct.Skills = append(ct.Skills, ir.Skill{SkillID: s.SkillID, Type: s.Type, Version: s.Version})
+	}
+	return ct
+}
+
+// encodeContainerInfo 响应侧回写：IR -> {id, expires_at, skills}。
+func encodeContainerInfo(ct *ir.Container) *container {
+	if ct == nil {
+		return nil
+	}
+	out := &container{ID: ct.ID, ExpiresAt: ct.ExpiresAt}
+	for _, s := range ct.Skills {
+		out.Skills = append(out.Skills, containerSkill{SkillID: s.SkillID, Type: s.Type, Version: s.Version})
+	}
+	return out
 }
 
 func decodeSystem(raw json.RawMessage) []ir.Block {
@@ -445,6 +496,19 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.CacheControl = &cacheControl{Type: r.TopCacheCtl, TTL: r.TopCacheTTL}
 	}
 	out.InferenceGeo = r.InferenceGeo
+	// container 回写：仅 id 无技能时用 string 简写形态（官方简写与对象
+	// {id} 无 skills 语义等价，取最简）；带技能时用对象形态。
+	if r.Container != nil {
+		if len(r.Container.Skills) == 0 {
+			out.Container, _ = json.Marshal(r.Container.ID)
+		} else {
+			p := containerParams{ID: r.Container.ID}
+			for _, s := range r.Container.Skills {
+				p.Skills = append(p.Skills, containerSkill{SkillID: s.SkillID, Type: s.Type, Version: s.Version})
+			}
+			out.Container, _ = json.Marshal(p)
+		}
+	}
 	return json.Marshal(out)
 }
 

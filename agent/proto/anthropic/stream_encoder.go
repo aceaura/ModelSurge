@@ -43,6 +43,8 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 				e.droppedTier = ev.ServiceTier
 			}
 		}
+		// container 是本家维度，直接下发。
+		em.Container = encodeContainerInfo(ev.Container)
 		return [][]byte{sseFrame("message_start", marshal(streamEvent{
 			Type:    "message_start",
 			Message: em,
@@ -95,7 +97,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}
 		return [][]byte{sseFrame("message_delta", marshal(streamEvent{
 			Type:  "message_delta",
-			Delta: &delta{StopReason: UnmapStopReason(ev.StopReason), StopSequence: ev.StopSequence},
+			Delta: &delta{StopReason: UnmapStopReason(ev.StopReason), StopSequence: ev.StopSequence, Container: encodeContainerInfo(ev.Container)},
 			Usage: encodeUsagePtr(ev.Usage),
 		}))}, nil
 	case ir.EvMessageStop:
@@ -224,6 +226,7 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 		StopSequence: r.StopSequence,
 		Usage:        convUsage(r.Usage),
 		ServiceTier:  r.ServiceTier,
+		Container:    decodeContainer(r.Container),
 	}, nil
 }
 
@@ -247,6 +250,7 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	if tier, ok := proto.MapServiceTierEcho(resp.ServiceTier, Name); ok {
 		out.ServiceTier = tier
 	}
+	out.Container = encodeContainerInfo(resp.Container)
 	return json.Marshal(out)
 }
 

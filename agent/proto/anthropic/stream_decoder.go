@@ -76,6 +76,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			ev.MessageID = se.Message.ID
 			ev.Model = se.Message.Model
 			ev.ServiceTier = se.Message.ServiceTier
+			ev.Container = decodeContainer(se.Message.Container)
 			if se.Message.Usage != nil {
 				u := convUsage(*se.Message.Usage)
 				d.usage.MergeNonZero(u)
@@ -123,6 +124,8 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		if se.Delta != nil {
 			ev.StopReason = MapStopReason(se.Delta.StopReason)
 			ev.StopSequence = se.Delta.StopSequence
+			// 容器回显也可能落在 message_delta 上（官方 Delta.container）。
+			ev.Container = decodeContainer(se.Delta.Container)
 		}
 		if se.Usage != nil {
 			u := convUsage(*se.Usage)

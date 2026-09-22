@@ -30,6 +30,30 @@ type request struct {
 	CacheControl *cacheControl `json:"cache_control,omitempty"`
 	// InferenceGeo 推理地理偏好（如 "us"）；缺省按 workspace 默认。
 	InferenceGeo string `json:"inference_geo,omitempty"`
+	// Container 代码执行容器复用标识与技能声明。官方两形态：string 简写
+	// （仅 id）或 {id, skills} 对象——RawMessage 延迟判断。
+	Container json.RawMessage `json:"container,omitempty"`
+}
+
+// containerParams 请求侧 container 的对象形态（官方 ContainerParams）。
+type containerParams struct {
+	ID     string           `json:"id,omitempty"`
+	Skills []containerSkill `json:"skills,omitempty"`
+}
+
+// container 响应侧容器回显（官方 Container：id/expires_at/skills 恒在，
+// skills 可为 null）。请求侧技能 version 可缺省（=latest），响应侧必有值，
+// 同形复用。
+type container struct {
+	ID        string           `json:"id"`
+	ExpiresAt string           `json:"expires_at"`
+	Skills    []containerSkill `json:"skills"`
+}
+
+type containerSkill struct {
+	SkillID string `json:"skill_id"`
+	Type    string `json:"type"` // "anthropic" / "custom"
+	Version string `json:"version,omitempty"`
 }
 
 // outputConfig 输出控制。format 只定义了 json_schema 一种 type。
@@ -166,6 +190,8 @@ type eventMessage struct {
 	Usage *usage `json:"usage,omitempty"`
 	// ServiceTier 实际服务档位回显（standard/priority/batch）。
 	ServiceTier string `json:"service_tier,omitempty"`
+	// Container 代码执行容器回显（按需出场，缺键与 null 同义）。
+	Container *container `json:"container,omitempty"`
 }
 
 type delta struct {
@@ -179,6 +205,8 @@ type delta struct {
 	StopSequence string `json:"stop_sequence,omitempty"` // message_delta
 	// Citation citations_delta 携带的单条引用。官方一帧一条，故不是数组。
 	Citation *citation `json:"citation,omitempty"`
+	// Container message_delta 上晚到的容器回显（官方 Delta.container）。
+	Container *container `json:"container,omitempty"`
 }
 
 type usage struct {
@@ -205,6 +233,8 @@ type response struct {
 	StopSequence string  `json:"stop_sequence,omitempty"`
 	Usage        usage   `json:"usage"`
 	ServiceTier  string  `json:"service_tier,omitempty"`
+	// Container 代码执行容器回显（按需出场，缺键与 null 同义）。
+	Container *container `json:"container,omitempty"`
 }
 
 // errorResponse 是 Anthropic 错误外形：{"type":"error","error":{...}}。

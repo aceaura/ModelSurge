@@ -63,6 +63,23 @@ type Block struct {
 	CacheTTL string
 }
 
+// Container 代码执行容器的标识与技能声明（仅 Anthropic 一族）。
+// 请求侧：ID 是跨请求复用的容器标识，Skills 是要加载的技能（Version 缺省
+// 为 latest）；响应侧：ID/ExpiresAt 是实际使用的容器与过期时间，Skills 是
+// 已加载技能（Version 必有值）。两侧共用一个类型，请求侧 ExpiresAt 恒空。
+type Container struct {
+	ID        string
+	ExpiresAt string
+	Skills    []Skill
+}
+
+// Skill 容器技能声明。Type 是 "anthropic"（内置）或 "custom"（用户自定义）。
+type Skill struct {
+	SkillID string
+	Type    string
+	Version string
+}
+
 // Citation 正文中一段文字的来源标注。
 //
 // Start/End 是本块 Text 内的 rune 下标（半开区间），零值表示上游没给范围。
@@ -420,6 +437,10 @@ type Request struct {
 	// 上游按 workspace 的 default_inference_geo 处理；显式 null 与缺省
 	// 在 JSON 层同义，解码后都是空。
 	InferenceGeo string
+	// Container 代码执行容器复用标识与技能声明（anthropic 的 container
+	// 参数，string 简写与 {id,skills} 对象两形态统一成此结构；外族无对应，
+	// 跨族由诊断报出）。nil = 客户端没提。
+	Container *Container
 	// Verbosity 输出啰嗦程度档位（low/medium/high）。Chat 是顶层 verbosity，
 	// Responses 是 text.verbosity；其余协议没有输出长度转向这一维。
 	Verbosity string

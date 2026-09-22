@@ -31,6 +31,8 @@ type streamEncoder struct {
 	// tier 已映射待回显的档位（response.created 与终止帧都携带）。
 	tier        string
 	droppedTier string
+	// droppedContainer 容器回显（anthropic 专属）被丢标记：Responses 无该槽位。
+	droppedContainer bool
 	// droppedSigs 被门控的外族/合成签名数，Notes() 收尾时报出。
 	droppedSigs int
 	completed   bool
@@ -65,6 +67,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			e.model = ev.Model
 		}
 		e.mapTier(ev.ServiceTier)
+		if ev.Container != nil {
+			e.droppedContainer = true
+		}
 		return [][]byte{e.frame(streamEvent{Type: "response.created", Response: &responseObj{
 			ID: e.id, Object: "response", CreatedAt: e.created, Model: e.model, Status: "in_progress",
 			ServiceTier: e.tier,
@@ -138,6 +143,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.usage = ev.Usage
 		// 晚到的档位回显还补得上：终止帧的 response 对象也带 service_tier。
 		e.mapTier(ev.ServiceTier)
+		if ev.Container != nil {
+			e.droppedContainer = true
+		}
 		return [][]byte{e.completedFrame()}, nil
 	case ir.EvMessageStop:
 		return nil, nil // response.completed 已是终止事件
@@ -290,6 +298,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedTier != "" {
 		notes = append(notes, proto.TierEchoDropNote(e.droppedTier))
 		e.droppedTier = ""
+	}
+	if e.droppedContainer {
+		notes = append(notes, proto.ContainerDropNote())
+		e.droppedContainer = false
 	}
 	return notes
 }

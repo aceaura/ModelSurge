@@ -121,18 +121,11 @@ func (a *Aggregator) Finish() (*Response, *Error) {
 	return &a.resp, a.err
 }
 
-// normalizeJSON 把累积的 JSON 片段规整为合法 JSON；解析失败时返回 {}。
+// normalizeJSON 只把真正空的输入解释为无参调用；非空参数保持原始字节，
+// 即使 JSON 畸形也交给最终协议边界显式处理，不能静默改成 {}。
 func normalizeJSON(raw []byte) json.RawMessage {
 	if len(raw) == 0 {
 		return json.RawMessage(`{}`)
 	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return json.RawMessage(`{}`)
-	}
-	out, err := json.Marshal(v)
-	if err != nil {
-		return json.RawMessage(`{}`)
-	}
-	return out
+	return append(json.RawMessage(nil), raw...)
 }

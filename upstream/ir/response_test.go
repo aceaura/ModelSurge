@@ -44,7 +44,8 @@ func TestAggregator_HappyPath(t *testing.T) {
 	}
 }
 
-// 断流截断：未闭合的 tool_use 块由 Finish 冲刷，残缺 JSON 规整为 {}。
+// 断流截断：未闭合的 tool_use 块由 Finish 冲刷，残缺 JSON 保留原文，
+// 不能伪装成合法空对象交给下游执行。
 func TestAggregator_TruncatedToolJSON(t *testing.T) {
 	a := NewAggregator()
 	a.Feed(Event{Type: EvMessageStart, MessageID: "m1"})
@@ -56,8 +57,8 @@ func TestAggregator_TruncatedToolJSON(t *testing.T) {
 		t.Fatalf("blocks = %d", len(resp.Content))
 	}
 	tu := resp.Content[0].ToolUse
-	if string(tu.Input) != `{}` {
-		t.Errorf("truncated input = %s, want {}", tu.Input)
+	if string(tu.Input) != `{"city": "Par` {
+		t.Errorf("truncated input = %s, want original fragment", tu.Input)
 	}
 }
 

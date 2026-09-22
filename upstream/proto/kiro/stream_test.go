@@ -245,11 +245,32 @@ func TestDedupToolCalls_ByIDKeepsBetterArgs(t *testing.T) {
 
 func TestDedupToolCalls_InvalidReplacedByValid(t *testing.T) {
 	calls := []kiroToolCall{
-		{ID: "call_1", Name: "func", args: "{}", invalid: true},
+		{ID: "call_1", Name: "func", args: `{"a":`, invalid: true},
 		{ID: "call_1", Name: "func", args: `{"a":1}`},
 	}
 	got := dedupToolCalls(calls)
 	if len(got) != 1 || got[0].invalid || got[0].args != `{"a":1}` {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestDedupToolCalls_InvalidKeepsLongerRaw(t *testing.T) {
+	calls := []kiroToolCall{
+		{ID: "call_1", Name: "func", args: `{"a":`, invalid: true, truncated: true},
+		{ID: "call_1", Name: "func", args: `{"a":"longer`, invalid: true, truncated: true},
+	}
+	got := dedupToolCalls(calls)
+	if len(got) != 1 || got[0].args != `{"a":"longer` {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestDedupToolCalls_DistinctMalformedNotCollapsed(t *testing.T) {
+	calls := []kiroToolCall{
+		{ID: "call_1", Name: "func", args: `{"a":`, invalid: true},
+		{ID: "call_2", Name: "func", args: `{"b":`, invalid: true},
+	}
+	if got := dedupToolCalls(calls); len(got) != 2 {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -299,6 +320,14 @@ func TestDiagnoseJSONTruncation_UnclosedString(t *testing.T) {
 	truncated, reason := diagnoseJSONTruncation(`{"a":"un_closed_string_here}`)
 	if !truncated || !strings.Contains(reason, "string") {
 		t.Fatalf("truncated=%v reason=%q", truncated, reason)
+	}
+}
+
+func TestToolCallFinalize_MalformedPreservesRaw(t *testing.T) {
+	tc := kiroToolCall{args: `{"a":,}`}
+	tc.finalize()
+	if !tc.invalid || tc.truncated || tc.args != `{"a":,}` || tc.truncReason != "malformed JSON" {
+		t.Fatalf("got %+v", tc)
 	}
 }
 
@@ -403,6 +432,36 @@ func TestDecoder_ToolCallChain(t *testing.T) {
 		"block_stop",
 		"delta:tool_use", "stop",
 	)
+}
+
+func TestDecoder_TruncatedToolArgsPreserved(t *testing.T) {
+	dec := &streamDecoder{}
+	for _, raw := range []string{
+		`{"name":"get_weather","toolUseId":"call_bad"}`,
+		`{"input":"{\"city\":\"Par"}`,
+		`{"stop":true}`,
+	} {
+		if _, err := dec.Feed("", raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evs := dec.Finish()
+	found := false
+	for _, ev := range evs {
+		if ev.Type == ir.EvToolInput {
+			found = true
+			if ev.Text != `{"city":"Par` {
+				t.Fatalf("tool input = %q", ev.Text)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no tool input event")
+	}
+	truncated := dec.TruncatedTools()
+	if len(truncated) != 1 || truncated[0].ID != "call_bad" {
+		t.Fatalf("truncated = %+v", truncated)
+	}
 }
 
 // 真实上游（gpt 系）toolUseEvent 每帧回显 name+toolUseId（2026-09-15

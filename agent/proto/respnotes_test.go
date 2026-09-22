@@ -83,7 +83,7 @@ func TestResponseNotesGenuineSignatureSilent(t *testing.T) {
 }
 
 // 畸形工具参数：对象槽位（anthropic/gemini/kiro）挪键必报；
-// 字符串槽位（chat/responses）原样透传无损，不报。
+// 字符串槽位（chat/responses）保留原文，但也要明确报告不可安全执行。
 func TestResponseNotesMalformedArgs(t *testing.T) {
 	bad := json.RawMessage(`{"a": 1`) // max_tokens 截断的典型形态
 	for _, name := range []string{"anthropic", "gemini", "kiro"} {
@@ -94,6 +94,9 @@ func TestResponseNotesMalformedArgs(t *testing.T) {
 	}
 	for _, name := range []string{"openai-chat", "openai-responses"} {
 		notes := proto.MustInbound(name).ResponseNotes(r55Resp(name, bad))
+		if !anyNoteContains(notes, "preserved 1 malformed tool call argument(s) as raw text") {
+			t.Errorf("%s: 字符串槽位畸形参数未报：%v", name, notes)
+		}
 		if anyNoteContains(notes, "rewrapped") {
 			t.Errorf("%s: 字符串槽位透传却报挪键：%v", name, notes)
 		}
@@ -189,6 +192,55 @@ func TestGeminiStreamEncoderNotesRewrap(t *testing.T) {
 	enc2.Finish()
 	if notes := enc2.Notes(); !anyNoteContains(notes, "rewrapped 1 malformed tool call argument(s)") {
 		t.Errorf("gemini Finish 冲刷路径挪键未进 Notes：%v", notes)
+	}
+}
+
+// 字符串增量槽位不能在不延迟流的前提下改写已下发片段：三种编码器均原样
+// 透传畸形参数，并在块结束后通过 Notes 明确报告不可安全执行。
+func TestStringDeltaStreamEncoderNotesMalformedArgs(t *testing.T) {
+	seq := []ir.Event{
+		{Type: ir.EvMessageStart, MessageID: "m1", Model: "m"},
+		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "c1", Name: "f"}}},
+		{Type: ir.EvToolInput, Index: 0, Text: `{"a": 1`},
+		{Type: ir.EvBlockStop, Index: 0},
+		{Type: ir.EvMessageDelta, StopReason: ir.StopMaxTokens},
+		{Type: ir.EvMessageStop},
+	}
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
+		enc := proto.MustInbound(name).NewStreamEncoder()
+		var wire strings.Builder
+		for _, ev := range seq {
+			frames, err := enc.Encode(ev)
+			if err != nil {
+				t.Fatalf("%s: Encode err=%v", name, err)
+			}
+			for _, frame := range frames {
+				wire.Write(frame)
+			}
+		}
+		for _, frame := range enc.Finish() {
+			wire.Write(frame)
+		}
+		if !strings.Contains(wire.String(), `\"a\": 1`) {
+			t.Errorf("%s: 畸形原文未透传：%s", name, wire.String())
+		}
+		if notes := enc.Notes(); !anyNoteContains(notes, "preserved 1 malformed tool call argument(s) as raw text") {
+			t.Errorf("%s: 流式畸形参数未报：%v", name, notes)
+		}
+		if again := enc.Notes(); len(again) != 0 {
+			t.Errorf("%s: Notes 未排干：%v", name, again)
+		}
+
+		interrupted := proto.MustInbound(name).NewStreamEncoder()
+		for _, ev := range seq[:3] {
+			if _, err := interrupted.Encode(ev); err != nil {
+				t.Fatalf("%s: interrupted Encode err=%v", name, err)
+			}
+		}
+		interrupted.Finish()
+		if notes := interrupted.Notes(); !anyNoteContains(notes, "preserved 1 malformed tool call argument(s) as raw text") {
+			t.Errorf("%s: Finish 断流冲刷未报：%v", name, notes)
+		}
 	}
 }
 

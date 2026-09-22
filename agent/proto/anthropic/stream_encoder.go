@@ -13,7 +13,8 @@ import (
 // 维护 block 开合不变式：delta 到达未开启的 index 时自动补 content_block_start；
 // Finish 强制关闭所有打开的 block 并补齐终止事件（幂等）。
 type streamEncoder struct {
-	open map[int]ir.BlockType
+	open     map[int]ir.BlockType
+	toolArgs map[int][]byte
 	// text 各块已下发的正文。citations_delta 的 cited_text 与字符索引只能在
 	// 正文上反推，而引用总在正文之后到达，所以必须逐块累积。
 	text map[int]string
@@ -23,13 +24,14 @@ type streamEncoder struct {
 	// 没有 service_tier 槽位，chat 系上游的晚到回显送不出去）。
 	droppedTier      string
 	droppedAudio     bool
+	badToolArgs      int
 	tierSent         bool
 	messageDeltaSent bool
 	stopped          bool
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{open: map[int]ir.BlockType{}, text: map[int]string{}}
+	return &streamEncoder{open: map[int]ir.BlockType{}, toolArgs: map[int][]byte{}, text: map[int]string{}}
 }
 
 func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
@@ -55,6 +57,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}))}, nil
 	case ir.EvBlockStart:
 		e.open[ev.Index] = blockTypeOf(ev.Block)
+		if e.open[ev.Index] == ir.BlockToolUse {
+			e.toolArgs[ev.Index] = nil
+		}
 		return [][]byte{e.blockStartFrame(ev.Index, ev.Block)}, nil
 	case ir.EvTextDelta:
 		frames := e.ensureOpen(ev.Index, ir.BlockText)
@@ -86,8 +91,13 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		return append(frames, e.deltaFrame(ev.Index, delta{Type: "signature_delta", Signature: ev.Text})), nil
 	case ir.EvToolInput:
 		frames := e.ensureOpen(ev.Index, ir.BlockToolUse)
+		if _, ok := e.toolArgs[ev.Index]; !ok {
+			e.toolArgs[ev.Index] = nil
+		}
+		e.toolArgs[ev.Index] = append(e.toolArgs[ev.Index], ev.Text...)
 		return append(frames, e.deltaFrame(ev.Index, delta{Type: "input_json_delta", PartialJSON: ev.Text})), nil
 	case ir.EvBlockStop:
+		e.finishToolArgs(ev.Index)
 		if !e.closeBlock(ev.Index) {
 			return nil, nil // 未打开的 block，忽略
 		}
@@ -124,6 +134,7 @@ func (e *streamEncoder) Finish() [][]byte {
 	}
 	sort.Ints(idxs)
 	for _, i := range idxs {
+		e.finishToolArgs(i)
 		out = append(out, sseFrame("content_block_stop", marshal(streamEvent{Type: "content_block_stop", Index: i})))
 		delete(e.open, i)
 	}
@@ -158,7 +169,22 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.AudioOutputDropNote())
 		e.droppedAudio = false
 	}
+	if e.badToolArgs > 0 {
+		notes = append(notes, ir.RawArgsPassNote(e.badToolArgs))
+		e.badToolArgs = 0
+	}
 	return notes
+}
+
+func (e *streamEncoder) finishToolArgs(index int) {
+	raw, ok := e.toolArgs[index]
+	if !ok {
+		return
+	}
+	delete(e.toolArgs, index)
+	if _, valid := ir.NormalizeToolInput(raw); !valid {
+		e.badToolArgs++
+	}
 }
 
 // ensureOpen delta 到达未开启的 index 时先补 block_start。

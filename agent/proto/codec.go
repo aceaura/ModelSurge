@@ -333,7 +333,7 @@ func TierEchoDropNote(tier string) string {
 // ScanResponseLosses 响应侧损耗扫描：编码给客户端前预判会丢什么。
 // sigSlotless=协议没有签名槽位（chat，签名全丢）；否则只丢外族签名。
 // objArgs=工具参数是对象槽位（anthropic/gemini/kiro），非法参数会被挪进
-// ir.RawArgsKey；字符串槽位原样透传无损耗。
+// ir.RawArgsKey；字符串槽位保留原文，但仍报告客户端无法安全执行。
 // 与各 codec 的编码分支用同一判定（SignatureGenuineFor / NormalizeToolInput），
 // 扫描结果即实编结果。
 func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArgs bool) []string {
@@ -347,7 +347,7 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 				sigs++
 			}
 		case ir.BlockToolUse:
-			if objArgs && b.ToolUse != nil {
+			if b.ToolUse != nil {
 				if _, ok := ir.NormalizeToolInput(b.ToolUse.Input); !ok {
 					badArgs++
 				}
@@ -367,7 +367,11 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 		}
 	}
 	if badArgs > 0 {
-		notes = append(notes, ir.RewrapNote(badArgs))
+		if objArgs {
+			notes = append(notes, ir.RewrapNote(badArgs))
+		} else {
+			notes = append(notes, ir.RawArgsPassNote(badArgs))
+		}
 	}
 	// 服务档位回显：目标协议值集装不下（或根本没有回显槽位）时，客户端
 	// 看不到实际用了哪档容量——计费与延迟预期都对不上。

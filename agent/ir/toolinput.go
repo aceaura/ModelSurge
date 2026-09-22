@@ -42,3 +42,11 @@ func RewrapNote(n int) string {
 		"rewrapped %d malformed tool call argument(s) into %s: the client will not receive them as parameters",
 		n, RawArgsKey)
 }
+
+// RawArgsPassNote 字符串增量槽位保留了畸形参数原文，但客户端不能把它当成
+// 可执行参数；显式报告，避免调用看似以空对象正常完成。
+func RawArgsPassNote(n int) string {
+	return fmt.Sprintf(
+		"preserved %d malformed tool call argument(s) as raw text: the client cannot safely decode or execute them as parameters",
+		n)
+}

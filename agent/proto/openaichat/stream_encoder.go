@@ -25,7 +25,9 @@ type streamEncoder struct {
 	droppedUploads int
 	// droppedAudio 完整音频输出来自非流式响应；Chat chunk 无官方 audio 增量槽位。
 	droppedAudio bool
-	toolIdx      map[int]int  // block index -> dense tool index
+	toolIdx      map[int]int // block index -> dense tool index
+	toolArgs     map[int][]byte
+	badToolArgs  int
 	skipIdx      map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
 	refusalIdx   map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
 	// text 各块已下发的正文，供 annotations 反推 cited_text 与字符索引。
@@ -37,7 +39,7 @@ type streamEncoder struct {
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{created: time.Now().Unix(), toolIdx: map[int]int{},
+	return &streamEncoder{created: time.Now().Unix(), toolIdx: map[int]int{}, toolArgs: map[int][]byte{},
 		skipIdx: map[int]bool{}, refusalIdx: map[int]bool{}, text: map[int]string{}}
 }
 
@@ -63,6 +65,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			idx := e.nextTool
 			e.nextTool++
 			e.toolIdx[ev.Index] = idx
+			e.toolArgs[ev.Index] = nil
 			return [][]byte{e.chunk(&message{ToolCalls: []toolCall{{
 				Index:    idx,
 				ID:       ev.Block.ToolUse.ID,
@@ -108,12 +111,14 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("openai-chat: tool input for unopened block %d", ev.Index)
 		}
+		e.toolArgs[ev.Index] = append(e.toolArgs[ev.Index], ev.Text...)
 		return [][]byte{e.chunk(&message{ToolCalls: []toolCall{{
 			Index:    idx,
 			Type:     "function",
 			Function: functionCall{Arguments: ev.Text},
 		}}}, "")}, nil
 	case ir.EvBlockStop:
+		e.finishToolArgs(ev.Index)
 		return nil, nil // OpenAI 无块结束帧
 	case ir.EvMessageDelta:
 		// 晚到的档位回显（EvMessageStart 之后才解码出来）在 chat 还补得上：
@@ -141,6 +146,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 
 // Finish 兜底：若流未正常结束，补 finish chunk + [DONE]。
 func (e *streamEncoder) Finish() [][]byte {
+	for idx := range e.toolArgs {
+		e.finishToolArgs(idx)
+	}
 	if e.stopped {
 		return nil
 	}
@@ -176,7 +184,22 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.AudioOutputDropNote())
 		e.droppedAudio = false
 	}
+	if e.badToolArgs > 0 {
+		notes = append(notes, ir.RawArgsPassNote(e.badToolArgs))
+		e.badToolArgs = 0
+	}
 	return notes
+}
+
+func (e *streamEncoder) finishToolArgs(index int) {
+	raw, ok := e.toolArgs[index]
+	if !ok {
+		return
+	}
+	delete(e.toolArgs, index)
+	if _, valid := ir.NormalizeToolInput(raw); !valid {
+		e.badToolArgs++
+	}
 }
 
 // mapTier 映射档位回显：值集装不下的（anthropic 的 batch、responses 的

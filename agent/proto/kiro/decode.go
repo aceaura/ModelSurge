@@ -49,7 +49,8 @@ type kiroToolCall struct {
 	truncReason string
 }
 
-// finalize 规整参数：空白/解析失败归为 "{}"，成功则原样保留（已验证合法）。
+// finalize 规整参数：空白是合法无参调用；非空畸形参数保留原文并标记，
+// 不能伪装成 {}，否则客户端可能把截断调用当成无参调用执行。
 func (tc *kiroToolCall) finalize() {
 	args := strings.TrimSpace(tc.args)
 	if args == "" {
@@ -60,7 +61,7 @@ func (tc *kiroToolCall) finalize() {
 	if err := json.Unmarshal([]byte(args), &probe); err != nil {
 		tc.truncated, tc.truncReason = diagnoseJSONTruncation(args)
 		tc.invalid = true
-		tc.args = "{}"
+		tc.args = args
 		return
 	}
 	tc.args = args
@@ -138,11 +139,9 @@ func dedupToolCalls(calls []kiroToolCall) []kiroToolCall {
 		}
 		if idx, ok := byID[tc.ID]; ok {
 			ex := &withID[idx]
-			if !tc.invalid && tc.args != "{}" &&
-				(ex.invalid || ex.args == "{}" || len(tc.args) > len(ex.args)) {
+			if (ex.invalid && !tc.invalid) ||
+				(ex.invalid == tc.invalid && len(tc.args) > len(ex.args)) {
 				*ex = tc
-			} else if tc.invalid && (ex.invalid || ex.args == "{}") {
-				ex.invalid = true
 			}
 			continue
 		}
@@ -156,8 +155,6 @@ func dedupToolCalls(calls []kiroToolCall) []kiroToolCall {
 		if _, ok := seen[key]; !ok {
 			seen[key] = len(unique)
 			unique = append(unique, tc)
-		} else if tc.invalid && tc.args == "{}" {
-			unique[seen[key]].invalid = true
 		}
 	}
 	return unique

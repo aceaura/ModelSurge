@@ -39,6 +39,7 @@ type streamEncoder struct {
 	droppedAudio bool
 	// droppedSigs 被门控的外族/合成签名数，Notes() 收尾时报出。
 	droppedSigs int
+	badToolArgs int
 	completed   bool
 }
 
@@ -228,6 +229,11 @@ func (e *streamEncoder) blockStop(idx int) [][]byte {
 		return nil
 	}
 	b.closed = true
+	if b.typ == ir.BlockToolUse {
+		if _, ok := ir.NormalizeToolInput([]byte(b.text)); !ok {
+			e.badToolArgs++
+		}
+	}
 	return [][]byte{e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: idx, Item: e.doneItem(b)})}
 }
 
@@ -322,6 +328,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedAudio {
 		notes = append(notes, proto.AudioOutputDropNote())
 		e.droppedAudio = false
+	}
+	if e.badToolArgs > 0 {
+		notes = append(notes, ir.RawArgsPassNote(e.badToolArgs))
+		e.badToolArgs = 0
 	}
 	return notes
 }

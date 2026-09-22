@@ -262,6 +262,23 @@ func TestKiroStreamPathEmitsNoteFrame(t *testing.T) {
 	}
 }
 
+func TestKiroStreamPathPreservesMalformedToolArgsWithNote(t *testing.T) {
+	s := forwardKiroEvents(t, []ir.Event{
+		{Type: ir.EvMessageStart, MessageID: "msg", Model: "public"},
+		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "c1", Name: "f"}}},
+		{Type: ir.EvToolInput, Index: 0, Text: `{"a": 1`},
+		{Type: ir.EvBlockStop, Index: 0},
+		{Type: ir.EvMessageDelta, StopReason: ir.StopMaxTokens},
+		{Type: ir.EvMessageStop},
+	})
+	if !strings.Contains(s, `\"a\": 1`) {
+		t.Fatalf("kiro 流式路畸形原文缺失：\n%s", s)
+	}
+	if !strings.Contains(s, ": modelsurge-note: preserved 1 malformed tool call argument(s) as raw text") {
+		t.Fatalf("kiro 流式路畸形参数注释帧缺失：\n%s", s)
+	}
+}
+
 // 主 SSE 路非流式客户端：聚合器在 BlockStop 把截断参数挪键，注记必须经
 // collectUpstreamToClient 穿线进响应头（codec 看到的是规整后的合法对象，
 // 少了这条穿线，非流式主路上挪键损耗彻底不可见）。

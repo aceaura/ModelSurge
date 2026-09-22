@@ -87,9 +87,12 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	var notes []string
 
 	sigs, foreign, images, urlImages, errResults, refusals, badArgs := 0, 0, 0, 0, 0, 0, 0
-	uploads := 0
+	uploads, audioRefs := 0, 0
 	media := map[ir.MediaKind]int{}
 	for _, m := range req.Messages {
+		if m.Role == ir.RoleAssistant && m.AudioID != "" {
+			audioRefs++
+		}
 		for _, b := range m.Content {
 			switch b.Type {
 			case ir.BlockToolUse:
@@ -180,6 +183,12 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		// 凭据，不抄进注记。
 		notes = append(notes, fmt.Sprintf(
 			"dropped %d container upload block(s): the target protocol has no container file-reference slot, the model cannot see files previously uploaded to or produced by the code-execution container", uploads))
+	}
+	if audioRefs > 0 && protoName != "openai-chat" {
+		// 音频 id 是 Chat 多轮上下文中的服务端引用，外族既没有引用槽位，
+		// 也不能据此取回音频本体；值本身不进入注记。
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d assistant audio reference(s): the target protocol has no replay-id slot, the model cannot recover audio generated in earlier turns", audioRefs))
 	}
 	if !caps.Sampling {
 		var params []string

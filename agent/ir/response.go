@@ -19,6 +19,9 @@ type Response struct {
 	// Container 实际使用的代码执行容器回显（仅 anthropic：id/expires_at/
 	// 已加载技能）。nil = 上游没用容器。客户端要靠它复用容器续话。
 	Container *Container
+	// Audio Chat 非流式模型音频输出。流式 Chat delta 没有官方音频槽位；
+	// 非 Chat 客户端也无法接收，编码边界必须丢弃并报告。
+	Audio *AudioOutput
 }
 
 // Aggregator 把 IR 事件流聚合成完整 Response。
@@ -58,6 +61,9 @@ func (a *Aggregator) Feed(ev Event) bool {
 		}
 		if ev.Container != nil {
 			a.resp.Container = ev.Container
+		}
+		if ev.Audio != nil {
+			a.resp.Audio = ev.Audio
 		}
 		if ev.Usage != nil {
 			a.resp.Usage.MergeNonZero(*ev.Usage)

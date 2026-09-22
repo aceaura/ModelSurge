@@ -30,7 +30,9 @@ type streamEncoder struct {
 	droppedContainer bool
 	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
 	droppedUploads int
-	finished       bool
+	// droppedAudio 完整 Chat 音频输出没有 Gemini 流式响应槽位。
+	droppedAudio bool
+	finished     bool
 }
 
 // encText 一个正文块的流式下发记录。
@@ -59,6 +61,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}
 		if ev.Container != nil {
 			e.droppedContainer = true
+		}
+		if ev.Audio != nil {
+			e.droppedAudio = true
 		}
 		return nil, nil
 	case ir.EvTextDelta:
@@ -210,6 +215,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedUploads > 0 {
 		notes = append(notes, proto.ContainerUploadDropNote(e.droppedUploads))
 		e.droppedUploads = 0
+	}
+	if e.droppedAudio {
+		notes = append(notes, proto.AudioOutputDropNote())
+		e.droppedAudio = false
 	}
 	return notes
 }

@@ -115,6 +115,15 @@ type AudioOutParam struct {
 	Voice  string
 }
 
+// AudioOutput Chat 非流式模型音频输出。ID 是下一轮 assistant 历史唯一允许
+// 回传的引用；Data/ExpiresAt/Transcript 只属于本轮完整响应，不能塞回请求。
+type AudioOutput struct {
+	ID         string
+	Data       string
+	ExpiresAt  int64
+	Transcript string
+}
+
 type Citation struct {
 	URL       string
 	Title     string
@@ -247,6 +256,9 @@ type Thinking struct {
 type Message struct {
 	Role    Role
 	Content []Block
+	// AudioID 是 Chat assistant 历史消息的音频引用。官方请求只接受
+	// {audio:{id}}，完整音频数据不会在多轮上下文中重复回传。
+	AudioID string
 }
 
 // SigFrom 签名非空时返回协议名作为 SignatureFrom，空签名为空串。

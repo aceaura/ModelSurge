@@ -35,6 +35,8 @@ type streamEncoder struct {
 	droppedContainer bool
 	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
 	droppedUploads int
+	// droppedAudio 完整 Chat 音频输出没有 Responses 流式 item 形态。
+	droppedAudio bool
 	// droppedSigs 被门控的外族/合成签名数，Notes() 收尾时报出。
 	droppedSigs int
 	completed   bool
@@ -71,6 +73,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.mapTier(ev.ServiceTier)
 		if ev.Container != nil {
 			e.droppedContainer = true
+		}
+		if ev.Audio != nil {
+			e.droppedAudio = true
 		}
 		return [][]byte{e.frame(streamEvent{Type: "response.created", Response: &responseObj{
 			ID: e.id, Object: "response", CreatedAt: e.created, Model: e.model, Status: "in_progress",
@@ -313,6 +318,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedUploads > 0 {
 		notes = append(notes, proto.ContainerUploadDropNote(e.droppedUploads))
 		e.droppedUploads = 0
+	}
+	if e.droppedAudio {
+		notes = append(notes, proto.AudioOutputDropNote())
+		e.droppedAudio = false
 	}
 	return notes
 }

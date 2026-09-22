@@ -23,9 +23,11 @@ type streamEncoder struct {
 	droppedContainer bool
 	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
 	droppedUploads int
-	toolIdx        map[int]int  // block index -> dense tool index
-	skipIdx        map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
-	refusalIdx     map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
+	// droppedAudio 完整音频输出来自非流式响应；Chat chunk 无官方 audio 增量槽位。
+	droppedAudio bool
+	toolIdx      map[int]int  // block index -> dense tool index
+	skipIdx      map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
+	refusalIdx   map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
 	// text 各块已下发的正文，供 annotations 反推 cited_text 与字符索引。
 	text     map[int]string
 	nextTool int
@@ -51,6 +53,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.mapTier(ev.ServiceTier)
 		if ev.Container != nil {
 			e.droppedContainer = true
+		}
+		if ev.Audio != nil {
+			e.droppedAudio = true
 		}
 		return [][]byte{e.chunk(&message{Role: "assistant"}, "")}, nil
 	case ir.EvBlockStart:
@@ -167,6 +172,10 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.ContainerUploadDropNote(e.droppedUploads))
 		e.droppedUploads = 0
 	}
+	if e.droppedAudio {
+		notes = append(notes, proto.AudioOutputDropNote())
+		e.droppedAudio = false
+	}
 	return notes
 }
 
@@ -235,6 +244,12 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier}
 	if len(r.Choices) > 0 && r.Choices[0].Message != nil {
 		m := r.Choices[0].Message
+		if len(m.Audio) > 0 && string(m.Audio) != "null" {
+			var a audioOutput
+			if json.Unmarshal(m.Audio, &a) == nil {
+				out.Audio = &ir.AudioOutput{ID: a.ID, Data: a.Data, ExpiresAt: a.ExpiresAt, Transcript: a.Transcript}
+			}
+		}
 		if m.ReasoningContent != "" {
 			out.Content = append(out.Content, ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{Text: m.ReasoningContent}})
 		}
@@ -259,6 +274,11 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 
 func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	msg := &message{Role: "assistant"}
+	if resp.Audio != nil {
+		msg.Audio = marshal(audioOutput{
+			ID: resp.Audio.ID, Data: resp.Audio.Data, ExpiresAt: resp.Audio.ExpiresAt, Transcript: resp.Audio.Transcript,
+		})
+	}
 	var text string
 	var cites []ir.Citation
 	for _, b := range resp.Content {

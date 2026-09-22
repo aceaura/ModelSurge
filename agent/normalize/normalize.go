@@ -259,7 +259,7 @@ func mergeAdjacent(req *ir.Request) {
 	}
 	out := req.Messages[:0]
 	for _, m := range req.Messages {
-		if n := len(out); n > 0 && out[n-1].Role == m.Role {
+		if n := len(out); n > 0 && out[n-1].Role == m.Role && out[n-1].AudioID == "" && m.AudioID == "" {
 			out[n-1].Content = append(out[n-1].Content, m.Content...)
 		} else {
 			out = append(out, m)
@@ -302,7 +302,7 @@ func ensureFirstUser(req *ir.Request) {
 func fillEmptyContent(req *ir.Request) {
 	for i := range req.Messages {
 		m := &req.Messages[i]
-		hasContent := false
+		hasContent := m.AudioID != ""
 		for _, b := range m.Content {
 			if b.Type != ir.BlockText || strings.TrimSpace(b.Text) != "" {
 				hasContent = true

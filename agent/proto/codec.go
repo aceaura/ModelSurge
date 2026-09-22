@@ -386,6 +386,9 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	if uploads > 0 && protoName != "anthropic" {
 		notes = append(notes, ContainerUploadDropNote(uploads))
 	}
+	if resp.Audio != nil && protoName != "openai-chat" {
+		notes = append(notes, AudioOutputDropNote())
+	}
 	return notes
 }
 
@@ -399,6 +402,12 @@ func ContainerDropNote() string {
 func ContainerUploadDropNote(n int) string {
 	return fmt.Sprintf(
 		"dropped %d container upload block(s): this protocol has no container file-reference slot, the client cannot see files uploaded to or produced by the code-execution container", n)
+}
+
+// AudioOutputDropNote 模型音频输出丢失注记。完整音频只存在于 Chat 非流式
+// message.audio；Chat SSE 与所有外族响应都没有等价槽位。
+func AudioOutputDropNote() string {
+	return "dropped model audio output: this response format has no complete-audio slot, the client cannot play the generated audio or recover its transcript and replay id"
 }
 
 // SigDropNote 流式编码器的外族签名丢弃注记（计数由编码器在门控分支累计）。

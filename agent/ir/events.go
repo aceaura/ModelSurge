@@ -36,7 +36,10 @@ type Event struct {
 	ServiceTier string
 	// Container 代码执行容器回显（EvMessageStart 首帧携带；anthropic 的
 	// message_delta 也可能晚到，EvMessageDelta 上也收，后值覆盖）。
-	Container        *Container
+	Container *Container
+	// Audio 非流式完整响应转事件流时随 EvMessageStart 携带。所有当前流式
+	// 客户端协议均无官方完整音频槽位，只用于编码器记账并报告丢失。
+	Audio            *AudioOutput
 	Err              *Error     // EvError
 	Citations        []Citation // EvCitation
 	TruncatedTools   []TruncatedTool

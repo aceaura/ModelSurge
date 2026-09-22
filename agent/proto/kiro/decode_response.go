@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
+	"github.com/aceaura/ModelSurge/agent/proto"
 )
 
 // DecodeResponse 把完整 Kiro eventstream 响应体解析为 IR 响应。
@@ -138,10 +139,14 @@ func (Codec) ResponseNotes(resp *ir.Response) []string {
 			}
 		}
 	}
-	if badArgs == 0 {
-		return nil
+	var notes []string
+	if badArgs > 0 {
+		notes = append(notes, ir.RewrapNote(badArgs))
 	}
-	return []string{ir.RewrapNote(badArgs)}
+	if resp.Audio != nil {
+		notes = append(notes, proto.AudioOutputDropNote())
+	}
+	return notes
 }
 
 func ptrInt64(v int64) *int64 { return &v }

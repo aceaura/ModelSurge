@@ -99,10 +99,13 @@ type message struct {
 	// Annotations 正文的来源标注（托管搜索开启时下发）。官方只有
 	// type=url_citation 一种，索引口径是 content 内的字符下标。
 	Annotations []annotation `json:"annotations,omitempty"`
-	ToolCalls   []toolCall   `json:"tool_calls,omitempty"`
-	ToolCallID  string       `json:"tool_call_id,omitempty"`
-	Name        string       `json:"name,omitempty"`
-	media       bool         // 出站内部标记：tool 结果抽出的图片块消息（不参与 JSON）
+	// Audio 的请求与响应形状不同：assistant 历史只允许 {id}，完整响应则
+	// 必须包含 id/data/expires_at/transcript，因此延迟到各方向按专用 DTO 解码。
+	Audio      json.RawMessage `json:"audio,omitempty"`
+	ToolCalls  []toolCall      `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	media      bool            // 出站内部标记：tool 结果抽出的图片块消息（不参与 JSON）
 }
 
 type part struct {
@@ -117,6 +120,17 @@ type part struct {
 type inputAudio struct {
 	Data   string `json:"data"`
 	Format string `json:"format"` // "wav" / "mp3"
+}
+
+type audioRef struct {
+	ID string `json:"id"`
+}
+
+type audioOutput struct {
+	ID         string `json:"id"`
+	Data       string `json:"data"`
+	ExpiresAt  int64  `json:"expires_at"`
+	Transcript string `json:"transcript"`
 }
 
 // filePart Chat 的文件输入部分。file_data 是 data URI，与 file_id 二选一。

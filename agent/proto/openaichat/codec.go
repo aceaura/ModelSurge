@@ -233,6 +233,12 @@ func decodeMessage(req *ir.Request, m message) {
 		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: contentBlocks(m.Content)})
 	case "assistant":
 		msg := ir.Message{Role: ir.RoleAssistant, Content: attachCitations(contentBlocks(m.Content), decodeAnnotations(m.Annotations))}
+		if len(m.Audio) > 0 && string(m.Audio) != "null" {
+			var a audioRef
+			if json.Unmarshal(m.Audio, &a) == nil {
+				msg.AudioID = a.ID
+			}
+		}
 		if m.Refusal != "" {
 			msg.Content = append(msg.Content, ir.Block{Type: ir.BlockRefusal, Text: m.Refusal})
 		}
@@ -495,6 +501,9 @@ func encodeMessages(m ir.Message) []message {
 	switch m.Role {
 	case ir.RoleAssistant:
 		msg := message{Role: "assistant"}
+		if m.AudioID != "" {
+			msg.Audio = marshal(audioRef{ID: m.AudioID})
+		}
 		var text string
 		var cites []ir.Citation
 		for _, b := range m.Content {

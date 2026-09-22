@@ -22,6 +22,7 @@ type streamEncoder struct {
 	// droppedTier 没能下发的档位回显原值：越集、或到得太晚（message_delta
 	// 没有 service_tier 槽位，chat 系上游的晚到回显送不出去）。
 	droppedTier      string
+	droppedAudio     bool
 	tierSent         bool
 	messageDeltaSent bool
 	stopped          bool
@@ -45,6 +46,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}
 		// container 是本家维度，直接下发。
 		em.Container = encodeContainerInfo(ev.Container)
+		if ev.Audio != nil {
+			e.droppedAudio = true
+		}
 		return [][]byte{sseFrame("message_start", marshal(streamEvent{
 			Type:    "message_start",
 			Message: em,
@@ -149,6 +153,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedTier != "" {
 		notes = append(notes, proto.TierEchoDropNote(e.droppedTier))
 		e.droppedTier = ""
+	}
+	if e.droppedAudio {
+		notes = append(notes, proto.AudioOutputDropNote())
+		e.droppedAudio = false
 	}
 	return notes
 }

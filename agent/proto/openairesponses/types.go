@@ -41,6 +41,12 @@ type request struct {
 	ServiceTier string `json:"service_tier,omitempty"`
 	// PromptCacheKey 提示缓存路由键。
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// SafetyIdentifier 滥用检测标识，user 字段的官方替代。与 user 同一维度。
+	SafetyIdentifier string `json:"safety_identifier,omitempty"`
+	// Moderation 请求级审核策略 {model, policy{input/output}}，原文透传。
+	Moderation json.RawMessage `json:"moderation,omitempty"`
+	// PromptCacheOptions 显式缓存断点控制 {mode, ttl, ...}，原文透传。
+	PromptCacheOptions json.RawMessage `json:"prompt_cache_options,omitempty"`
 	// TopLogProbs 兼任开关与档位：Responses 没有独立的 logprobs 布尔。
 	TopLogProbs *int `json:"top_logprobs,omitempty"`
 }
@@ -60,8 +66,10 @@ type reasoning struct {
 
 // textConfig text.format 结构化输出：Responses 把 Chat 的 response_format
 // 挪进了 text 下，并把 json_schema 的三个字段平铺（没有嵌套的 json_schema 层）。
+// verbosity 也挂在 text 下（Chat 里是顶层字段）。
 type textConfig struct {
-	Format *textFormat `json:"format,omitempty"`
+	Format    *textFormat `json:"format,omitempty"`
+	Verbosity string      `json:"verbosity,omitempty"`
 }
 
 type textFormat struct {

@@ -143,6 +143,14 @@ type Capabilities struct {
 	// prompt_cache_key）。Anthropic 走显式 cache_control 断点，
 	// 没有路由键概念；kiro 没有。
 	PromptCacheKey bool
+
+	// OpenAIExtras 有 OpenAI 两系 2026 新增的请求修饰槽位：
+	// verbosity（输出啰嗦程度档位）、moderation（请求级审核策略）、
+	// prompt_cache_options（显式缓存断点）。Chat 与 Responses 都有
+	// （verbosity 在 Responses 挪进了 text 下）；anthropic 与 kiro
+	// 一个都没有。safety_identifier 不归此位——它与 user 同维度，
+	// 归 UserID 位。
+	OpenAIExtras bool
 }
 
 // MapServiceTier 把 service_tier 原值映射到目标协议值集。

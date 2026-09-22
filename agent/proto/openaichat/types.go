@@ -43,6 +43,17 @@ type request struct {
 	ServiceTier string `json:"service_tier,omitempty"`
 	// PromptCacheKey 提示缓存路由键。
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// Verbosity 输出啰嗦程度档位（low/medium/high），顶层字段。
+	Verbosity string `json:"verbosity,omitempty"`
+	// SafetyIdentifier 滥用检测标识，user 字段的官方替代。与 user 同一维度，
+	// IR 里独立成槽：跨族到 anthropic 时映进 metadata.user_id（该槽被 user
+	// 占了才丢）。
+	SafetyIdentifier string `json:"safety_identifier,omitempty"`
+	// Moderation 请求级审核策略 {model, policy{input/output}}。结构属于上游
+	// 产品语义，代理不解析，原文透传。
+	Moderation json.RawMessage `json:"moderation,omitempty"`
+	// PromptCacheOptions 显式缓存断点控制 {mode, ttl, ...}。同样原文透传。
+	PromptCacheOptions json.RawMessage `json:"prompt_cache_options,omitempty"`
 }
 
 // responseFormat 结构化输出：type 为 text / json_object / json_schema。

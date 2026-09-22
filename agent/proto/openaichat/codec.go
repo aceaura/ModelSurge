@@ -39,6 +39,7 @@ func (codec) Caps() proto.Capabilities {
 		UserID:           true, // user
 		// service_tier 与 prompt_cache_key 都有原生槽位。
 		ServiceTier: true, PromptCacheKey: true,
+		OpenAIExtras: true,
 	}
 }
 
@@ -132,6 +133,16 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	// 原值进 IR，跨族映射是出站的事（proto.MapServiceTier）。
 	out.ServiceTier = req.ServiceTier
 	out.PromptCacheKey = req.PromptCacheKey
+	out.Verbosity = req.Verbosity
+	out.SafetyIdentifier = req.SafetyIdentifier
+	// 显式 null 等同没给：不归一的话 Clone 往返后变成非空 "null"，
+	// 出站会多一个 null 键、诊断也会误报。
+	if string(req.Moderation) != "null" {
+		out.Moderation = req.Moderation
+	}
+	if string(req.PromptCacheOptions) != "null" {
+		out.PromptCacheOptions = req.PromptCacheOptions
+	}
 	return out, nil
 }
 
@@ -420,6 +431,10 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.ServiceTier = tier
 	}
 	out.PromptCacheKey = r.PromptCacheKey
+	out.Verbosity = r.Verbosity
+	out.SafetyIdentifier = r.SafetyIdentifier
+	out.Moderation = r.Moderation
+	out.PromptCacheOptions = r.PromptCacheOptions
 	return json.Marshal(out)
 }
 

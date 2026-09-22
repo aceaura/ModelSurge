@@ -44,6 +44,7 @@ func (codec) Caps() proto.Capabilities {
 		ResponsesExtras: true,
 		// service_tier（值集含 ultrafast）与 prompt_cache_key。
 		ServiceTier: true, PromptCacheKey: true,
+		OpenAIExtras: true,
 	}
 }
 
@@ -106,6 +107,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	}
 	if req.Text != nil {
 		out.ResponseFormat = decodeResponseFormat(req.Text.Format)
+		out.Verbosity = req.Text.Verbosity
 	}
 	if req.User != "" {
 		out.Metadata = map[string]string{"user_id": req.User}
@@ -120,6 +122,14 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	out.Include = req.Include
 	out.ServiceTier = req.ServiceTier
 	out.PromptCacheKey = req.PromptCacheKey
+	out.SafetyIdentifier = req.SafetyIdentifier
+	// 显式 null 等同没给（与 chat 同款归一）。
+	if string(req.Moderation) != "null" {
+		out.Moderation = req.Moderation
+	}
+	if string(req.PromptCacheOptions) != "null" {
+		out.PromptCacheOptions = req.PromptCacheOptions
+	}
 	if req.Prompt != nil {
 		out.Prompt = &ir.PromptRef{ID: req.Prompt.ID, Version: req.Prompt.Version, Variables: req.Prompt.Variables}
 	}
@@ -399,6 +409,13 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.Prompt = &promptRef{ID: r.Prompt.ID, Version: r.Prompt.Version, Variables: r.Prompt.Variables}
 	}
 	out.Text = encodeResponseFormat(r.ResponseFormat)
+	// verbosity 挂在 text 下：没有 format 要求时也要为 verbosity 建容器。
+	if r.Verbosity != "" {
+		if out.Text == nil {
+			out.Text = &textConfig{}
+		}
+		out.Text.Verbosity = r.Verbosity
+	}
 	if uid := r.Metadata["user_id"]; uid != "" {
 		out.User = uid
 	}
@@ -417,6 +434,9 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.ServiceTier = tier
 	}
 	out.PromptCacheKey = r.PromptCacheKey
+	out.SafetyIdentifier = r.SafetyIdentifier
+	out.Moderation = r.Moderation
+	out.PromptCacheOptions = r.PromptCacheOptions
 	return json.Marshal(out)
 }
 

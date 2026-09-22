@@ -280,6 +280,23 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 	if req.Metadata["user_id"] != "" && !caps.UserID {
 		notes = append(notes, "dropped user id: upstream protocol has no end-user identifier parameter, abuse tracking will not see it")
 	}
+	if req.SafetyIdentifier != "" {
+		// safety_identifier 与 user 同一维度：出站 anthropic 且 user_id 槽被占
+		// 时挤不进去，其余无 UserID 位的协议（kiro）直接丢。值不回显。
+		switch {
+		case !caps.UserID:
+			notes = append(notes,
+				"dropped safety identifier: upstream protocol has no abuse-tracking identifier parameter, the upstream safety system will not see it")
+		case caps.OpenAIExtras:
+			// OpenAI 两系有原生槽位，不丢不报。
+		default:
+			// 只剩 anthropic：映进 metadata.user_id，该槽被 user 占了才丢。
+			if req.Metadata["user_id"] != "" {
+				notes = append(notes,
+					"dropped safety identifier: the request already carries a user id, only one identifier reaches the upstream's abuse tracking")
+			}
+		}
+	}
 	if len(req.SafetySettings) > 0 {
 		// safetySettings 是 Gemini 独有维度，没有任何出站接得住，恒报。
 		notes = append(notes, fmt.Sprintf(
@@ -342,6 +359,18 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 		// 值是客户端自选串，不回显（与 user id 同款纪律）。
 		notes = append(notes,
 			"dropped prompt cache key: the target protocol has no cache routing field, repeated prefixes may recompute instead of hitting the cache")
+	}
+	if req.Verbosity != "" && !caps.OpenAIExtras {
+		notes = append(notes,
+			"dropped verbosity setting: the target protocol has no output-length steering field, the model decides how verbose to be")
+	}
+	if len(req.Moderation) > 0 && !caps.OpenAIExtras {
+		notes = append(notes,
+			"dropped moderation policy: the target protocol has no request-level moderation parameter, moderation falls back to the upstream default")
+	}
+	if len(req.PromptCacheOptions) > 0 && !caps.OpenAIExtras {
+		notes = append(notes,
+			"dropped prompt cache options: the target protocol has no explicit cache breakpoint control, caching follows the upstream default policy")
 	}
 	return notes
 }

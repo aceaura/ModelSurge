@@ -375,6 +375,21 @@ type Request struct {
 	// PromptCacheKey 提示缓存路由键（OpenAI 两系的 prompt_cache_key）。
 	// 值可能是客户端自选串，诊断与日志一律不回显值本身。
 	PromptCacheKey string
+	// Verbosity 输出啰嗦程度档位（low/medium/high）。Chat 是顶层 verbosity，
+	// Responses 是 text.verbosity；其余协议没有输出长度转向这一维。
+	Verbosity string
+	// SafetyIdentifier 滥用检测标识（OpenAI 两系，user 字段的官方替代）。
+	// 与 metadata.user_id 同一维度：跨族到 anthropic 时映进 metadata.user_id
+	// 槽位（该槽被 user_id 占了才丢，丢要报）。
+	SafetyIdentifier string
+	// Moderation 请求级审核策略（OpenAI 两系 {model, policy{input/output}}）。
+	// 不透明原文透传：代理不解释审核策略，只负责送达或报出。
+	// json tag 只服务 Clone（marshal/unmarshal 往返）：缺它 nil 会被
+	// 序列化成 "null"、回来变成非空，出站多一个 null 键。
+	Moderation json.RawMessage `json:",omitempty"`
+	// PromptCacheOptions 显式缓存断点控制（OpenAI 两系 {mode, ttl, ...}，
+	// gpt-5.6+）。不透明原文透传。omitempty 同 Moderation。
+	PromptCacheOptions json.RawMessage `json:",omitempty"`
 }
 
 // PromptRef 服务端 prompt 模板引用（Responses 的 prompt 参数）。

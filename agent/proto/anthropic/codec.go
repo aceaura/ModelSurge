@@ -371,7 +371,13 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		}
 		out.Thinking = &thinkingCfg{Type: "enabled", BudgetTokens: budget}
 	}
-	if uid := r.Metadata["user_id"]; uid != "" {
+	uid := r.Metadata["user_id"]
+	if uid == "" {
+		// safety_identifier 与 user 同一维度（滥用检测标识）：user_id 槽空着
+		// 时映进去；两边都有时 user 优先，safety identifier 由诊断报出。
+		uid = r.SafetyIdentifier
+	}
+	if uid != "" {
 		out.Metadata = &metadata{UserID: uid}
 	}
 	// 只回写 schema 约束形态：纯 JSON 模式（没给 schema）在 anthropic 没有

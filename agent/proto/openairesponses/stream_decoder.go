@@ -19,6 +19,11 @@ type streamDecoder struct {
 	usage       ir.Usage
 	stopReason  ir.StopReason
 	finished    bool
+	// sawError 已下发过 EvError。上游的真实序列是 error 之后再跟终止帧
+	// （sub2api 的 OpenAI 抓包夹具是 error -> response.failed）；不置这个标记，
+	// 后到的 response.completed 会照常产出 StopEndTurn 的终止事件，把流内错误
+	// 伪装成正常结束，response.failed 则会再发一遍同样的错误。
+	sawError bool
 	// tier 档位回显：response.created 与 completed/incomplete 都可能携带，
 	// 后者晚到时随终止的 message_delta 事件交付。
 	tier string
@@ -394,6 +399,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return append(out, d.closeItem(oi)...), nil
 	case "response.completed":
 		d.finished = true
+		if d.sawError {
+			return nil, nil
+		}
 		if se.Response != nil && se.Response.Usage != nil {
 			d.usage = decodeUsage(se.Response.Usage)
 		}
@@ -407,6 +415,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return d.terminalEvents(), nil
 	case "response.incomplete":
 		d.finished = true
+		if d.sawError {
+			return nil, nil
+		}
 		d.stopReason = mapIncompleteReason(se.Response)
 		if se.Response != nil && se.Response.Usage != nil {
 			d.usage = decodeUsage(se.Response.Usage)
@@ -417,28 +428,57 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return d.terminalEvents(), nil
 	case "response.failed":
 		d.finished = true
-		e := &ir.Error{Type: ir.ErrTypeUpstream, Message: "upstream response failed", Retryable: true}
-		if se.Response != nil && se.Response.Error != nil {
-			e.Type = se.Response.Error.Type
-			e.Code = se.Response.Error.Code
-			e.Message = se.Response.Error.Message
-			// 风控拦截不可重试（对齐 sub2api cyber_policy 特例）
-			if e.Code == "cyber_policy" || e.Type == "content_filter" {
-				e.Retryable = false
-				e.Type = ir.ErrTypeContentFilter
-			}
+		if d.sawError {
+			return nil, nil
 		}
-		return []ir.Event{{Type: ir.EvError, Err: e}}, nil
+		d.sawError = true
+		return []ir.Event{{Type: ir.EvError, Err: streamErrorOf(se, "upstream response failed")}}, nil
 	case "error":
-		e := &ir.Error{Type: ir.ErrTypeUpstream, Retryable: true}
-		if se.Response != nil && se.Response.Error != nil {
-			e.Type = se.Response.Error.Type
-			e.Code = se.Response.Error.Code
-			e.Message = se.Response.Error.Message
+		// 终止标记必须在这里置上。真实上游的序列是 error 之后再跟终止帧，不置
+		// 就会让后到的 response.completed 照常产出 StopEndTurn 的终止事件，把流内
+		// 错误伪装成正常结束；response.failed 则会把同一个错误再发一遍。
+		d.finished = true
+		if d.sawError {
+			return nil, nil
 		}
-		return []ir.Event{{Type: ir.EvError, Err: e}}, nil
+		d.sawError = true
+		return []ir.Event{{Type: ir.EvError, Err: streamErrorOf(se, "upstream stream error")}}, nil
 	}
 	return nil, nil // response.queued / in_progress 等进度事件忽略
+}
+
+// streamErrorOf 流式错误事件 -> IR 错误。裸 error 事件的错误体在顶层，
+// response.failed 的在 response.error 下，两处都读（cc-switch 与 sub2api 同样
+// 做这个双层回落）。
+//
+// 字段缺席时保留规范默认值而不是覆盖成空：type 为空会让下游 RenderStreamError
+// 产出一个没有规范类型的错误帧，客户端无从判断该不该重试。
+func streamErrorOf(se streamEvent, fallbackMsg string) *ir.Error {
+	e := &ir.Error{Type: ir.ErrTypeUpstream, Message: fallbackMsg, Retryable: true}
+	var b *errorBody
+	switch {
+	case se.Error != nil:
+		b = se.Error
+	case se.Response != nil:
+		b = se.Response.Error
+	}
+	if b == nil {
+		return e
+	}
+	if b.Type != "" {
+		e.Type = b.Type
+	}
+	if b.Message != "" {
+		e.Message = b.Message
+	}
+	e.Code = b.Code
+	// 风控拦截不可重试（对齐 sub2api cyber_policy 特例）。判成可重试会让调度器
+	// 换目标重发一个永远不可能成功的请求，把整个账号池白烧一遍。
+	if e.Code == "cyber_policy" || b.Type == "content_filter" {
+		e.Retryable = false
+		e.Type = ir.ErrTypeContentFilter
+	}
+	return e
 }
 
 // completeToolArgs 用终态完整值补齐尚未收到的参数后缀。

@@ -183,6 +183,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvPing:
 		return nil, nil
 	case ir.EvError:
+		// 错误帧就是终止帧，置 completed 免得 Finish() 再凭空补一个终止事件：
+		// 那时 stopReason 还是零值，补出来的是 response.incomplete 带
+		// reason=max_output_tokens——上游过载会被告诉客户端「你输出超长了，
+		// 请加大 max_output_tokens」，客户端照做然后再次失败。
+		e.completed = true
 		return [][]byte{New().RenderStreamError(ev.Err)}, nil
 	}
 	return nil, fmt.Errorf("openai-responses: encode unknown event %q", ev.Type)

@@ -675,6 +675,10 @@ func (codec) RenderError(e *ir.Error) (int, []byte) {
 	return e.HTTPStatus(), marshal(errorResponse{Error: errorBody{Code: e.Code, Type: e.Type, Message: e.Message}})
 }
 
+// RenderStreamError 官方 wire 把错误体放在顶层（{"type":"error","error":{...}}），
+// 不是 response.error 下——官方 SDK 的 ErrorEvent 只读顶层，挂在 response 下等于
+// 错误对客户端完全不可见，还会顺带多出一个 id/model 全空的畸形 response 对象。
 func (codec) RenderStreamError(e *ir.Error) []byte {
-	return []byte("data: " + string(marshal(streamEvent{Type: "error", Response: &responseObj{Error: &errorBody{Code: e.Code, Type: e.Type, Message: e.Message}}})) + "\n\n")
+	return []byte("data: " + string(marshal(streamEvent{Type: "error",
+		Error: &errorBody{Code: e.Code, Type: e.Type, Message: e.Message}})) + "\n\n")
 }

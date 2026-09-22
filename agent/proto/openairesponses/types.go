@@ -180,6 +180,12 @@ type streamEvent struct {
 	Arguments    string       `json:"arguments,omitempty"` // function_call_arguments.done
 	Input        string       `json:"input,omitempty"`     // custom_tool_call_input.done
 	Response     *responseObj `json:"response,omitempty"`  // response.created / completed / incomplete / failed
+	// Error 裸 error 事件携带的错误体。官方 wire 把它放在顶层
+	// （{"type":"error","error":{...}}），不是 response.error 下；此前只读后者，
+	// 于是上游给的 type/code/message 三个字段全部丢失，风控拦截被当成可重试的
+	// 上游错误，把账号池白烧一遍。Response.Error 仍作回落：response.failed 走
+	// 那条路径，两仓（cc-switch / sub2api）也都做这个双层回落。
+	Error *errorBody `json:"error,omitempty"`
 	// Annotation response.output_text.annotation.added 携带的单条引用。
 	// 该事件没有 delta 字段，正文与标注是两个独立事件。
 	Annotation *annotation `json:"annotation,omitempty"`

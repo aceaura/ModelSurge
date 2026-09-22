@@ -13,6 +13,9 @@ type Response struct {
 	// StopSequence StopStopSequence 档命中的那条序列原文；其余档为空。
 	StopSequence string
 	Usage        Usage
+	// ServiceTier 上游回显的实际服务档位原值（anthropic standard/priority/
+	// batch；OpenAI auto/default/flex/scale/priority/fast/ultrafast）。
+	ServiceTier string
 }
 
 // Aggregator 把 IR 事件流聚合成完整 Response。
@@ -47,6 +50,9 @@ func (a *Aggregator) Feed(ev Event) bool {
 		a.started = true
 		a.resp.ID = ev.MessageID
 		a.resp.Model = ev.Model
+		if ev.ServiceTier != "" {
+			a.resp.ServiceTier = ev.ServiceTier
+		}
 		if ev.Usage != nil {
 			a.resp.Usage.MergeNonZero(*ev.Usage)
 		}
@@ -102,6 +108,11 @@ func (a *Aggregator) Feed(ev Event) bool {
 		a.resp.StopReason = ev.StopReason
 		if ev.StopSequence != "" {
 			a.resp.StopSequence = ev.StopSequence
+		}
+		// chat 的 service_tier 可能到得比首帧晚（后续 chunk 才带），
+		// 晚到的非空值补上；同值重复无害。
+		if ev.ServiceTier != "" {
+			a.resp.ServiceTier = ev.ServiceTier
 		}
 		if ev.Usage != nil {
 			a.resp.Usage.MergeNonZero(*ev.Usage)

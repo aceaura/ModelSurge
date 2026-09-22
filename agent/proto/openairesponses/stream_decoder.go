@@ -16,6 +16,9 @@ type streamDecoder struct {
 	usage       ir.Usage
 	stopReason  ir.StopReason
 	finished    bool
+	// tier 档位回显：response.created 与 completed/incomplete 都可能携带，
+	// 后者晚到时随终止的 message_delta 事件交付。
+	tier string
 	// refusalOpen 已开启的拒绝块（按 output_index）。上游对被拒绝的消息仍然
 	// 先发 output_item.added type=message，从那一帧看不出是拒绝，块只能等
 	// response.refusal.delta 到了再补开。
@@ -49,6 +52,8 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		if se.Response != nil {
 			ev.MessageID = se.Response.ID
 			ev.Model = se.Response.Model
+			ev.ServiceTier = se.Response.ServiceTier
+			d.tier = se.Response.ServiceTier
 		}
 		return []ir.Event{ev}, nil
 	case "response.output_item.added":
@@ -125,6 +130,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		if se.Response != nil && se.Response.Usage != nil {
 			d.usage = decodeUsage(se.Response.Usage)
 		}
+		if se.Response != nil && se.Response.ServiceTier != "" {
+			d.tier = se.Response.ServiceTier
+		}
 		d.stopReason = ir.StopEndTurn
 		if d.sawToolCall {
 			d.stopReason = ir.StopToolUse
@@ -135,6 +143,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		d.stopReason = mapIncompleteReason(se.Response)
 		if se.Response != nil && se.Response.Usage != nil {
 			d.usage = decodeUsage(se.Response.Usage)
+		}
+		if se.Response != nil && se.Response.ServiceTier != "" {
+			d.tier = se.Response.ServiceTier
 		}
 		return d.terminalEvents(), nil
 	case "response.failed":
@@ -200,7 +211,7 @@ func (d *streamDecoder) terminalEvents() []ir.Event {
 	d.refusalOpen = map[int]bool{}
 	u := d.usage
 	return append(out,
-		ir.Event{Type: ir.EvMessageDelta, StopReason: d.stopReason, Usage: &u},
+		ir.Event{Type: ir.EvMessageDelta, StopReason: d.stopReason, Usage: &u, ServiceTier: d.tier},
 		ir.Event{Type: ir.EvMessageStop},
 	)
 }

@@ -18,7 +18,11 @@ type streamEncoder struct {
 	// 正文上反推，而引用总在正文之后到达，所以必须逐块累积。
 	text map[int]string
 	// droppedSigs 被门控掉的外族/合成签名数，Notes() 收尾时报出。
-	droppedSigs      int
+	droppedSigs int
+	// droppedTier 没能下发的档位回显原值：越集、或到得太晚（message_delta
+	// 没有 service_tier 槽位，chat 系上游的晚到回显送不出去）。
+	droppedTier      string
+	tierSent         bool
 	messageDeltaSent bool
 	stopped          bool
 }
@@ -30,9 +34,18 @@ func (codec) NewStreamEncoder() proto.StreamEncoder {
 func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	switch ev.Type {
 	case ir.EvMessageStart:
+		em := &eventMessage{ID: ev.MessageID, Model: ev.Model, Usage: encodeUsagePtr(ev.Usage)}
+		if ev.ServiceTier != "" {
+			if tier, ok := proto.MapServiceTierEcho(ev.ServiceTier, Name); ok {
+				em.ServiceTier = tier
+				e.tierSent = true
+			} else {
+				e.droppedTier = ev.ServiceTier
+			}
+		}
 		return [][]byte{sseFrame("message_start", marshal(streamEvent{
 			Type:    "message_start",
-			Message: &eventMessage{ID: ev.MessageID, Model: ev.Model, Usage: encodeUsagePtr(ev.Usage)},
+			Message: em,
 		}))}, nil
 	case ir.EvBlockStart:
 		e.open[ev.Index] = blockTypeOf(ev.Block)
@@ -75,6 +88,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		return [][]byte{sseFrame("content_block_stop", marshal(streamEvent{Type: "content_block_stop", Index: ev.Index}))}, nil
 	case ir.EvMessageDelta:
 		e.messageDeltaSent = true
+		// message_delta 没有 service_tier 槽位：晚到的回显（chat 系上游的
+		// 后续 chunk 才带）即便值集装得下也送不出去，照实报出。
+		if ev.ServiceTier != "" && !e.tierSent && e.droppedTier == "" {
+			e.droppedTier = ev.ServiceTier
+		}
 		return [][]byte{sseFrame("message_delta", marshal(streamEvent{
 			Type:  "message_delta",
 			Delta: &delta{StopReason: UnmapStopReason(ev.StopReason), StopSequence: ev.StopSequence},
@@ -119,14 +137,18 @@ func (e *streamEncoder) Finish() [][]byte {
 	return out
 }
 
-// Notes 排干损耗注记（被门控的外族/合成签名）。
+// Notes 排干损耗注记（被门控的外族/合成签名、没送出去的档位回显）。
 func (e *streamEncoder) Notes() []string {
-	if e.droppedSigs == 0 {
-		return nil
+	var notes []string
+	if e.droppedSigs > 0 {
+		notes = append(notes, proto.SigDropNote(e.droppedSigs, false))
+		e.droppedSigs = 0
 	}
-	n := proto.SigDropNote(e.droppedSigs, false)
-	e.droppedSigs = 0
-	return []string{n}
+	if e.droppedTier != "" {
+		notes = append(notes, proto.TierEchoDropNote(e.droppedTier))
+		e.droppedTier = ""
+	}
+	return notes
 }
 
 // ensureOpen delta 到达未开启的 index 时先补 block_start。
@@ -201,6 +223,7 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 		StopReason:   MapStopReason(r.StopReason),
 		StopSequence: r.StopSequence,
 		Usage:        convUsage(r.Usage),
+		ServiceTier:  r.ServiceTier,
 	}, nil
 }
 
@@ -219,6 +242,10 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 			CacheReadInputTokens:     resp.Usage.CacheReadTokens,
 			CacheCreationInputTokens: resp.Usage.CacheCreationTokens,
 		},
+	}
+	// 值集装不下的回显（OpenAI 的 flex/fast 等）丢弃，由 ResponseNotes 报出。
+	if tier, ok := proto.MapServiceTierEcho(resp.ServiceTier, Name); ok {
+		out.ServiceTier = tier
 	}
 	return json.Marshal(out)
 }

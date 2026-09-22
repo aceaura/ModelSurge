@@ -208,6 +208,8 @@ type response struct {
 	Model   string   `json:"model"`
 	Choices []choice `json:"choices"`
 	Usage   *usage   `json:"usage,omitempty"`
+	// ServiceTier 实际服务档位回显（auto/default/flex/scale/priority/fast）。
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 type choice struct {

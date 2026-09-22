@@ -942,7 +942,7 @@ func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, resp *
 // EventsFromResponse 把完整响应合成为一次性 IR 事件序列
 // （用于"上游返回非流式 JSON 而客户端要 SSE"的兜底路径）。
 func EventsFromResponse(resp *ir.Response) []ir.Event {
-	events := []ir.Event{{Type: ir.EvMessageStart, MessageID: resp.ID, Model: resp.Model}}
+	events := []ir.Event{{Type: ir.EvMessageStart, MessageID: resp.ID, Model: resp.Model, ServiceTier: resp.ServiceTier}}
 	for i, b := range resp.Content {
 		blk := b
 		if blk.Type == ir.BlockToolUse && blk.ToolUse != nil {

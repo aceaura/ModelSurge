@@ -28,6 +28,9 @@ type streamEncoder struct {
 
 	stopReason ir.StopReason
 	usage      *ir.Usage
+	// tier 已映射待回显的档位（response.created 与终止帧都携带）。
+	tier        string
+	droppedTier string
 	// droppedSigs 被门控的外族/合成签名数，Notes() 收尾时报出。
 	droppedSigs int
 	completed   bool
@@ -61,8 +64,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Model != "" {
 			e.model = ev.Model
 		}
+		e.mapTier(ev.ServiceTier)
 		return [][]byte{e.frame(streamEvent{Type: "response.created", Response: &responseObj{
 			ID: e.id, Object: "response", CreatedAt: e.created, Model: e.model, Status: "in_progress",
+			ServiceTier: e.tier,
 		}})}, nil
 	case ir.EvBlockStart:
 		return e.blockStart(ev)
@@ -131,6 +136,8 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvMessageDelta:
 		e.stopReason = ev.StopReason
 		e.usage = ev.Usage
+		// 晚到的档位回显还补得上：终止帧的 response 对象也带 service_tier。
+		e.mapTier(ev.ServiceTier)
 		return [][]byte{e.completedFrame()}, nil
 	case ir.EvMessageStop:
 		return nil, nil // response.completed 已是终止事件
@@ -232,6 +239,7 @@ func (e *streamEncoder) completedFrame() []byte {
 	obj := &responseObj{
 		ID: e.id, Object: "response", CreatedAt: e.created, Model: e.model,
 		Status: "completed", Output: e.fullOutput(), Usage: encodeUsage(e.usage),
+		ServiceTier: e.tier,
 	}
 	// 事件名也要跟着改。此前恒发 response.completed 只改 status 字段，而本仓的
 	// 解码器（与官方 SDK）是按事件名分支的，completed 分支不看 status——
@@ -272,14 +280,31 @@ func (e *streamEncoder) Finish() [][]byte {
 	return out
 }
 
-// Notes 排干损耗注记（被门控的外族/合成签名）。
+// Notes 排干损耗注记（被门控的外族/合成签名、越集丢弃的档位回显）。
 func (e *streamEncoder) Notes() []string {
-	if e.droppedSigs == 0 {
-		return nil
+	var notes []string
+	if e.droppedSigs > 0 {
+		notes = append(notes, proto.SigDropNote(e.droppedSigs, false))
+		e.droppedSigs = 0
 	}
-	n := proto.SigDropNote(e.droppedSigs, false)
-	e.droppedSigs = 0
-	return []string{n}
+	if e.droppedTier != "" {
+		notes = append(notes, proto.TierEchoDropNote(e.droppedTier))
+		e.droppedTier = ""
+	}
+	return notes
+}
+
+// mapTier 映射档位回显：值集装不下的（anthropic 的 batch 等）丢弃，
+// Notes() 报出。重复到达时先到先得，不覆盖不重复报。
+func (e *streamEncoder) mapTier(raw string) {
+	if raw == "" || e.tier != "" || e.droppedTier != "" {
+		return
+	}
+	if tier, ok := proto.MapServiceTierEcho(raw, Name); ok {
+		e.tier = tier
+	} else {
+		e.droppedTier = raw
+	}
 }
 
 func (e *streamEncoder) frame(ev streamEvent) []byte {
@@ -323,7 +348,7 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("openai-responses: decode response: %w", err)
 	}
-	out := &ir.Response{ID: r.ID, Model: r.Model}
+	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier}
 	// 复用请求解码的 item 逻辑：把 output items 当成一条对话的尾部
 	fake := &ir.Request{}
 	for _, it := range r.Output {
@@ -357,6 +382,10 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	out := responseObj{
 		ID: resp.ID, Object: "response", CreatedAt: time.Now().Unix(), Model: resp.Model,
 		Status: "completed", Output: items, Usage: encodeUsage(&resp.Usage),
+	}
+	// 值集装不下的回显（anthropic 的 batch）丢弃，由 ResponseNotes 报出。
+	if tier, ok := proto.MapServiceTierEcho(resp.ServiceTier, Name); ok {
+		out.ServiceTier = tier
 	}
 	// 风控拦截与输出超长在 Responses 里是同一个 status 的两个 reason；
 	// 只写 status 会让客户端把拦截当成超长，转而去加大 max_output_tokens。

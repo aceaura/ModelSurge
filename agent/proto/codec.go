@@ -198,6 +198,49 @@ func MapServiceTier(tier, protoName string) (string, bool) {
 	}
 }
 
+// MapServiceTierEcho 把上游回显的实际档位映射到目标协议的回显值集。
+// 回显语义是「实际用了哪档服务容量」，值集与请求侧偏好不同：
+// anthropic 回显 standard/priority/batch，chat 回显
+// auto/default/flex/scale/priority/fast，responses 另有 ultrafast。
+// 映射规则：
+//   - standard/standard_only（anthropic 方言）与 default（OpenAI 方言）
+//     互译，同为标准容量；
+//   - priority 三家都有，恒通；
+//   - batch 只有 anthropic 回显得出，OpenAI 两系值集 provably 没有；
+//   - auto/flex/scale/fast 去 anthropic 无等价；ultrafast 仅 responses 系；
+//   - gemini/kiro 没有回显槽位，恒 false。
+//
+// 返回 ok=false 表示越集（出站丢 + 注记，值是枚举非敏感，可带值报出）。
+func MapServiceTierEcho(tier, protoName string) (string, bool) {
+	switch tier {
+	case "standard", "standard_only":
+		tier = "default"
+	}
+	switch protoName {
+	case "anthropic":
+		switch tier {
+		case "default":
+			return "standard", true
+		case "priority", "batch":
+			return tier, true
+		}
+		return "", false
+	case "openai-chat":
+		switch tier {
+		case "auto", "default", "flex", "scale", "priority", "fast":
+			return tier, true
+		}
+		return "", false
+	case "openai-responses", "codex":
+		switch tier {
+		case "auto", "default", "flex", "scale", "priority", "fast", "ultrafast":
+			return tier, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
 // InboundCodec 客户端入口协议编解码器。
 // 它只负责客户端请求解码，以及把 IR 响应/错误渲染回客户端。
 type InboundCodec interface {
@@ -280,6 +323,13 @@ func SSENoteFrames(notes []string) [][]byte {
 	return out
 }
 
+// TierEchoDropNote 档位回显丢失注记：流式编码器（越集/无槽位/到得太晚）
+// 与非流式 ScanResponseLosses 共用同一措辞。
+func TierEchoDropNote(tier string) string {
+	return fmt.Sprintf(
+		"dropped service tier echo %q: this protocol's response has no equivalent tier value, the client cannot see which capacity tier actually served the request", tier)
+}
+
 // ScanResponseLosses 响应侧损耗扫描：编码给客户端前预判会丢什么。
 // sigSlotless=协议没有签名槽位（chat，签名全丢）；否则只丢外族签名。
 // objArgs=工具参数是对象槽位（anthropic/gemini/kiro），非法参数会被挪进
@@ -315,6 +365,13 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	}
 	if badArgs > 0 {
 		notes = append(notes, ir.RewrapNote(badArgs))
+	}
+	// 服务档位回显：目标协议值集装不下（或根本没有回显槽位）时，客户端
+	// 看不到实际用了哪档容量——计费与延迟预期都对不上。
+	if resp.ServiceTier != "" {
+		if _, ok := MapServiceTierEcho(resp.ServiceTier, protoName); !ok {
+			notes = append(notes, TierEchoDropNote(resp.ServiceTier))
+		}
 	}
 	return notes
 }

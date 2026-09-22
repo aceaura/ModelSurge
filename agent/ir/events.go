@@ -21,15 +21,19 @@ const (
 
 // Event 一个流式事件。Index 为内容块序号（block 级事件有效）。
 type Event struct {
-	Type             EventType
-	Index            int
-	Block            *Block     // EvBlockStart
-	Text             string     // 各 delta
-	StopReason       StopReason // EvMessageDelta
-	StopSequence     string     // EvMessageDelta，StopSequence 档命中的那条序列原文
-	Usage            *Usage     // EvMessageStart / EvMessageDelta
-	MessageID        string     // EvMessageStart
-	Model            string     // EvMessageStart
+	Type         EventType
+	Index        int
+	Block        *Block     // EvBlockStart
+	Text         string     // 各 delta
+	StopReason   StopReason // EvMessageDelta
+	StopSequence string     // EvMessageDelta，StopSequence 档命中的那条序列原文
+	Usage        *Usage     // EvMessageStart / EvMessageDelta
+	MessageID    string     // EvMessageStart
+	Model        string     // EvMessageStart
+	// ServiceTier 上游回显的实际服务档位（EvMessageStart 携带；chat chunk
+	// 可能到得比首帧晚，EvMessageDelta 上也收）。保留原值不规整：跨族映射
+	// 在出站编码按目标协议回显值集进行（proto.MapServiceTierEcho）。
+	ServiceTier      string
 	Err              *Error     // EvError
 	Citations        []Citation // EvCitation
 	TruncatedTools   []TruncatedTool

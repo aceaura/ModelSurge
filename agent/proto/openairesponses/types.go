@@ -12,24 +12,24 @@ type request struct {
 	Model string `json:"model"`
 	// instructions 无 omitempty：订阅端点（Codex 形态）要求字段存在，
 	// 无 system 时输出空串（官方 API 同样接受）。
-	Instructions       string          `json:"instructions"`
-	Input              json.RawMessage `json:"input,omitempty"` // string 或 []inputItem（官方两种形态均支持）
-	MaxOutputTokens    int             `json:"max_output_tokens,omitempty"`
-	Temperature        *float64        `json:"temperature,omitempty"`
-	TopP               *float64        `json:"top_p,omitempty"`
-	Stream             bool            `json:"stream,omitempty"`
-	Store              *bool           `json:"store,omitempty"`
-	Tools              []tool          `json:"tools,omitempty"`
-	ToolChoice         any             `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool           `json:"parallel_tool_calls,omitempty"`
-	Reasoning          *reasoning      `json:"reasoning,omitempty"`
-	Include            []string        `json:"include,omitempty"`
-	Text               *textConfig     `json:"text,omitempty"`
-	Metadata           json.RawMessage `json:"metadata,omitempty"`
+	Instructions      string          `json:"instructions"`
+	Input             json.RawMessage `json:"input,omitempty"` // string 或 []inputItem（官方两种形态均支持）
+	MaxOutputTokens   int             `json:"max_output_tokens,omitempty"`
+	Temperature       *float64        `json:"temperature,omitempty"`
+	TopP              *float64        `json:"top_p,omitempty"`
+	Stream            bool            `json:"stream,omitempty"`
+	Store             *bool           `json:"store,omitempty"`
+	Tools             []tool          `json:"tools,omitempty"`
+	ToolChoice        any             `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	Reasoning         *reasoning      `json:"reasoning,omitempty"`
+	Include           []string        `json:"include,omitempty"`
+	Text              *textConfig     `json:"text,omitempty"`
+	Metadata          json.RawMessage `json:"metadata,omitempty"`
 	// User 终端用户标识（滥用追踪/计费归属）。与 anthropic 的 metadata.user_id
 	// 同一维度，IR 里统一放 Metadata["user_id"]。
-	User               string          `json:"user,omitempty"`
-	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	User               string `json:"user,omitempty"`
+	PreviousResponseID string `json:"previous_response_id,omitempty"`
 	// Conversation 会话对象锚点（与 previous_response_id 互斥）。官方两种
 	// 形态：字符串 id 或 {id} 对象，按原文收下，解码时归一成 id。
 	Conversation json.RawMessage `json:"conversation,omitempty"`
@@ -178,6 +178,8 @@ type responseObj struct {
 	Usage             *usage             `json:"usage,omitempty"`
 	Error             *errorBody         `json:"error,omitempty"`
 	IncompleteDetails *incompleteDetails `json:"incomplete_details,omitempty"`
+	// ServiceTier 实际服务档位回显（chat 值集 + ultrafast）。
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 // incompleteDetails status=incomplete 时的具体原因：

@@ -15,11 +15,13 @@ import (
 // server_tool_use / web_search_tool_result 块无 OpenAI 对应形态，
 // 跳过（内容经其后的摘要文本块送达）。
 type streamEncoder struct {
-	id, model  string
-	created    int64
-	toolIdx    map[int]int  // block index -> dense tool index
-	skipIdx    map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
-	refusalIdx map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
+	id, model   string
+	created     int64
+	tier        string // 已映射待回显的档位（chunk 逐帧携带）
+	droppedTier string
+	toolIdx     map[int]int  // block index -> dense tool index
+	skipIdx     map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
+	refusalIdx  map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
 	// text 各块已下发的正文，供 annotations 反推 cited_text 与字符索引。
 	text     map[int]string
 	nextTool int
@@ -42,6 +44,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Model != "" {
 			e.model = ev.Model
 		}
+		e.mapTier(ev.ServiceTier)
 		return [][]byte{e.chunk(&message{Role: "assistant"}, "")}, nil
 	case ir.EvBlockStart:
 		if ev.Block != nil && ev.Block.Type == ir.BlockToolUse && ev.Block.ToolUse != nil {
@@ -98,6 +101,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvBlockStop:
 		return nil, nil // OpenAI 无块结束帧
 	case ir.EvMessageDelta:
+		// 晚到的档位回显（EvMessageStart 之后才解码出来）在 chat 还补得上：
+		// 后续 chunk 都带 service_tier。
+		e.mapTier(ev.ServiceTier)
 		var frames [][]byte
 		frames = append(frames, e.chunk(&message{}, UnmapFinishReason(ev.StopReason)))
 		if ev.Usage != nil {
@@ -129,34 +135,53 @@ func (e *streamEncoder) Finish() [][]byte {
 	}
 }
 
-// Notes 排干损耗注记（Chat 无签名槽位，签名增量全丢）。
+// Notes 排干损耗注记（Chat 无签名槽位，签名增量全丢；越集档位回显丢弃）。
 func (e *streamEncoder) Notes() []string {
-	if e.droppedSigs == 0 {
-		return nil
+	var notes []string
+	if e.droppedSigs > 0 {
+		notes = append(notes, proto.SigDropNote(e.droppedSigs, true))
+		e.droppedSigs = 0
 	}
-	n := proto.SigDropNote(e.droppedSigs, true)
-	e.droppedSigs = 0
-	return []string{n}
+	if e.droppedTier != "" {
+		notes = append(notes, proto.TierEchoDropNote(e.droppedTier))
+		e.droppedTier = ""
+	}
+	return notes
+}
+
+// mapTier 映射档位回显：值集装不下的（anthropic 的 batch、responses 的
+// ultrafast 等）丢弃，Notes() 报出。重复到达时先到先得，不覆盖不重复报。
+func (e *streamEncoder) mapTier(raw string) {
+	if raw == "" || e.tier != "" || e.droppedTier != "" {
+		return
+	}
+	if tier, ok := proto.MapServiceTierEcho(raw, Name); ok {
+		e.tier = tier
+	} else {
+		e.droppedTier = raw
+	}
 }
 
 func (e *streamEncoder) chunk(delta *message, finishReason string) []byte {
 	return []byte("data: " + string(marshal(response{
-		ID:      e.id,
-		Object:  "chat.completion.chunk",
-		Created: e.created,
-		Model:   e.model,
-		Choices: []choice{{Index: 0, Delta: delta, FinishReason: finishReason}},
+		ID:          e.id,
+		Object:      "chat.completion.chunk",
+		Created:     e.created,
+		Model:       e.model,
+		Choices:     []choice{{Index: 0, Delta: delta, FinishReason: finishReason}},
+		ServiceTier: e.tier,
 	})) + "\n\n")
 }
 
 func (e *streamEncoder) usageChunk(u *ir.Usage) []byte {
 	return []byte("data: " + string(marshal(response{
-		ID:      e.id,
-		Object:  "chat.completion.chunk",
-		Created: e.created,
-		Model:   e.model,
-		Choices: []choice{},
-		Usage:   encodeUsage(u),
+		ID:          e.id,
+		Object:      "chat.completion.chunk",
+		Created:     e.created,
+		Model:       e.model,
+		Choices:     []choice{},
+		Usage:       encodeUsage(u),
+		ServiceTier: e.tier,
 	})) + "\n\n")
 }
 
@@ -186,7 +211,7 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("openai-chat: decode response: %w", err)
 	}
-	out := &ir.Response{ID: r.ID, Model: r.Model}
+	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier}
 	if len(r.Choices) > 0 && r.Choices[0].Message != nil {
 		m := r.Choices[0].Message
 		if m.ReasoningContent != "" {
@@ -245,14 +270,20 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		msg.Content = json.RawMessage(marshalString(text))
 	}
 	msg.Annotations = encodeAnnotations(text, cites)
-	return json.Marshal(response{
+	out := response{
 		ID:      resp.ID,
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   resp.Model,
 		Choices: []choice{{Index: 0, Message: msg, FinishReason: UnmapFinishReason(resp.StopReason)}},
 		Usage:   encodeUsage(&resp.Usage),
-	})
+	}
+	// 值集装不下的回显（anthropic 的 batch、responses 的 ultrafast）丢弃，
+	// 由 ResponseNotes 报出。
+	if tier, ok := proto.MapServiceTierEcho(resp.ServiceTier, Name); ok {
+		out.ServiceTier = tier
+	}
+	return json.Marshal(out)
 }
 
 // ResponseNotes 非流式编码损耗扫描：Chat 无签名槽位（签名全丢），

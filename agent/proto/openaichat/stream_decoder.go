@@ -17,6 +17,9 @@ import (
 type streamDecoder struct {
 	id, model string
 	started   bool
+	// tier 档位回显：chunk 都可能携带，首帧没带上时后续帧补上，
+	// 随 Finish 的 message_delta 事件交付。
+	tier string
 
 	nextBlock  int
 	textIdx    int
@@ -59,9 +62,12 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	if chunk.Model != "" {
 		d.model = chunk.Model
 	}
+	if chunk.ServiceTier != "" {
+		d.tier = chunk.ServiceTier
+	}
 	if !d.started {
 		d.started = true
-		out = append(out, ir.Event{Type: ir.EvMessageStart, MessageID: d.id, Model: d.model})
+		out = append(out, ir.Event{Type: ir.EvMessageStart, MessageID: d.id, Model: d.model, ServiceTier: d.tier})
 	}
 	if chunk.Usage != nil {
 		d.usage.MergeNonZero(decodeUsage(chunk.Usage))
@@ -217,7 +223,7 @@ func (d *streamDecoder) Finish() []ir.Event {
 		stop = MapFinishReason(d.finishReason)
 	}
 	out = append(out,
-		ir.Event{Type: ir.EvMessageDelta, StopReason: stop, Usage: &u},
+		ir.Event{Type: ir.EvMessageDelta, StopReason: stop, Usage: &u, ServiceTier: d.tier},
 		ir.Event{Type: ir.EvMessageStop},
 	)
 	return out

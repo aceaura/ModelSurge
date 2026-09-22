@@ -159,6 +159,8 @@ type eventMessage struct {
 	ID    string `json:"id"`
 	Model string `json:"model"`
 	Usage *usage `json:"usage,omitempty"`
+	// ServiceTier 实际服务档位回显（standard/priority/batch）。
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 type delta struct {
@@ -197,6 +199,7 @@ type response struct {
 	StopReason   string  `json:"stop_reason"`
 	StopSequence string  `json:"stop_sequence,omitempty"`
 	Usage        usage   `json:"usage"`
+	ServiceTier  string  `json:"service_tier,omitempty"`
 }
 
 // errorResponse 是 Anthropic 错误外形：{"type":"error","error":{...}}。

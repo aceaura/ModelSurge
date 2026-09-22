@@ -75,6 +75,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		if se.Message != nil {
 			ev.MessageID = se.Message.ID
 			ev.Model = se.Message.Model
+			ev.ServiceTier = se.Message.ServiceTier
 			if se.Message.Usage != nil {
 				u := convUsage(*se.Message.Usage)
 				d.usage.MergeNonZero(u)

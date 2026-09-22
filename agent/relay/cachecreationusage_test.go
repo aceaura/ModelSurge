@@ -33,7 +33,10 @@ func TestAnthropicStartOnlyUsageReachesClientAndReport(t *testing.T) {
 	f := NewForwarder(&config.Config{}, replay, nil)
 	w := httptest.NewRecorder()
 	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
-		Model: "public", MaxTokens: 64, Stream: true,
+		// IncludeUsage 客户端 opt-in（stream_options.include_usage）：本测试考的是
+		// usage 同时抵达客户端与记账上报，所以走 opt-in 那条路。未 opt-in 时
+		// 客户端不该看到 usage 帧、但记账仍要有数——见 streamusagefidelity_test.go。
+		Model: "public", MaxTokens: 64, Stream: true, IncludeUsage: true,
 		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
 	}, "client-key")
 

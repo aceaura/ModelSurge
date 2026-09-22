@@ -36,7 +36,12 @@ type streamEncoder struct {
 	text     map[int]string
 	nextTool int
 	// droppedSigs 丢弃的签名增量数：Chat 没有签名槽位，全丢，Notes() 报出。
-	droppedSigs         int
+	droppedSigs int
+	// includeUsage 客户端是否显式要流末那个只带 usage 的帧
+	// （stream_options.include_usage）。默认不发：OpenAI 契约里该帧只在客户端
+	// opt-in 时出现，它的 choices 是空数组，没要的客户端按 choices[0] 取增量
+	// 会越界。上游方向恒注入 include_usage（Agent 记账要用），两者刻意解耦。
+	includeUsage        bool
 	usage               ir.Usage
 	hasUsage            bool
 	droppedCacheDetails bool
@@ -47,6 +52,10 @@ func (codec) NewStreamEncoder() proto.StreamEncoder {
 	return &streamEncoder{created: time.Now().Unix(), toolIdx: map[int]int{}, toolArgs: map[int][]byte{}, toolKind: map[int]ir.ToolKind{},
 		skipIdx: map[int]bool{}, refusalIdx: map[int]bool{}, text: map[int]string{}}
 }
+
+// SetIncludeUsage 下发客户端的 usage 帧意图。实现 proto.UsageOptIn，由
+// proto.NewClientStreamEncoder 在建好编码器后调用。
+func (e *streamEncoder) SetIncludeUsage(v bool) { e.includeUsage = v }
 
 func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	switch ev.Type {
@@ -142,7 +151,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.mergeUsage(ev.Usage)
 		var frames [][]byte
 		frames = append(frames, e.chunk(&message{}, UnmapFinishReason(ev.StopReason)))
-		if e.hasUsage {
+		if e.hasUsage && e.includeUsage {
 			frames = append(frames, e.usageChunk(&e.usage))
 		}
 		return frames, nil
@@ -210,7 +219,10 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.CustomToolDowngradeNote(e.customTools))
 		e.customTools = 0
 	}
-	if e.droppedCacheDetails {
+	// 客户端没 opt-in 时 usage 帧压根没发，也就无所谓「TTL 明细被丢」：注记
+	// 描述的是实际没能交付的东西，不是协议的静态能力差。照报会让没要 usage 的
+	// 客户端读到一条关于自己从未请求的载荷的损耗说明。
+	if e.droppedCacheDetails && e.includeUsage {
 		notes = append(notes, proto.CacheCreationDetailsDropNote())
 		e.droppedCacheDetails = false
 	}

@@ -125,7 +125,7 @@ func (f *Forwarder) streamKiroToClient(ctx context.Context, w http.ResponseWrite
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
-	encoder := clientCodec.NewStreamEncoder()
+	encoder := proto.NewClientStreamEncoder(clientCodec, req)
 	var output strings.Builder
 	var startUsage ir.Usage
 	var eventCount int
@@ -235,7 +235,7 @@ func (f *Forwarder) collectKiroToClient(ctx context.Context, w http.ResponseWrit
 	upstreamSummary.log()
 	clientSummary := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), false, requestLogFrom(ctx).started)
 	clientSummary.fill(response)
-	writeResponse(w, clientCodec, response, false, aggNotes, clientSummary)
+	writeResponse(w, clientCodec, req, response, false, aggNotes, clientSummary)
 	clientSummary.log()
 	return true, nil
 }
@@ -318,7 +318,7 @@ func (f *Forwarder) attemptKiroStrict(ctx context.Context, w http.ResponseWriter
 		clientSummary := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), req.Stream, requestLogFrom(ctx).started)
 		clientSummary.fill(response)
 		writeLossyNotes(w, cand.name, notes)
-		writeResponse(w, clientCodec, response, req.Stream, aggNotes, clientSummary)
+		writeResponse(w, clientCodec, req, response, req.Stream, aggNotes, clientSummary)
 		clientSummary.log()
 		return true, nil
 	}

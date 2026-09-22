@@ -446,6 +446,12 @@ type Request struct {
 	StopSequences []string
 	Stream        bool
 	Thinking      *ThinkingConfig
+	// IncludeUsage 客户端显式要求流式末尾补一个只带 usage 的帧（Chat 的
+	// stream_options.include_usage）。这里用两态而非像下面的调参维度那样用指针：
+	// OpenAI 契约里「没提」与「显式 false」行为完全相同（都不发该帧），三态区分
+	// 不出任何可观测差异。只有 Chat 一族有这个开关，Anthropic/Gemini/Responses
+	// 的 usage 是协议内建、无条件回传。
+	IncludeUsage bool
 	// ResponseFormat 结构化输出约束（JSON 模式 / JSON Schema）。
 	// nil = 客户端没要求，自由文本。
 	ResponseFormat *ResponseFormat

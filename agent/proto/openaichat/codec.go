@@ -105,6 +105,12 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		out.MaxTokens = req.MaxTokens
 	}
 	out.StopSequences = decodeStop(req.Stop)
+	// stream_options.include_usage 决定流末那个只带 usage 的帧发不发。不解析就
+	// 等于替客户端表态「要」：该帧的 choices 是空数组，没要的客户端按
+	// choices[0] 取增量会越界。
+	if req.StreamOptions != nil {
+		out.IncludeUsage = req.StreamOptions.IncludeUsage
+	}
 	for _, m := range req.Messages {
 		decodeMessage(out, m)
 	}
@@ -417,6 +423,10 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.Stop = r.StopSequences
 	}
 	if r.Stream {
+		// 恒注入，刻意不跟随 r.IncludeUsage：Agent 记账（ResultReport 的 usage）
+		// 依赖上游回报用量，客户端要不要看是另一回事，由客户端侧编码器决定
+		// （见 stream_encoder.go 的 includeUsage）。把这里改成跟随客户端意图会
+		// 让没 opt-in 的请求丢掉记账数据。
 		out.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
 	if sys := joinSystem(r.System); sys != "" {

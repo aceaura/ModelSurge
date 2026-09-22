@@ -32,7 +32,7 @@ func r55LossyResp() *ir.Response {
 func TestWriteResponseNotesIntoHeader(t *testing.T) {
 	w := httptest.NewRecorder()
 	w.Header().Set("X-ModelSurge-Notes", "request-side note")
-	writeResponse(w, proto.MustInbound("anthropic"), r55LossyResp(), false, nil)
+	writeResponse(w, proto.MustInbound("anthropic"), nil, r55LossyResp(), false, nil)
 	h := w.Header().Get("X-ModelSurge-Notes")
 	if !strings.Contains(h, "request-side note") {
 		t.Errorf("请求侧注记被覆盖：%q", h)
@@ -50,7 +50,7 @@ func TestWriteResponseMergesAggregatorNotes(t *testing.T) {
 	w := httptest.NewRecorder()
 	resp := &ir.Response{ID: "m1", Model: "m", StopReason: ir.StopEndTurn,
 		Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}
-	writeResponse(w, proto.MustInbound("anthropic"), resp, false,
+	writeResponse(w, proto.MustInbound("anthropic"), nil, resp, false,
 		[]string{ir.RewrapNote(1)})
 	h := w.Header().Get("X-ModelSurge-Notes")
 	if !strings.Contains(h, "rewrapped 1 malformed tool call argument(s)") {
@@ -63,7 +63,7 @@ func TestWriteResponseCleanHasNoNotesHeader(t *testing.T) {
 	w := httptest.NewRecorder()
 	resp := &ir.Response{ID: "m1", Model: "m", StopReason: ir.StopEndTurn,
 		Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}
-	writeResponse(w, proto.MustInbound("anthropic"), resp, false, nil)
+	writeResponse(w, proto.MustInbound("anthropic"), nil, resp, false, nil)
 	if h := w.Header().Get("X-ModelSurge-Notes"); h != "" {
 		t.Errorf("干净响应不应有注记头：%q", h)
 	}
@@ -73,7 +73,7 @@ func TestWriteResponseCleanHasNoNotesHeader(t *testing.T) {
 // 必须以 SSE 注释帧出现在流尾。
 func TestWriteResponseStreamEmitsNoteFrames(t *testing.T) {
 	w := httptest.NewRecorder()
-	writeResponse(w, proto.MustInbound("anthropic"), r55LossyResp(), true,
+	writeResponse(w, proto.MustInbound("anthropic"), nil, r55LossyResp(), true,
 		[]string{ir.RewrapNote(1)})
 	body := w.Body.String()
 	if !strings.Contains(body, ": modelsurge-note: dropped 1 thought signature(s)") {
@@ -164,7 +164,7 @@ func TestAggregatorNotesShapeMatchesDelivery(t *testing.T) {
 		t.Fatalf("Finish err=%v", err)
 	}
 	w := httptest.NewRecorder()
-	writeResponse(w, proto.MustInbound("openai-chat"), resp, false, agg.Notes())
+	writeResponse(w, proto.MustInbound("openai-chat"), nil, resp, false, agg.Notes())
 	h := w.Header().Get("X-ModelSurge-Notes")
 	if !strings.Contains(h, "rewrapped 1 malformed tool call argument(s)") {
 		t.Errorf("聚合器注记未随响应头送出：%q", h)

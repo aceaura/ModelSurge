@@ -560,7 +560,7 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 		sum.log()
 		csum := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), req.Stream, requestLogFrom(ctx).started)
 		csum.fill(irResp)
-		writeResponse(w, clientCodec, irResp, req.Stream, respNotes, csum)
+		writeResponse(w, clientCodec, req, irResp, req.Stream, respNotes, csum)
 		csum.log()
 		return true, nil
 	}
@@ -661,7 +661,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	w.WriteHeader(200)
 	flush, _ := w.(http.Flusher)
 
-	enc := clientCodec.NewStreamEncoder()
+	enc := proto.NewClientStreamEncoder(clientCodec, req)
 	var outText strings.Builder
 	var startUsage ir.Usage // message_start 携带的 input/cache 用量，记账时与 delta 合并
 	sum := newRespSummarizer(f.paramLog, requestIDFrom(ctx), cand.name, "sse", requestLogFrom(ctx).started)
@@ -772,7 +772,7 @@ func (f *Forwarder) collectUpstreamToClient(ctx context.Context, cancel context.
 	sum.log()
 	csum := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), false, requestLogFrom(ctx).started)
 	csum.fill(resp)
-	writeResponse(w, clientCodec, resp, false, aggNotes, csum)
+	writeResponse(w, clientCodec, req, resp, false, aggNotes, csum)
 	csum.log()
 	return true, nil
 }
@@ -904,7 +904,9 @@ func (f *Forwarder) estimateUsageOnEvent(req *ir.Request, outText *strings.Build
 // writeResponse 非流式输出；clientStream 为 true 时（上游返回了非 SSE 的兜底响应
 // 而客户端要流式）把完整响应合成为一次性事件流。respNotes 是聚合阶段已记下
 // 的响应侧损耗（聚合器把畸形参数挪键发生在编码之前，扫响应体已看不出来）。
-func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, resp *ir.Response, clientStream bool, respNotes []string, summary ...*clientSummarizer) {
+// req 只在 clientStream 那条路上用到：合成事件流时客户端的呈现意图（要不要
+// usage 帧）得跟着走，非流式路径可以为 nil。
+func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, req *ir.Request, resp *ir.Response, clientStream bool, respNotes []string, summary ...*clientSummarizer) {
 	var clientSummary *clientSummarizer
 	if len(summary) > 0 {
 		clientSummary = summary[0]
@@ -930,7 +932,7 @@ func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, resp *
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(200)
-	enc := clientCodec.NewStreamEncoder()
+	enc := proto.NewClientStreamEncoder(clientCodec, req)
 	for _, ev := range EventsFromResponse(resp) {
 		frames, err := enc.Encode(ev)
 		if err != nil {

@@ -317,6 +317,26 @@ type StreamEncoder interface {
 	Notes() []string
 }
 
+// UsageOptIn 是流编码器的可选缝：客户端能显式选择要不要流式 usage 帧的协议
+// （目前只有 Chat 的 stream_options.include_usage；其余三族的 usage 是协议
+// 内建、无条件回传）。做成可选接口而不是给 NewStreamEncoder 加参数：五族里
+// 只有一族需要这个请求侧意图，改签名会让其余四族与装饰器都多带一个恒忽略
+// 的参数，六十来处编码器构造点也要跟着动。
+type UsageOptIn interface {
+	SetIncludeUsage(bool)
+}
+
+// NewClientStreamEncoder 建客户端流编码器，并把请求侧的呈现意图下发给支持的
+// 协议。客户端流式写出有三个出口（普通流、聚合转流、kiro 流），一律走这里，
+// 免得像思考抑制那样逐处判断会漏。req 为 nil 时按各协议的默认意图。
+func NewClientStreamEncoder(c InboundCodec, req *ir.Request) StreamEncoder {
+	enc := c.NewStreamEncoder()
+	if o, ok := enc.(UsageOptIn); ok && req != nil {
+		o.SetIncludeUsage(req.IncludeUsage)
+	}
+	return enc
+}
+
 // SSENoteFrames 把响应侧损耗注记渲染为 SSE 注释帧（": " 前缀行）。
 // 四个入站协议都是 SSE；注释帧客户端会忽略，但抓包与日志可见——
 // 流式方向注记没有别的诚实通道（头已发，事件 schema 里没有注记位）。

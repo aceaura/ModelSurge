@@ -200,7 +200,9 @@ func cacheCreationResponse() *ir.Response {
 
 func streamOutputAndNotes(t *testing.T, name string, events []ir.Event) (string, []string) {
 	t.Helper()
-	enc := proto.MustInbound(name).NewStreamEncoder()
+	// 本文件的测试考的是 usage 的合并与渲染，一律按客户端 opt-in 建编码器：
+	// Chat 的 usage 帧只在 stream_options.include_usage 时才出现。
+	enc := proto.NewClientStreamEncoder(proto.MustInbound(name), &ir.Request{IncludeUsage: true})
 	var out strings.Builder
 	for _, ev := range events {
 		frames, err := enc.Encode(ev)

@@ -82,6 +82,15 @@ func (e *hideThoughtsEncoder) Encode(ev ir.Event) ([][]byte, error) {
 
 func (e *hideThoughtsEncoder) Finish() [][]byte { return e.inner.Finish() }
 
+// SetIncludeUsage 转发给内层。proto.NewClientStreamEncoder 只对最外层编码器做
+// 类型断言，装饰器不转发的话，隐藏思考 + Chat 客户端 opt-in usage 同时出现时
+// 那个 usage 帧会静默消失。
+func (e *hideThoughtsEncoder) SetIncludeUsage(v bool) {
+	if o, ok := e.inner.(proto.UsageOptIn); ok {
+		o.SetIncludeUsage(v)
+	}
+}
+
 // Notes 自己的抑制注记在前，内层编码器的损耗注记在后。
 func (e *hideThoughtsEncoder) Notes() []string {
 	var notes []string

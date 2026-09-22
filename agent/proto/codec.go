@@ -151,6 +151,11 @@ type Capabilities struct {
 	// 一个都没有。safety_identifier 不归此位——它与 user 同维度，
 	// 归 UserID 位。
 	OpenAIExtras bool
+
+	// ToolStrict 工具定义有 strict 槽位（schema 严格校验保证）：
+	// anthropic tool.strict、OpenAI 两系 function.strict。三族都有；
+	// kiro 的工具定义没有这一维。
+	ToolStrict bool
 }
 
 // MapServiceTier 把 service_tier 原值映射到目标协议值集。

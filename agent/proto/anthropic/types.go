@@ -119,6 +119,8 @@ type tool struct {
 	Type        string          `json:"type,omitempty"` // 服务端托管工具，如 "web_search_20250305"
 	// CacheCtl 工具定义上的缓存断点（官方 Tool.cache_control）。
 	CacheCtl *cacheControl `json:"cache_control,omitempty"`
+	// Strict 保证工具名与入参的 schema 校验（官方 Tool.strict）。
+	Strict *bool `json:"strict,omitempty"`
 }
 
 type toolChoice struct {

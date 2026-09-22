@@ -245,6 +245,10 @@ type Tool struct {
 	// 其余协议的工具定义没有这一维。
 	CacheCtl string
 	CacheTTL string
+	// Strict 工具入参 schema 严格校验开关（anthropic tool.strict、OpenAI 两系
+	// function.strict）。三态指针：nil=没给（上游默认），显式 false 是「明确
+	// 不要严格校验」，与没给语义不同。kiro 没有这一维。
+	Strict *bool
 }
 
 // ChoiceMode 工具选择模式。

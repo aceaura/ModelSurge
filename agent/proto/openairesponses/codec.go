@@ -45,6 +45,7 @@ func (codec) Caps() proto.Capabilities {
 		// service_tier（值集含 ultrafast）与 prompt_cache_key。
 		ServiceTier: true, PromptCacheKey: true,
 		OpenAIExtras: true,
+		ToolStrict:   true,
 	}
 }
 
@@ -92,7 +93,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			out.Tools = append(out.Tools, ir.Tool{Hosted: ir.CanonicalHosted(t.Type)})
 			continue
 		}
-		out.Tools = append(out.Tools, ir.Tool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters})
+		out.Tools = append(out.Tools, ir.Tool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters, Strict: t.Strict})
 	}
 	out.ToolChoice = decodeToolChoice(req.ToolChoice)
 	// 同 Chat：parallel_tool_calls=false 是「禁止并行」。没给则不表态。
@@ -376,7 +377,7 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			out.Tools = append(out.Tools, tool{Type: nativeHosted(t.Hosted)})
 			continue
 		}
-		out.Tools = append(out.Tools, tool{Type: "function", Name: t.Name, Description: t.Description, Parameters: t.InputSchema})
+		out.Tools = append(out.Tools, tool{Type: "function", Name: t.Name, Description: t.Description, Parameters: t.InputSchema, Strict: t.Strict})
 	}
 	out.ToolChoice = encodeToolChoice(r.ToolChoice)
 	// 只在客户端明确禁止并行时写出。默认值由上游决定，替它写 true 是发明意图。

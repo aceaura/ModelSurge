@@ -40,6 +40,7 @@ func (codec) Caps() proto.Capabilities {
 		// service_tier 与 prompt_cache_key 都有原生槽位。
 		ServiceTier: true, PromptCacheKey: true,
 		OpenAIExtras: true,
+		ToolStrict:   true,
 	}
 }
 
@@ -112,6 +113,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
 			InputSchema: t.Function.Parameters,
+			Strict:      t.Function.Strict,
 		})
 	}
 	out.ToolChoice = decodeToolChoice(req.ToolChoice)
@@ -402,6 +404,7 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  t.InputSchema,
+			Strict:      t.Strict,
 		}})
 	}
 	out.ToolChoice = encodeToolChoice(r.ToolChoice)

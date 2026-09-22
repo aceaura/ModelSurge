@@ -399,5 +399,17 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 				"dropped %d cache breakpoint(s): the target protocol has no prompt-caching breakpoint parameter, cached prefixes may be reprocessed and billed", n))
 		}
 	}
+	if !caps.ToolStrict {
+		n := 0
+		for _, t := range req.Tools {
+			if t.Strict != nil {
+				n++
+			}
+		}
+		if n > 0 {
+			notes = append(notes, fmt.Sprintf(
+				"dropped strict flag on %d tool(s): the target protocol has no schema-strictness switch, tool call arguments are not guaranteed to validate against the schema", n))
+		}
+	}
 	return notes
 }

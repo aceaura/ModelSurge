@@ -226,7 +226,7 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 			// output_config.format 只有 json_schema 形态：结构化输出有槽位但纯 JSON 模式没有
 			StructuredOutput: true, StructuredOutputSchemaOnly: true,
 			Documents:        true, Audio: false, Video: false, Refusal: false, Citations: true,
-			ToolInputObject: true, UserID: true, ServiceTier: true},
+			ToolInputObject: true, UserID: true, ServiceTier: true, ToolStrict: true},
 		// 调参五位刻意不一致：Chat 全有，Responses 只有对数概率且没有独立开关
 		// （LogProbsViaTopN），anthropic 与 kiro 一个都没有。全真或全假都是漏洞。
 		"openai-chat": {ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
@@ -234,13 +234,13 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 			StructuredOutput: true,
 			Documents:        true, Audio: true, Video: false, Refusal: true, Citations: true,
 			Penalties: true, Seed: true, Candidates: true, LogProbs: true, LogitBias: true, UserID: true,
-			ServiceTier: true, PromptCacheKey: true, OpenAIExtras: true},
+			ServiceTier: true, PromptCacheKey: true, OpenAIExtras: true, ToolStrict: true},
 		"openai-responses": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
 			StructuredOutput: true,
 			Documents:        true, Audio: true, Video: false, Refusal: true, Citations: true,
 			LogProbs: true, LogProbsViaTopN: true, UserID: true, ResponseChain: true, ResponsesExtras: true,
-			ServiceTier: true, PromptCacheKey: true, OpenAIExtras: true},
+			ServiceTier: true, PromptCacheKey: true, OpenAIExtras: true, ToolStrict: true},
 		"kiro": {ThinkingSignature: false, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: false, Sampling: false, TopK: false, ParallelToolCalls: false, ToolResultError: true,
 			StructuredOutput: false,

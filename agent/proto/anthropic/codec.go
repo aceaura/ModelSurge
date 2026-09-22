@@ -38,6 +38,7 @@ func (codec) Caps() proto.Capabilities {
 		// service_tier（auto/standard_only）。没有 prompt_cache_key：
 		// 缓存走显式 cache_control 断点。
 		ServiceTier: true, PromptCacheKey: false,
+		ToolStrict: true,
 		Citations:        true, // text.citations
 		// tool_use.input 是 JSON 对象槽位。
 		ToolInputObject: true,
@@ -95,6 +96,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			Hosted:      hosted,
 			CacheCtl:    ctl,
 			CacheTTL:    ttl,
+			Strict:      t.Strict,
 		})
 	}
 	if tc := req.ToolChoice; tc != nil {
@@ -355,6 +357,7 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			Description: t.Description,
 			InputSchema: t.InputSchema,
 			CacheCtl:    encodeCacheCtl(t.CacheCtl, t.CacheTTL),
+			Strict:      t.Strict,
 		})
 	}
 	if tc := r.ToolChoice; tc != nil {

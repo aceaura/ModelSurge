@@ -524,7 +524,9 @@ func encodeMessages(m ir.Message) []message {
 			case ir.BlockToolUse:
 				if b.ToolUse != nil {
 					args := string(b.ToolUse.Input)
-					if args == "" {
+					if b.ToolUse.Kind == ir.ToolCustom {
+						args = string(b.ToolUse.ObjectInput())
+					} else if args == "" {
 						args = "{}"
 					}
 					msg.ToolCalls = append(msg.ToolCalls, toolCall{

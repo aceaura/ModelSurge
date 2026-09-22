@@ -89,17 +89,18 @@ type textFormat struct {
 	Schema json.RawMessage `json:"schema,omitempty"`
 }
 
-// inputItem 输入项：message / function_call / function_call_output / reasoning。
+// inputItem 输入项：message / function_call / custom_tool_call / 各自 output / reasoning。
 type inputItem struct {
 	Type string `json:"type"`
 	Role string `json:"role,omitempty"` // message
 	// message content：[]contentPart
 	Content json.RawMessage `json:"content,omitempty"`
-	// function_call
+	// function_call / custom_tool_call
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
-	// function_call_output
+	Input     string `json:"input,omitempty"`
+	// function_call_output / custom_tool_call_output
 	Output string `json:"output,omitempty"`
 	// reasoning
 	ID               string          `json:"id,omitempty"`
@@ -148,10 +149,11 @@ type summaryPart struct {
 // tool Responses 的 function 工具是扁平结构（与 Chat Completions 不同）；
 // 托管工具（web_search 等）只有 type，没有 name/parameters。
 type tool struct {
-	Type        string          `json:"type"` // "function" / "web_search" / "code_interpreter" ...
+	Type        string          `json:"type"` // "function" / "custom" / hosted types
 	Name        string          `json:"name,omitempty"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Format      json.RawMessage `json:"format,omitempty"`
 	// Strict 严格 schema 校验开关（官方 FunctionTool.strict）。
 	Strict *bool `json:"strict,omitempty"`
 }
@@ -173,6 +175,7 @@ type streamEvent struct {
 	Part         *contentPart `json:"part,omitempty"`      // content_part.added
 	Delta        string       `json:"delta,omitempty"`     // *.delta
 	Arguments    string       `json:"arguments,omitempty"` // function_call_arguments.done
+	Input        string       `json:"input,omitempty"`     // custom_tool_call_input.done
 	Response     *responseObj `json:"response,omitempty"`  // response.created / completed / incomplete / failed
 	// Annotation response.output_text.annotation.added 携带的单条引用。
 	// 该事件没有 delta 字段，正文与标注是两个独立事件。

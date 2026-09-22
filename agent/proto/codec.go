@@ -337,7 +337,7 @@ func TierEchoDropNote(tier string) string {
 // 与各 codec 的编码分支用同一判定（SignatureGenuineFor / NormalizeToolInput），
 // 扫描结果即实编结果。
 func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArgs bool) []string {
-	var sigs, badArgs int
+	var sigs, badArgs, customCalls int
 	uploads := 0
 	for _, b := range resp.Content {
 		switch b.Type {
@@ -348,7 +348,9 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 			}
 		case ir.BlockToolUse:
 			if b.ToolUse != nil {
-				if _, ok := ir.NormalizeToolInput(b.ToolUse.Input); !ok {
+				if b.ToolUse.Kind == ir.ToolCustom {
+					customCalls++
+				} else if _, ok := ir.NormalizeToolInput(b.ToolUse.Input); !ok {
 					badArgs++
 				}
 			}
@@ -372,6 +374,9 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 		} else {
 			notes = append(notes, ir.RawArgsPassNote(badArgs))
 		}
+	}
+	if customCalls > 0 && protoName != "openai-responses" && protoName != "codex" {
+		notes = append(notes, CustomToolDowngradeNote(customCalls))
 	}
 	// 服务档位回显：目标协议值集装不下（或根本没有回显槽位）时，客户端
 	// 看不到实际用了哪档容量——计费与延迟预期都对不上。
@@ -412,6 +417,11 @@ func ContainerUploadDropNote(n int) string {
 // message.audio；Chat SSE 与所有外族响应都没有等价槽位。
 func AudioOutputDropNote() string {
 	return "dropped model audio output: this response format has no complete-audio slot, the client cannot play the generated audio or recover its transcript and replay id"
+}
+
+func CustomToolDowngradeNote(n int) string {
+	return fmt.Sprintf(
+		"downgraded %d custom tool call(s) to function calls: this protocol has no free-form tool-input item, input is wrapped as {input:string}", n)
 }
 
 // SigDropNote 流式编码器的外族签名丢弃注记（计数由编码器在门控分支累计）。

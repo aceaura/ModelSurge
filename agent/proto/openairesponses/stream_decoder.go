@@ -67,13 +67,19 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		switch se.Item.Type {
 		case "message":
 			return []ir.Event{{Type: ir.EvBlockStart, Index: se.OutputIndex, Block: &ir.Block{Type: ir.BlockText}}}, nil
-		case "function_call":
+		case "function_call", "custom_tool_call":
 			d.sawToolCall = true
+			kind := ir.ToolFunction
+			full := se.Item.Arguments
+			if se.Item.Type == "custom_tool_call" {
+				kind = ir.ToolCustom
+				full = se.Item.Input
+			}
 			out := []ir.Event{{Type: ir.EvBlockStart, Index: se.OutputIndex, Block: &ir.Block{
 				Type:    ir.BlockToolUse,
-				ToolUse: &ir.ToolUse{ID: se.Item.CallID, Name: se.Item.Name},
+				ToolUse: &ir.ToolUse{ID: se.Item.CallID, Name: se.Item.Name, Kind: kind},
 			}}}
-			return append(out, d.completeToolArgs(se.OutputIndex, se.Item.Arguments)...), nil
+			return append(out, d.completeToolArgs(se.OutputIndex, full)...), nil
 		case "reasoning":
 			return []ir.Event{{Type: ir.EvBlockStart, Index: se.OutputIndex, Block: &ir.Block{
 				Type:     ir.BlockThinking,
@@ -119,7 +125,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return []ir.Event{{Type: ir.EvBlockStop, Index: d.refusalIndex(se.OutputIndex)}}, nil
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 		return []ir.Event{{Type: ir.EvThinkingDelta, Index: se.OutputIndex, Text: se.Delta}}, nil
-	case "response.function_call_arguments.delta":
+	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		if se.Delta == "" {
 			return nil, nil
 		}
@@ -127,10 +133,16 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return []ir.Event{{Type: ir.EvToolInput, Index: se.OutputIndex, Text: se.Delta}}, nil
 	case "response.function_call_arguments.done":
 		return d.completeToolArgs(se.OutputIndex, se.Arguments), nil
+	case "response.custom_tool_call_input.done":
+		return d.completeToolArgs(se.OutputIndex, se.Input), nil
 	case "response.output_item.done":
 		var out []ir.Event
-		if se.Item != nil && se.Item.Type == "function_call" {
-			out = append(out, d.completeToolArgs(se.OutputIndex, se.Item.Arguments)...)
+		if se.Item != nil && (se.Item.Type == "function_call" || se.Item.Type == "custom_tool_call") {
+			full := se.Item.Arguments
+			if se.Item.Type == "custom_tool_call" {
+				full = se.Item.Input
+			}
+			out = append(out, d.completeToolArgs(se.OutputIndex, full)...)
 			delete(d.toolArgs, se.OutputIndex)
 		}
 		// 关 thinking 块前先发 signature_delta（对齐 sub2api :688）

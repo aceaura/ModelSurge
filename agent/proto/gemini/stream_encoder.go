@@ -23,6 +23,7 @@ type streamEncoder struct {
 	// 两者由 Notes() 收尾时报出。
 	droppedSigs   int
 	rewrappedArgs int
+	customTools   int
 	// droppedTier 没送出去的档位回显原值：Gemini 响应没有该槽位，恒丢。
 	droppedTier string
 	// droppedContainer 容器回显（anthropic 专属维度）被丢标记：Gemini 响应
@@ -45,6 +46,7 @@ type encText struct {
 type encTool struct {
 	name string
 	id   string
+	kind ir.ToolKind
 	args []byte
 }
 
@@ -118,7 +120,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		return e.chunk([]part{{ThoughtSignature: ev.Text}}, ""), nil
 	case ir.EvBlockStart:
 		if ev.Block != nil && ev.Block.Type == ir.BlockToolUse && ev.Block.ToolUse != nil {
-			e.pendingTool[ev.Index] = &encTool{name: ev.Block.ToolUse.Name, id: ev.Block.ToolUse.ID}
+			e.pendingTool[ev.Index] = &encTool{name: ev.Block.ToolUse.Name, id: ev.Block.ToolUse.ID, kind: ev.Block.ToolUse.Kind}
+			if ev.Block.ToolUse.Kind == ir.ToolCustom {
+				e.customTools++
+			}
 		}
 		if ev.Block != nil && ev.Block.Type == ir.BlockContainerUpload {
 			// 容器文件引用无 Gemini part 形态：跳过但计数，Notes() 报出。
@@ -133,11 +138,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvBlockStop:
 		if t := e.pendingTool[ev.Index]; t != nil {
 			delete(e.pendingTool, ev.Index)
-			// 截断/非对象参数放进 RawMessage 槽位会让这个 chunk marshal
-			// 失败，整块 functionCall 丢失；原文挪进 RawArgsKey 保真。
-			args, ok := ir.NormalizeToolInput(t.args)
-			if !ok {
-				e.rewrappedArgs++
+			args := (&ir.ToolUse{Kind: t.kind, Input: t.args, InputText: string(t.args)}).ObjectInput()
+			if t.kind != ir.ToolCustom {
+				if _, ok := ir.NormalizeToolInput(t.args); !ok {
+					e.rewrappedArgs++
+				}
 			}
 			p := content{Role: "model", Parts: []part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}}
 			ensureThoughtSignature(&p)
@@ -191,9 +196,11 @@ func (e *streamEncoder) Finish() [][]byte {
 	var out [][]byte
 	for idx, t := range e.pendingTool {
 		delete(e.pendingTool, idx)
-		args, ok := ir.NormalizeToolInput(t.args)
-		if !ok {
-			e.rewrappedArgs++
+		args := (&ir.ToolUse{Kind: t.kind, Input: t.args, InputText: string(t.args)}).ObjectInput()
+		if t.kind != ir.ToolCustom {
+			if _, ok := ir.NormalizeToolInput(t.args); !ok {
+				e.rewrappedArgs++
+			}
 		}
 		p := content{Role: "model", Parts: []part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}}
 		ensureThoughtSignature(&p)
@@ -218,6 +225,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.rewrappedArgs > 0 {
 		notes = append(notes, ir.RewrapNote(e.rewrappedArgs))
 		e.rewrappedArgs = 0
+	}
+	if e.customTools > 0 {
+		notes = append(notes, proto.CustomToolDowngradeNote(e.customTools))
+		e.customTools = 0
 	}
 	if e.droppedTier != "" {
 		notes = append(notes, proto.TierEchoDropNote(e.droppedTier))

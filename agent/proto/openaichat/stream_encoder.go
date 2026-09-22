@@ -27,7 +27,9 @@ type streamEncoder struct {
 	droppedAudio bool
 	toolIdx      map[int]int // block index -> dense tool index
 	toolArgs     map[int][]byte
+	toolKind     map[int]ir.ToolKind
 	badToolArgs  int
+	customTools  int
 	skipIdx      map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
 	refusalIdx   map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
 	// text 各块已下发的正文，供 annotations 反推 cited_text 与字符索引。
@@ -39,7 +41,7 @@ type streamEncoder struct {
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{created: time.Now().Unix(), toolIdx: map[int]int{}, toolArgs: map[int][]byte{},
+	return &streamEncoder{created: time.Now().Unix(), toolIdx: map[int]int{}, toolArgs: map[int][]byte{}, toolKind: map[int]ir.ToolKind{},
 		skipIdx: map[int]bool{}, refusalIdx: map[int]bool{}, text: map[int]string{}}
 }
 
@@ -66,6 +68,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			e.nextTool++
 			e.toolIdx[ev.Index] = idx
 			e.toolArgs[ev.Index] = nil
+			e.toolKind[ev.Index] = ev.Block.ToolUse.Kind
+			if ev.Block.ToolUse.Kind == ir.ToolCustom {
+				e.customTools++
+			}
 			return [][]byte{e.chunk(&message{ToolCalls: []toolCall{{
 				Index:    idx,
 				ID:       ev.Block.ToolUse.ID,
@@ -112,14 +118,16 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return nil, fmt.Errorf("openai-chat: tool input for unopened block %d", ev.Index)
 		}
 		e.toolArgs[ev.Index] = append(e.toolArgs[ev.Index], ev.Text...)
+		if e.toolKind[ev.Index] == ir.ToolCustom {
+			return nil, nil
+		}
 		return [][]byte{e.chunk(&message{ToolCalls: []toolCall{{
 			Index:    idx,
 			Type:     "function",
 			Function: functionCall{Arguments: ev.Text},
 		}}}, "")}, nil
 	case ir.EvBlockStop:
-		e.finishToolArgs(ev.Index)
-		return nil, nil // OpenAI 无块结束帧
+		return e.finishToolArgs(ev.Index), nil
 	case ir.EvMessageDelta:
 		// 晚到的档位回显（EvMessageStart 之后才解码出来）在 chat 还补得上：
 		// 后续 chunk 都带 service_tier。
@@ -146,19 +154,20 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 
 // Finish 兜底：若流未正常结束，补 finish chunk + [DONE]。
 func (e *streamEncoder) Finish() [][]byte {
+	var out [][]byte
 	for idx := range e.toolArgs {
-		e.finishToolArgs(idx)
+		out = append(out, e.finishToolArgs(idx)...)
 	}
 	if e.stopped {
-		return nil
+		return out
 	}
 	e.stopped = true
 	// 上游没走到 message_stop 就断了：按中断档收尾（"stop" 会让客户端把
 	// 半截输出当成最终答案而不重试）。
-	return [][]byte{
+	return append(out,
 		e.chunk(&message{}, UnmapFinishReason(ir.StopAborted)),
 		[]byte("data: [DONE]\n\n"),
-	}
+	)
 }
 
 // Notes 排干损耗注记（Chat 无签名槽位，签名增量全丢；越集档位回显丢弃）。
@@ -188,18 +197,32 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, ir.RawArgsPassNote(e.badToolArgs))
 		e.badToolArgs = 0
 	}
+	if e.customTools > 0 {
+		notes = append(notes, proto.CustomToolDowngradeNote(e.customTools))
+		e.customTools = 0
+	}
 	return notes
 }
 
-func (e *streamEncoder) finishToolArgs(index int) {
+func (e *streamEncoder) finishToolArgs(index int) [][]byte {
 	raw, ok := e.toolArgs[index]
 	if !ok {
-		return
+		return nil
 	}
 	delete(e.toolArgs, index)
+	kind := e.toolKind[index]
+	delete(e.toolKind, index)
+	if kind == ir.ToolCustom {
+		idx := e.toolIdx[index]
+		input := (&ir.ToolUse{Kind: kind, InputText: string(raw)}).ObjectInput()
+		return [][]byte{e.chunk(&message{ToolCalls: []toolCall{{
+			Index: idx, Type: "function", Function: functionCall{Arguments: string(input)},
+		}}}, "")}
+	}
 	if _, valid := ir.NormalizeToolInput(raw); !valid {
 		e.badToolArgs++
 	}
+	return nil
 }
 
 // mapTier 映射档位回显：值集装不下的（anthropic 的 batch、responses 的

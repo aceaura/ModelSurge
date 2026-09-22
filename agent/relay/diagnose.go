@@ -87,7 +87,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	var notes []string
 
 	sigs, foreign, images, urlImages, errResults, refusals, badArgs := 0, 0, 0, 0, 0, 0, 0
-	uploads, audioRefs := 0, 0
+	uploads, audioRefs, customCalls, customResults := 0, 0, 0, 0
 	media := map[ir.MediaKind]int{}
 	for _, m := range req.Messages {
 		if m.Role == ir.RoleAssistant && m.AudioID != "" {
@@ -100,7 +100,9 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 				// 挪进 RawArgsKey，字符串槽位原样透出但工具侧多半也解析不了），
 				// 与能力位无关，一律报告。
 				if b.ToolUse != nil {
-					if _, ok := ir.NormalizeToolInput(b.ToolUse.Input); !ok {
+					if b.ToolUse.Kind == ir.ToolCustom {
+						customCalls++
+					} else if _, ok := ir.NormalizeToolInput(b.ToolUse.Input); !ok {
 						badArgs++
 					}
 				}
@@ -127,6 +129,9 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 			case ir.BlockToolResult:
 				if b.ToolResult == nil {
 					continue
+				}
+				if b.ToolResult.Kind == ir.ToolCustom {
+					customResults++
 				}
 				if b.ToolResult.IsError {
 					errResults++
@@ -247,7 +252,14 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	}
 
 	var dropped, unmapped []string
+	customDefs, customFormats := 0, 0
 	for _, t := range req.Tools {
+		if t.Kind == ir.ToolCustom {
+			customDefs++
+			if len(t.Format) > 0 {
+				customFormats++
+			}
+		}
 		if t.Hosted == "" {
 			continue
 		}
@@ -256,6 +268,27 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 			dropped = append(dropped, t.Hosted)
 		case t.Hosted != ir.HostedWebSearch && t.Hosted != ir.HostedCodeExecution:
 			unmapped = append(unmapped, t.Hosted) // 无跨协议映射的种类，即使上游支持托管工具也只能透传同族
+		}
+	}
+	if protoName != "openai-responses" && protoName != "codex" {
+		if customDefs > 0 {
+			notes = append(notes, fmt.Sprintf(
+				"downgraded %d custom tool definition(s) to function declarations: upstream protocol has no free-form tool type, input is exposed as a required string field", customDefs))
+		}
+		if customFormats > 0 {
+			notes = append(notes, fmt.Sprintf(
+				"dropped format from %d custom tool definition(s): upstream protocol cannot enforce the text or grammar constraint", customFormats))
+		}
+		if customCalls > 0 {
+			notes = append(notes, proto.CustomToolDowngradeNote(customCalls))
+		}
+		if customResults > 0 {
+			notes = append(notes, fmt.Sprintf(
+				"downgraded %d custom tool output(s) to ordinary function results: upstream protocol has no custom_tool_call_output item", customResults))
+		}
+		if req.ToolChoice != nil && req.ToolChoice.ToolKind == ir.ToolCustom {
+			notes = append(notes,
+				"downgraded custom tool_choice to a named function choice: upstream protocol has no custom tool selector")
 		}
 	}
 	if len(dropped) > 0 {

@@ -499,7 +499,7 @@ func sanitizeValue(v any) any {
 // 参数非法/非对象时不能静默清空：input={} 会让工具不带参数执行，
 // 那是一次真实副作用，比 400 更糟。原文挪进 RawArgsKey 键位。
 func convertToolUse(tu ir.ToolUse) map[string]any {
-	input, _ := ir.NormalizeToolInput(tu.Input)
+	input := tu.ObjectInput()
 	obj := map[string]any{}
 	// 规整产物必是合法 JSON 对象，这里反序列化不会失败。
 	_ = json.Unmarshal(input, &obj)

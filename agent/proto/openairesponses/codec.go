@@ -89,11 +89,17 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		decodeItem(out, it)
 	}
 	for _, t := range req.Tools {
-		if t.Type != "" && t.Type != "function" {
+		switch t.Type {
+		case "", "function":
+			out.Tools = append(out.Tools, ir.Tool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters, Strict: t.Strict})
+		case "custom":
+			out.Tools = append(out.Tools, ir.Tool{
+				Name: t.Name, Description: t.Description, Kind: ir.ToolCustom,
+				InputSchema: customToolInputSchema(), Format: t.Format,
+			})
+		default:
 			out.Tools = append(out.Tools, ir.Tool{Hosted: ir.CanonicalHosted(t.Type)})
-			continue
 		}
-		out.Tools = append(out.Tools, ir.Tool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters, Strict: t.Strict})
 	}
 	out.ToolChoice = decodeToolChoice(req.ToolChoice)
 	// 同 Chat：parallel_tool_calls=false 是「禁止并行」。没给则不表态。
@@ -165,6 +171,10 @@ func decodeConversation(raw json.RawMessage) string {
 
 // decodeResponseFormat text.format -> IR。type:"text" 是默认值，
 // 等同于「没提要求」，不进 IR。
+func customToolInputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}`)
+}
+
 func decodeResponseFormat(f *textFormat) *ir.ResponseFormat {
 	if f == nil || f.Type == "" || f.Type == "text" {
 		return nil
@@ -213,10 +223,19 @@ func decodeItem(req *ir.Request, it inputItem) {
 		// function_call 属于 assistant 消息：并入上一条 assistant 或新建
 		b := ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: it.CallID, Name: it.Name, Input: json.RawMessage(it.Arguments)}}
 		appendAssistantBlock(req, b)
-	case "function_call_output":
+	case "custom_tool_call":
+		t := &ir.ToolUse{ID: it.CallID, Name: it.Name, Kind: ir.ToolCustom, InputText: it.Input}
+		t.Input = t.ObjectInput()
+		appendAssistantBlock(req, ir.Block{Type: ir.BlockToolUse, ToolUse: t})
+	case "function_call_output", "custom_tool_call_output":
+		kind := ir.ToolFunction
+		if it.Type == "custom_tool_call_output" {
+			kind = ir.ToolCustom
+		}
 		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: []ir.Block{{
-			Type:       ir.BlockToolResult,
-			ToolResult: &ir.ToolResult{ToolUseID: it.CallID, Content: []ir.Block{{Type: ir.BlockText, Text: it.Output}}},
+			Type: ir.BlockToolResult,
+			ToolResult: &ir.ToolResult{ToolUseID: it.CallID, Kind: kind,
+				Content: []ir.Block{{Type: ir.BlockText, Text: it.Output}}},
 		}}})
 	case "reasoning":
 		th := &ir.Thinking{Signature: it.EncryptedContent, SignatureFrom: ir.SigFrom(Name, it.EncryptedContent)}
@@ -340,7 +359,11 @@ func decodeToolChoice(v any) *ir.ToolChoice {
 		}
 	case map[string]any:
 		if name, ok := tc["name"].(string); ok {
-			return &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: name}
+			out := &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: name}
+			if typ, _ := tc["type"].(string); typ == "custom" {
+				out.ToolKind = ir.ToolCustom
+			}
+			return out
 		}
 	}
 	return nil
@@ -381,6 +404,10 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	for _, t := range r.Tools {
 		if t.Hosted != "" {
 			out.Tools = append(out.Tools, tool{Type: nativeHosted(t.Hosted)})
+			continue
+		}
+		if t.Kind == ir.ToolCustom {
+			out.Tools = append(out.Tools, tool{Type: "custom", Name: t.Name, Description: t.Description, Format: t.Format})
 			continue
 		}
 		out.Tools = append(out.Tools, tool{Type: "function", Name: t.Name, Description: t.Description, Parameters: t.InputSchema, Strict: t.Strict})
@@ -505,6 +532,10 @@ func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 			case ir.BlockToolUse:
 				flush()
 				if b.ToolUse != nil {
+					if b.ToolUse.Kind == ir.ToolCustom {
+						out = append(out, inputItem{Type: "custom_tool_call", CallID: b.ToolUse.ID, Name: b.ToolUse.Name, Input: b.ToolUse.InputText})
+						continue
+					}
 					args := string(b.ToolUse.Input)
 					if args == "" {
 						args = "{}"
@@ -540,7 +571,11 @@ func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 				flush()
 				if b.ToolResult != nil {
 					text, images := splitToolResultContent(b.ToolResult.Content)
-					out = append(out, inputItem{Type: "function_call_output", CallID: b.ToolResult.ToolUseID, Output: text})
+					typ := "function_call_output"
+					if b.ToolResult.Kind == ir.ToolCustom {
+						typ = "custom_tool_call_output"
+					}
+					out = append(out, inputItem{Type: typ, CallID: b.ToolResult.ToolUseID, Output: text})
 					if len(images) > 0 {
 						out = append(out, inputItem{Type: "message", Role: "user", Content: marshal(images)})
 					}
@@ -612,7 +647,11 @@ func encodeToolChoice(tc *ir.ToolChoice) any {
 	case ir.ChoiceAny:
 		return "required"
 	case ir.ChoiceTool:
-		return toolChoiceNamed{Type: "function", Name: tc.ToolName}
+		typ := "function"
+		if tc.ToolKind == ir.ToolCustom {
+			typ = "custom"
+		}
+		return toolChoiceNamed{Type: typ, Name: tc.ToolName}
 	}
 	return nil
 }

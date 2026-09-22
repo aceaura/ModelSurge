@@ -227,16 +227,47 @@ func (m *Media) Describe() string {
 	return "[attachment dropped: " + desc + " — upstream protocol cannot carry it]"
 }
 
-// ToolUse 一次工具调用。Input 为 JSON 对象。
+// ToolKind 工具调用形态。零值等同 function，保持既有构造兼容。
+type ToolKind string
+
+const (
+	ToolFunction ToolKind = ""
+	ToolCustom   ToolKind = "custom"
+)
+
+// ToolUse 一次工具调用。function 使用 JSON 对象 Input；custom 使用自由文本 InputText。
+// custom 同时保留 Input 的 {"input":...} 投影，供不支持 custom 的协议安全降级。
 type ToolUse struct {
-	ID    string
-	Name  string
-	Input json.RawMessage
+	ID        string
+	Name      string
+	Kind      ToolKind
+	Input     json.RawMessage
+	InputText string
+}
+
+// ObjectInput 返回对象槽位协议可承载的工具参数。
+func (t *ToolUse) ObjectInput() json.RawMessage {
+	if t == nil {
+		return json.RawMessage(`{}`)
+	}
+	if t.Kind == ToolCustom {
+		return json.RawMessage(marshalCustomInput(t.InputText))
+	}
+	out, _ := NormalizeToolInput(t.Input)
+	return out
+}
+
+func marshalCustomInput(text string) []byte {
+	b, _ := json.Marshal(struct {
+		Input string `json:"input"`
+	}{Input: text})
+	return b
 }
 
 // ToolResult 工具结果，通过 ToolUseID 关联调用。
 type ToolResult struct {
 	ToolUseID string
+	Kind      ToolKind
 	Content   []Block // 通常为 text，可含 image
 	IsError   bool
 }
@@ -298,6 +329,10 @@ type Tool struct {
 	Description string
 	InputSchema json.RawMessage
 	Hosted      string
+	Kind        ToolKind
+	// Format 是 Responses custom tool 的文本/grammar 格式对象；外族只能降级成
+	// 一个必填 input 字符串参数的 function tool。
+	Format json.RawMessage
 	// CacheCtl/CacheTTL 工具定义上的缓存断点（Anthropic tools[].cache_control）。
 	// 其余协议的工具定义没有这一维。
 	CacheCtl string
@@ -332,6 +367,7 @@ const (
 type ToolChoice struct {
 	Mode            ChoiceMode
 	ToolName        string // Mode == ChoiceTool 时有效
+	ToolKind        ToolKind
 	DisableParallel bool
 }
 

@@ -1,6 +1,7 @@
 package openairesponses
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -219,4 +220,139 @@ func TestStreamDecodeFunctionArgumentsDoneRejectsNonSuffix(t *testing.T) {
 			t.Fatalf("non-suffix full %q appended events: %+v", full, evs)
 		}
 	}
+}
+
+func TestCustomToolRequestRoundTrip(t *testing.T) {
+	body := []byte(`{"model":"m","tools":[{"type":"custom","name":"shell","description":"run command","format":{"type":"grammar","syntax":"lark","definition":"start: WORD"}}],"tool_choice":{"type":"custom","name":"shell"},"input":[{"type":"custom_tool_call","id":"ctc_item","call_id":"call_1","name":"shell","input":"echo hi"},{"type":"custom_tool_call_output","call_id":"call_1","output":"hi"}]}`)
+	req, err := New().DecodeRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Tools) != 1 || req.Tools[0].Kind != ir.ToolCustom || req.Tools[0].Name != "shell" || !json.Valid(req.Tools[0].Format) {
+		t.Fatalf("custom tool = %+v", req.Tools)
+	}
+	if req.ToolChoice == nil || req.ToolChoice.Mode != ir.ChoiceTool || req.ToolChoice.ToolKind != ir.ToolCustom || req.ToolChoice.ToolName != "shell" {
+		t.Fatalf("tool choice = %+v", req.ToolChoice)
+	}
+	var call *ir.ToolUse
+	var result *ir.ToolResult
+	for _, m := range req.Messages {
+		for _, b := range m.Content {
+			if b.ToolUse != nil {
+				call = b.ToolUse
+			}
+			if b.ToolResult != nil {
+				result = b.ToolResult
+			}
+		}
+	}
+	if call == nil || call.Kind != ir.ToolCustom || call.InputText != "echo hi" || string(call.ObjectInput()) != `{"input":"echo hi"}` {
+		t.Fatalf("custom call = %+v", call)
+	}
+	if result == nil || result.Kind != ir.ToolCustom || result.ToolUseID != "call_1" {
+		t.Fatalf("custom result = %+v", result)
+	}
+	encoded, err := New().EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(encoded)
+	for _, want := range []string{`"type":"custom"`, `"format":{"type":"grammar"`, `"type":"custom_tool_call"`, `"input":"echo hi"`, `"type":"custom_tool_call_output"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("round-trip missing %s: %s", want, out)
+		}
+	}
+}
+
+func TestCustomToolResponseRoundTrip(t *testing.T) {
+	resp, err := New().DecodeResponse([]byte(`{"id":"resp_1","model":"m","status":"completed","output":[{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"shell","input":"echo hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].ToolUse == nil {
+		t.Fatalf("content = %+v", resp.Content)
+	}
+	call := resp.Content[0].ToolUse
+	if call.Kind != ir.ToolCustom || call.InputText != "echo hi" || call.ID != "call_1" {
+		t.Fatalf("custom response call = %+v", call)
+	}
+	encoded, err := New().EncodeResponse(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(encoded)
+	if !strings.Contains(out, `"type":"custom_tool_call"`) || !strings.Contains(out, `"input":"echo hi"`) {
+		t.Fatalf("encoded response lost custom call: %s", out)
+	}
+}
+
+func TestStreamDecodeCustomToolDoneOnlyAndPrefix(t *testing.T) {
+	dec := New().NewStreamDecoder()
+	evs, err := dec.Feed("", `{"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"shell"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Type != ir.EvBlockStart || evs[0].Block.ToolUse.Kind != ir.ToolCustom {
+		t.Fatalf("custom start = %+v", evs)
+	}
+	evs, err = dec.Feed("", `{"type":"response.custom_tool_call_input.done","output_index":0,"input":"echo hi"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Type != ir.EvToolInput || evs[0].Text != "echo hi" {
+		t.Fatalf("done-only input = %+v", evs)
+	}
+	evs, err = dec.Feed("", `{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"shell","input":"echo hi"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Type != ir.EvBlockStop {
+		t.Fatalf("custom done duplicated input: %+v", evs)
+	}
+
+	dec = New().NewStreamDecoder()
+	_, _ = dec.Feed("", `{"type":"response.output_item.added","output_index":1,"item":{"type":"custom_tool_call","call_id":"call_2","name":"shell"}}`)
+	evs, _ = dec.Feed("", `{"type":"response.custom_tool_call_input.delta","output_index":1,"delta":"echo "}`)
+	if len(evs) != 1 || evs[0].Text != "echo " {
+		t.Fatalf("custom delta = %+v", evs)
+	}
+	evs, _ = dec.Feed("", `{"type":"response.custom_tool_call_input.done","output_index":1,"input":"echo hi"}`)
+	if len(evs) != 1 || evs[0].Text != "hi" {
+		t.Fatalf("custom done suffix = %+v", evs)
+	}
+}
+
+func TestStreamEncodeCustomToolNativeEvents(t *testing.T) {
+	enc := New().NewStreamEncoder()
+	var frames [][]byte
+	for _, ev := range []ir.Event{
+		{Type: ir.EvMessageStart, MessageID: "resp_1", Model: "m"},
+		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "call_1", Name: "shell", Kind: ir.ToolCustom}}},
+		{Type: ir.EvToolInput, Index: 0, Text: "echo "},
+		{Type: ir.EvToolInput, Index: 0, Text: "hi"},
+		{Type: ir.EvBlockStop, Index: 0},
+	} {
+		out, err := enc.Encode(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, out...)
+	}
+	joined := string(bytesJoin(frames))
+	for _, want := range []string{"response.custom_tool_call_input.delta", "response.custom_tool_call_input.done", `"type":"custom_tool_call"`, `"input":"echo hi"`} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("stream missing %q: %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "function_call_arguments") {
+		t.Fatalf("custom stream emitted function events: %s", joined)
+	}
+}
+
+func bytesJoin(parts [][]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
 }

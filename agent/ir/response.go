@@ -110,7 +110,12 @@ func (a *Aggregator) Feed(ev Event) bool {
 	case EvBlockStop:
 		if b := a.open[ev.Index]; b != nil {
 			if rb := a.rawJSON[ev.Index]; rb != nil && b.ToolUse != nil {
-				b.ToolUse.Input = a.normalizeArgs(rb.buf)
+				if b.ToolUse.Kind == ToolCustom {
+					b.ToolUse.InputText = string(rb.buf)
+					b.ToolUse.Input = b.ToolUse.ObjectInput()
+				} else {
+					b.ToolUse.Input = a.normalizeArgs(rb.buf)
+				}
 			}
 			a.resp.Content = append(a.resp.Content, *b)
 			delete(a.open, ev.Index)
@@ -161,7 +166,12 @@ func (a *Aggregator) Finish() (*Response, *Error) {
 	for _, i := range idxs {
 		b := a.open[i]
 		if rb := a.rawJSON[i]; rb != nil && b.ToolUse != nil {
-			b.ToolUse.Input = a.normalizeArgs(rb.buf)
+			if b.ToolUse.Kind == ToolCustom {
+				b.ToolUse.InputText = string(rb.buf)
+				b.ToolUse.Input = b.ToolUse.ObjectInput()
+			} else {
+				b.ToolUse.Input = a.normalizeArgs(rb.buf)
+			}
 		}
 		a.resp.Content = append(a.resp.Content, *b)
 	}

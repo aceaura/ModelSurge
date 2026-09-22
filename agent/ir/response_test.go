@@ -135,3 +135,30 @@ func TestAggregatorNotesSilentOnValidArgs(t *testing.T) {
 		t.Errorf("合法参数误报：%v", notes)
 	}
 }
+
+func TestAggregatorCustomToolPreservesFreeFormInput(t *testing.T) {
+	for _, closeBlock := range []bool{true, false} {
+		a := NewAggregator()
+		a.Feed(Event{Type: EvMessageStart, MessageID: "m1", Model: "m"})
+		a.Feed(Event{Type: EvBlockStart, Index: 0, Block: &Block{Type: BlockToolUse, ToolUse: &ToolUse{ID: "c1", Name: "shell", Kind: ToolCustom}}})
+		a.Feed(Event{Type: EvToolInput, Index: 0, Text: "echo "})
+		a.Feed(Event{Type: EvToolInput, Index: 0, Text: "hi"})
+		if closeBlock {
+			a.Feed(Event{Type: EvBlockStop, Index: 0})
+		}
+		resp, err := a.Finish()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Content) != 1 || resp.Content[0].ToolUse == nil {
+			t.Fatalf("close=%v content=%+v", closeBlock, resp.Content)
+		}
+		call := resp.Content[0].ToolUse
+		if call.Kind != ToolCustom || call.InputText != "echo hi" || string(call.Input) != `{"input":"echo hi"}` {
+			t.Fatalf("close=%v call=%+v input=%s", closeBlock, call, call.Input)
+		}
+		if notes := a.Notes(); len(notes) != 0 {
+			t.Fatalf("close=%v custom input misreported as malformed: %v", closeBlock, notes)
+		}
+	}
+}

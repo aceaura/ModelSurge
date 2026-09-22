@@ -129,12 +129,14 @@ func (Codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 }
 
 // ResponseNotes 响应侧损耗扫描。kiro 的签名槽位不做家族门控（透传字符串，
-// 见 EncodeResponse 的 signatureEventJSON），只有畸形工具参数挪键一类损耗。
+// 见 EncodeResponse 的 signatureEventJSON）；这里只报告畸形参数挪键与 custom 降级。
 func (Codec) ResponseNotes(resp *ir.Response) []string {
-	var badArgs int
+	var badArgs, customCalls int
 	for _, b := range resp.Content {
 		if b.Type == ir.BlockToolUse && b.ToolUse != nil {
-			if _, ok := ir.NormalizeToolInput(b.ToolUse.Input); !ok {
+			if b.ToolUse.Kind == ir.ToolCustom {
+				customCalls++
+			} else if _, ok := ir.NormalizeToolInput(b.ToolUse.Input); !ok {
 				badArgs++
 			}
 		}
@@ -142,6 +144,9 @@ func (Codec) ResponseNotes(resp *ir.Response) []string {
 	var notes []string
 	if badArgs > 0 {
 		notes = append(notes, ir.RewrapNote(badArgs))
+	}
+	if customCalls > 0 {
+		notes = append(notes, proto.CustomToolDowngradeNote(customCalls))
 	}
 	if resp.Audio != nil {
 		notes = append(notes, proto.AudioOutputDropNote())

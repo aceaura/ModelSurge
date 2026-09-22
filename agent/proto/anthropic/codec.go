@@ -574,9 +574,7 @@ func encodeBlock(b ir.Block) block {
 		if b.ToolUse != nil {
 			out.ID = b.ToolUse.ID
 			out.Name = b.ToolUse.Name
-			// 非法/非对象参数不能直接进 input：RawMessage 会让整条消息
-			// marshal 失败，工具调用块连同同消息的正文一起消失。
-			out.Input, _ = ir.NormalizeToolInput(b.ToolUse.Input)
+			out.Input = b.ToolUse.ObjectInput()
 		}
 	case ir.BlockToolResult:
 		out.Type = "tool_result"

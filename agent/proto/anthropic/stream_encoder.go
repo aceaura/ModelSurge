@@ -15,6 +15,7 @@ import (
 type streamEncoder struct {
 	open     map[int]ir.BlockType
 	toolArgs map[int][]byte
+	toolKind map[int]ir.ToolKind
 	// text 各块已下发的正文。citations_delta 的 cited_text 与字符索引只能在
 	// 正文上反推，而引用总在正文之后到达，所以必须逐块累积。
 	text map[int]string
@@ -25,13 +26,14 @@ type streamEncoder struct {
 	droppedTier      string
 	droppedAudio     bool
 	badToolArgs      int
+	customTools      int
 	tierSent         bool
 	messageDeltaSent bool
 	stopped          bool
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{open: map[int]ir.BlockType{}, toolArgs: map[int][]byte{}, text: map[int]string{}}
+	return &streamEncoder{open: map[int]ir.BlockType{}, toolArgs: map[int][]byte{}, toolKind: map[int]ir.ToolKind{}, text: map[int]string{}}
 }
 
 func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
@@ -59,6 +61,12 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.open[ev.Index] = blockTypeOf(ev.Block)
 		if e.open[ev.Index] == ir.BlockToolUse {
 			e.toolArgs[ev.Index] = nil
+			if ev.Block != nil && ev.Block.ToolUse != nil {
+				e.toolKind[ev.Index] = ev.Block.ToolUse.Kind
+				if ev.Block.ToolUse.Kind == ir.ToolCustom {
+					e.customTools++
+				}
+			}
 		}
 		return [][]byte{e.blockStartFrame(ev.Index, ev.Block)}, nil
 	case ir.EvTextDelta:
@@ -95,13 +103,16 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			e.toolArgs[ev.Index] = nil
 		}
 		e.toolArgs[ev.Index] = append(e.toolArgs[ev.Index], ev.Text...)
+		if e.toolKind[ev.Index] == ir.ToolCustom {
+			return frames, nil
+		}
 		return append(frames, e.deltaFrame(ev.Index, delta{Type: "input_json_delta", PartialJSON: ev.Text})), nil
 	case ir.EvBlockStop:
-		e.finishToolArgs(ev.Index)
+		frames := e.finishToolArgs(ev.Index)
 		if !e.closeBlock(ev.Index) {
-			return nil, nil // 未打开的 block，忽略
+			return frames, nil
 		}
-		return [][]byte{sseFrame("content_block_stop", marshal(streamEvent{Type: "content_block_stop", Index: ev.Index}))}, nil
+		return append(frames, sseFrame("content_block_stop", marshal(streamEvent{Type: "content_block_stop", Index: ev.Index}))), nil
 	case ir.EvMessageDelta:
 		e.messageDeltaSent = true
 		// message_delta 没有 service_tier 槽位：晚到的回显（chat 系上游的
@@ -134,7 +145,7 @@ func (e *streamEncoder) Finish() [][]byte {
 	}
 	sort.Ints(idxs)
 	for _, i := range idxs {
-		e.finishToolArgs(i)
+		out = append(out, e.finishToolArgs(i)...)
 		out = append(out, sseFrame("content_block_stop", marshal(streamEvent{Type: "content_block_stop", Index: i})))
 		delete(e.open, i)
 	}
@@ -173,18 +184,29 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, ir.RawArgsPassNote(e.badToolArgs))
 		e.badToolArgs = 0
 	}
+	if e.customTools > 0 {
+		notes = append(notes, proto.CustomToolDowngradeNote(e.customTools))
+		e.customTools = 0
+	}
 	return notes
 }
 
-func (e *streamEncoder) finishToolArgs(index int) {
+func (e *streamEncoder) finishToolArgs(index int) [][]byte {
 	raw, ok := e.toolArgs[index]
 	if !ok {
-		return
+		return nil
 	}
 	delete(e.toolArgs, index)
+	kind := e.toolKind[index]
+	delete(e.toolKind, index)
+	if kind == ir.ToolCustom {
+		input := (&ir.ToolUse{Kind: kind, InputText: string(raw)}).ObjectInput()
+		return [][]byte{e.deltaFrame(index, delta{Type: "input_json_delta", PartialJSON: string(input)})}
+	}
 	if _, valid := ir.NormalizeToolInput(raw); !valid {
 		e.badToolArgs++
 	}
+	return nil
 }
 
 // ensureOpen delta 到达未开启的 index 时先补 block_start。

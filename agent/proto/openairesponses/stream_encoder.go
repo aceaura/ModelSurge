@@ -47,7 +47,8 @@ type encBlock struct {
 	typ              ir.BlockType
 	itemID           string
 	toolID, toolName string
-	text             string // text / thinking / arguments 累积
+	toolKind         ir.ToolKind
+	text             string // text / thinking / tool input 累积
 	sig              string
 	cites            []ir.Citation
 	closed           bool
@@ -143,7 +144,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return nil, fmt.Errorf("openai-responses: tool input for unopened block %d", ev.Index)
 		}
 		b.text += ev.Text
-		return [][]byte{e.frame(streamEvent{Type: "response.function_call_arguments.delta", OutputIndex: ev.Index, Delta: ev.Text})}, nil
+		typ := "response.function_call_arguments.delta"
+		if b.toolKind == ir.ToolCustom {
+			typ = "response.custom_tool_call_input.delta"
+		}
+		return [][]byte{e.frame(streamEvent{Type: typ, OutputIndex: ev.Index, Delta: ev.Text})}, nil
 	case ir.EvBlockStop:
 		return e.blockStop(ev.Index), nil
 	case ir.EvMessageDelta:
@@ -175,14 +180,21 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 			Type: "reasoning", ID: b.itemID, Summary: json.RawMessage(`[]`),
 		}})}, nil
 	case ir.BlockToolUse:
-		b.itemID = e.nextID("fc")
+		prefix := "fc"
+		typ := "function_call"
 		if ev.Block.ToolUse != nil {
 			b.toolID = ev.Block.ToolUse.ID
 			b.toolName = ev.Block.ToolUse.Name
+			b.toolKind = ev.Block.ToolUse.Kind
 		}
+		if b.toolKind == ir.ToolCustom {
+			prefix = "ctc"
+			typ = "custom_tool_call"
+		}
+		b.itemID = e.nextID(prefix)
 		e.register(ev.Index, b)
 		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: ev.Index, Item: &inputItem{
-			Type: "function_call", ID: b.itemID, CallID: b.toolID, Name: b.toolName, Arguments: "",
+			Type: typ, ID: b.itemID, CallID: b.toolID, Name: b.toolName,
 		}})}, nil
 	case ir.BlockRefusal:
 		// 拒绝有独立的 part 类型与独立的 delta 事件名；走 output_text 那条
@@ -230,8 +242,20 @@ func (e *streamEncoder) blockStop(idx int) [][]byte {
 	}
 	b.closed = true
 	if b.typ == ir.BlockToolUse {
-		if _, ok := ir.NormalizeToolInput([]byte(b.text)); !ok {
-			e.badToolArgs++
+		done := streamEvent{OutputIndex: idx}
+		if b.toolKind == ir.ToolCustom {
+			done.Type = "response.custom_tool_call_input.done"
+			done.Input = b.text
+		} else {
+			if _, ok := ir.NormalizeToolInput([]byte(b.text)); !ok {
+				e.badToolArgs++
+			}
+			done.Type = "response.function_call_arguments.done"
+			done.Arguments = b.text
+		}
+		return [][]byte{
+			e.frame(done),
+			e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: idx, Item: e.doneItem(b)}),
 		}
 	}
 	return [][]byte{e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: idx, Item: e.doneItem(b)})}
@@ -245,6 +269,9 @@ func (e *streamEncoder) doneItem(b *encBlock) *inputItem {
 		it.Summary = marshal([]summaryPart{{Type: "summary_text", Text: b.text}})
 		return it
 	case ir.BlockToolUse:
+		if b.toolKind == ir.ToolCustom {
+			return &inputItem{Type: "custom_tool_call", ID: b.itemID, CallID: b.toolID, Name: b.toolName, Input: b.text}
+		}
 		args := b.text
 		if args == "" {
 			args = "{}"

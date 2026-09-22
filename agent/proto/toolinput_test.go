@@ -8,6 +8,7 @@ import (
 	"github.com/aceaura/ModelSurge/agent/ir"
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
+	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
 	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
@@ -80,6 +81,87 @@ func TestMalformedToolArgsDirectionalHandling(t *testing.T) {
 
 // 合法对象必须保真到所有四个出站——规整只许动病态输入。
 // 按语义断言（管线的 normalize 会做空白压缩，字节级断言是在测别人的职责）。
+func TestCustomToolCrossProtocolObjectProjection(t *testing.T) {
+	call := &ir.ToolUse{ID: "call_1", Name: "shell", Kind: ir.ToolCustom, InputText: "echo hi"}
+	call.Input = call.ObjectInput()
+	req := &ir.Request{
+		Model: "m",
+		Tools: []ir.Tool{{Name: "shell", Kind: ir.ToolCustom, InputSchema: json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}`)}},
+		Messages: []ir.Message{
+			{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockToolUse, ToolUse: call}}},
+			{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockToolResult, ToolResult: &ir.ToolResult{
+				ToolUseID: "call_1", Kind: ir.ToolCustom, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}},
+			}}}},
+		},
+	}
+	for _, name := range []string{"anthropic", "openai-chat", "kiro"} {
+		body, err := proto.MustOutbound(name).EncodeRequest(req)
+		if err != nil {
+			t.Fatalf("%s EncodeRequest: %v", name, err)
+		}
+		s := string(body)
+		if !strings.Contains(s, "echo hi") || !strings.Contains(s, "input") || strings.Contains(s, ir.RawArgsKey) {
+			t.Errorf("%s custom input was not projected as {input:string}: %s", name, s)
+		}
+	}
+
+	resp := &ir.Response{ID: "r1", Model: "m", Content: []ir.Block{{Type: ir.BlockToolUse, ToolUse: call}}}
+	for _, name := range []string{"anthropic", "openai-chat", "gemini", "kiro"} {
+		codec := proto.MustInbound(name)
+		body, err := codec.EncodeResponse(resp)
+		if err != nil {
+			t.Fatalf("%s EncodeResponse: %v", name, err)
+		}
+		if s := string(body); !strings.Contains(s, "echo hi") || !strings.Contains(s, "input") || strings.Contains(s, ir.RawArgsKey) {
+			t.Errorf("%s custom response projection lost input: %s", name, s)
+		}
+		if notes := strings.Join(codec.ResponseNotes(resp), "; "); !strings.Contains(notes, "custom tool call") {
+			t.Errorf("%s missing custom downgrade note: %s", name, notes)
+		}
+	}
+}
+
+func TestCustomToolStreamingProjectionIsCompleteJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"anthropic", `"partial_json":"{\"input\":\"echo hi\"}"`},
+		{"openai-chat", `"arguments":"{\"input\":\"echo hi\"}"`},
+		{"gemini", `"args":{"input":"echo hi"}`},
+	}
+	for _, tc := range cases {
+		enc := proto.MustInbound(tc.name).NewStreamEncoder()
+		var joined string
+		for _, ev := range []ir.Event{
+			{Type: ir.EvMessageStart, MessageID: "r1", Model: "m"},
+			{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "call_1", Name: "shell", Kind: ir.ToolCustom}}},
+			{Type: ir.EvToolInput, Index: 0, Text: "echo "},
+			{Type: ir.EvToolInput, Index: 0, Text: "hi"},
+			{Type: ir.EvBlockStop, Index: 0},
+		} {
+			frames, err := enc.Encode(ev)
+			if err != nil {
+				t.Fatalf("%s Encode: %v", tc.name, err)
+			}
+			for _, frame := range frames {
+				joined += string(frame)
+			}
+		}
+		if !strings.Contains(joined, tc.want) {
+			t.Errorf("%s stream missing complete object projection %s: %s", tc.name, tc.want, joined)
+		}
+		for _, fragment := range []string{`"partial_json":"echo "`, `"partial_json":"hi"`, `"arguments":"echo "`, `"arguments":"hi"`} {
+			if strings.Contains(joined, fragment) {
+				t.Errorf("%s streamed free-form input as a JSON fragment %s: %s", tc.name, fragment, joined)
+			}
+		}
+		if notes := strings.Join(enc.Notes(), "; "); !strings.Contains(notes, "custom tool call") {
+			t.Errorf("%s stream missing custom downgrade note: %s", tc.name, notes)
+		}
+	}
+}
+
 func TestValidToolArgsPassThroughVerbatim(t *testing.T) {
 	const args = `{"city": "Paris", "n": 2}`
 	for _, name := range proto.OutboundNames() {

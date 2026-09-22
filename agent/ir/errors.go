@@ -79,6 +79,22 @@ func (e *Error) HTTPStatus() int {
 	}
 }
 
+// StreamRetryable 按规范错误类型判**流内**错误能否换上游重试。流内错误没有 HTTP
+// 状态码，只能按类型判；口径与 ClassifyStatus 保持一致，否则同一个错误在流式与
+// 非流式两条路径上会得出相反的重试结论。
+//
+// 认证/权限失败要可重试：换一个账号可能就成了。非法请求/未找到/内容过滤不可重试：
+// 换谁都会被同样拒绝，判成可重试只会让调度器把账号池白烧一遍。
+// 未知类型默认可重试，与各族解码器此前的行为一致。
+func StreamRetryable(typ string) bool {
+	switch typ {
+	case ErrTypeInvalidReq, ErrTypeNotFound, ErrTypeContentFilter:
+		return false
+	default:
+		return true
+	}
+}
+
 // NewHTTPError 由状态码与消息构造统一错误。
 func NewHTTPError(status int, message string) *Error {
 	typ, retry := ClassifyStatus(status)

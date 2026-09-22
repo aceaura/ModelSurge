@@ -87,6 +87,18 @@ func TestStreamDecodeBareErrorContentFilterTypeNotRetryable(t *testing.T) {
 	}
 }
 
+// 非法请求换谁都会被同样拒绝；可重试性按类型判，与 anthropic / chat 共用同一张表。
+func TestStreamDecodeInvalidRequestNotRetryable(t *testing.T) {
+	errs := errsOf(feedFrames(t, errCreated,
+		`{"type":"error","error":{"type":"invalid_request_error","message":"bad field"}}`))
+	if len(errs) != 1 {
+		t.Fatalf("期望 1 个 EvError，实得 %d", len(errs))
+	}
+	if errs[0].Retryable {
+		t.Errorf("invalid_request_error 必须不可重试")
+	}
+}
+
 // 少数上游把错误挂在 response.error 下（本仓此前的生成形态），回落必须还在。
 func TestStreamDecodeErrorFallsBackToResponseError(t *testing.T) {
 	errs := errsOf(feedFrames(t, errCreated, errNested))

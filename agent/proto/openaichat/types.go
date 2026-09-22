@@ -238,6 +238,10 @@ type response struct {
 	Model   string   `json:"model"`
 	Choices []choice `json:"choices"`
 	Usage   *usage   `json:"usage,omitempty"`
+	// Error 流内错误帧。Chat 的错误可以在流中途以 {"error":{...}} 单独成帧到达
+	// （没有 [DONE]，也没有 choices）。此前 response 没有这个字段，整帧被当成一个
+	// 空 chunk 解析：错误详情一个字不剩，客户端只看到一次空补全。
+	Error *errorBody `json:"error,omitempty"`
 	// ServiceTier 实际服务档位回显（auto/default/flex/scale/priority/fast）。
 	ServiceTier string `json:"service_tier,omitempty"`
 }

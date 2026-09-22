@@ -56,6 +56,9 @@ type streamDecoder struct {
 	messageDeltaSent bool
 	stopped          bool
 	started          bool
+	// sawError 已下发过 EvError。error 是终止事件，之后的 message_stop 与
+	// Finish() 的断流兜底都不得再产出收尾事件。
+	sawError bool
 }
 
 func (codec) NewStreamDecoder() proto.StreamDecoder { return &streamDecoder{} }
@@ -134,16 +137,34 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		}
 		return []ir.Event{ev}, nil
 	case "message_stop":
+		if d.sawError {
+			return nil, nil
+		}
 		d.stopped = true
 		return []ir.Event{{Type: ir.EvMessageStop}}, nil
 	case "ping":
 		return []ir.Event{{Type: ir.EvPing}}, nil
 	case "error":
-		e := &ir.Error{Type: ir.ErrTypeUpstream, Retryable: true}
+		// error 是终止事件。不置这些标记的话 Finish() 会在错误之后再补
+		// message_delta{aborted}+message_stop：客户端先看到错误、又看到一个正常
+		// 收尾，而 message_stop 先到时序列还会颠倒成 stop->delta。
+		d.sawError = true
+		d.stopped = true
+		d.messageDeltaSent = true
+		e := &ir.Error{Type: ir.ErrTypeUpstream, Message: "upstream stream error"}
 		if se.Error != nil {
-			e.Type = se.Error.Type
-			e.Message = se.Error.Message
+			// 类型缺席时保留规范默认值：覆盖成空串会让下游 RenderStreamError 写出
+			// "type":""，客户端无从判断该不该重试。
+			if se.Error.Type != "" {
+				e.Type = se.Error.Type
+			}
+			if se.Error.Message != "" {
+				e.Message = se.Error.Message
+			}
 		}
+		// 可重试性按类型判，不再一律 true：认证失败要换账号（可重试），
+		// 非法请求换谁都会被同样拒绝（不可重试）。
+		e.Retryable = ir.StreamRetryable(e.Type)
 		return []ir.Event{{Type: ir.EvError, Err: e}}, nil
 	}
 	return nil, nil

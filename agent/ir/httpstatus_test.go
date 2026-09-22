@@ -58,3 +58,43 @@ func TestHTTPStatusRoundTripsClassifyStatus(t *testing.T) {
 		t.Errorf("overloaded -> 503 -> %q，未往返", back)
 	}
 }
+
+// 流内错误没有状态码，只能按类型判可重试性。口径必须与 ClassifyStatus 一致，
+// 否则同一个错误在流式与非流式两条路径上会得出相反的重试结论。
+func TestStreamRetryableMatchesClassifyStatus(t *testing.T) {
+	for _, typ := range []string{
+		ErrTypeInvalidReq, ErrTypeAuth, ErrTypePermission, ErrTypeNotFound,
+		ErrTypeRateLimit, ErrTypeOverloaded, ErrTypeContentFilter, ErrTypeUpstream,
+	} {
+		_, want := ClassifyStatus((&Error{Type: typ}).HTTPStatus())
+		if got := StreamRetryable(typ); got != want {
+			t.Errorf("StreamRetryable(%q) = %v，但按状态码分类是 %v（两条路径口径漂移）", typ, got, want)
+		}
+	}
+}
+
+func TestStreamRetryableTable(t *testing.T) {
+	cases := []struct {
+		typ  string
+		want bool
+	}{
+		// 换谁都会被同样拒绝
+		{ErrTypeInvalidReq, false},
+		{ErrTypeNotFound, false},
+		{ErrTypeContentFilter, false},
+		// 换一个账号/目标就可能成功
+		{ErrTypeAuth, true},
+		{ErrTypePermission, true},
+		{ErrTypeRateLimit, true},
+		{ErrTypeOverloaded, true},
+		// 未知类型默认可重试，与各族解码器此前行为一致
+		{ErrTypeUpstream, true},
+		{"", true},
+		{"service_unavailable_error", true},
+	}
+	for _, c := range cases {
+		if got := StreamRetryable(c.typ); got != c.want {
+			t.Errorf("StreamRetryable(%q) = %v, want %v", c.typ, got, c.want)
+		}
+	}
+}

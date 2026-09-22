@@ -29,10 +29,13 @@ type streamDecoder struct {
 
 	tools map[int]*pendingTool // OpenAI tool index -> 状态
 
-	usage          ir.Usage
-	finishReason   string
-	gotFinish      bool
-	done           bool
+	usage        ir.Usage
+	finishReason string
+	gotFinish    bool
+	done         bool
+	// sawError 已下发过 EvError。错误帧是终止帧，Finish() 不得再补
+	// message_delta+message_stop，否则客户端在错误之后又看到一个正常收尾。
+	sawError       bool
 	primaryChoice  int
 	choiceSelected bool
 	droppedChoices map[int]struct{}
@@ -60,6 +63,23 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	var chunk response
 	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 		return nil, fmt.Errorf("openai-chat: decode chunk: %w", err)
+	}
+	// 错误帧必须在开流之前判掉：它没有 choices，落到下面会先补一个 message_start，
+	// 再由 Finish() 报 aborted——一次上游拒绝于是变成「客户端收到一个空回答」，
+	// 而 relay 因为没有 EvError 会认为请求成功，既不重试也不换账号。
+	if chunk.Error != nil {
+		d.done = true
+		d.sawError = true
+		e := &ir.Error{Type: ir.ErrTypeUpstream, Message: "upstream stream error"}
+		if chunk.Error.Type != "" {
+			e.Type = chunk.Error.Type
+		}
+		if chunk.Error.Message != "" {
+			e.Message = chunk.Error.Message
+		}
+		e.Code = chunk.Error.Code
+		e.Retryable = ir.StreamRetryable(e.Type)
+		return []ir.Event{{Type: ir.EvError, Err: e}}, nil
 	}
 	var out []ir.Event
 	if chunk.ID != "" {
@@ -241,6 +261,11 @@ func (d *streamDecoder) Finish() []ir.Event {
 		out = append(out, ir.Event{Type: ir.EvBlockStop, Index: idx})
 	}
 	d.openBlocks = nil
+	if d.sawError {
+		// 错误帧已是终止帧：块照关（不给下游留永不结束的块），但不再补收尾事件，
+		// 否则客户端在错误之后又看到一个正常结束。
+		return out
+	}
 	u := d.usage
 	// 一个 finish_reason 都没收到就断了：异常中断，不能报成 stop 档。
 	stop := ir.StopAborted

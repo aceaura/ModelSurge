@@ -472,6 +472,9 @@ func streamErrorOf(se streamEvent, fallbackMsg string) *ir.Error {
 		e.Message = b.Message
 	}
 	e.Code = b.Code
+	// 可重试性按类型判（与 anthropic / chat 共用同一张表），不再一律 true：
+	// 非法请求换谁都会被同样拒绝。
+	e.Retryable = ir.StreamRetryable(e.Type)
 	// 风控拦截不可重试（对齐 sub2api cyber_policy 特例）。判成可重试会让调度器
 	// 换目标重发一个永远不可能成功的请求，把整个账号池白烧一遍。
 	if e.Code == "cyber_policy" || b.Type == "content_filter" {

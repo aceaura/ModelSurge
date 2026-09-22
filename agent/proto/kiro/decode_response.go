@@ -105,10 +105,7 @@ func (Codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 			if b.ToolUse == nil {
 				continue
 			}
-			input := b.ToolUse.Input
-			if len(input) == 0 {
-				input = json.RawMessage(`{}`)
-			}
+			input, _ := ir.NormalizeToolInput(b.ToolUse.Input)
 			w(toolStartEventJSON{Name: b.ToolUse.Name, ToolUseID: b.ToolUse.ID, Input: json.RawMessage(`{}`)})
 			w(toolInputEventJSON{Input: input})
 			w(toolStopEventJSON{Stop: map[string]any{}})

@@ -139,18 +139,10 @@ func (a *Aggregator) Finish() (*Response, *Error) {
 	return &a.resp, a.err
 }
 
-// normalizeJSON 把累积的 JSON 片段规整为合法 JSON；解析失败时返回 {}。
+// normalizeJSON 把累积的 JSON 片段规整为对象形态。截断的流式参数
+// （max_tokens 截断是最常见来源）与「对象槽位合法值」共享同一规则：
+// 原文挪进 RawArgsKey，而不是凭空清空——空 {} 会让工具不带参数执行。
 func normalizeJSON(raw []byte) json.RawMessage {
-	if len(raw) == 0 {
-		return json.RawMessage(`{}`)
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return json.RawMessage(`{}`)
-	}
-	out, err := json.Marshal(v)
-	if err != nil {
-		return json.RawMessage(`{}`)
-	}
+	out, _ := NormalizeToolInput(raw)
 	return out
 }

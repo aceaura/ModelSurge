@@ -293,10 +293,10 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 			}
 		case ir.BlockToolUse:
 			if b.ToolUse != nil {
-				args := b.ToolUse.Input
-				if len(args) == 0 {
-					args = json.RawMessage(`{}`)
-				}
+				// args 是 RawMessage 槽位：非法/非对象参数直接放进去会让
+				// 整个响应 marshal 失败或违反 API 对象约束，原文挪进
+				// RawArgsKey 键位保真。
+				args, _ := ir.NormalizeToolInput(b.ToolUse.Input)
 				c.Parts = append(c.Parts, part{FunctionCall: &functionCall{Name: b.ToolUse.Name, Args: args, ID: b.ToolUse.ID}})
 			}
 		case ir.BlockImage:

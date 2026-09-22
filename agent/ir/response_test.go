@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -44,7 +45,8 @@ func TestAggregator_HappyPath(t *testing.T) {
 	}
 }
 
-// 断流截断：未闭合的 tool_use 块由 Finish 冲刷，残缺 JSON 规整为 {}。
+// 断流截断：未闭合的 tool_use 块由 Finish 冲刷。残缺 JSON 不能清空成 {}——
+// 空参数会让工具不带参数执行；原文挪进 RawArgsKey 键位保真。
 func TestAggregator_TruncatedToolJSON(t *testing.T) {
 	a := NewAggregator()
 	a.Feed(Event{Type: EvMessageStart, MessageID: "m1"})
@@ -56,8 +58,16 @@ func TestAggregator_TruncatedToolJSON(t *testing.T) {
 		t.Fatalf("blocks = %d", len(resp.Content))
 	}
 	tu := resp.Content[0].ToolUse
-	if string(tu.Input) != `{}` {
-		t.Errorf("truncated input = %s, want {}", tu.Input)
+	var m map[string]any
+	if err := json.Unmarshal(tu.Input, &m); err != nil {
+		t.Fatalf("规整结果不是合法 JSON 对象: %s", tu.Input)
+	}
+	raw, ok := m[RawArgsKey]
+	if !ok {
+		t.Fatalf("截断原文没挪进 %s: %s", RawArgsKey, tu.Input)
+	}
+	if s, _ := raw.(string); s != `{"city": "Par` {
+		t.Errorf("原文 = %v, 截断片段丢了", raw)
 	}
 }
 

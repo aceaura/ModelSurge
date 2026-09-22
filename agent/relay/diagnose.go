@@ -63,11 +63,20 @@ func mediaNotes(counts map[ir.MediaKind]int, caps proto.Capabilities) []string {
 func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []string {
 	var notes []string
 
-	sigs, foreign, images, urlImages, errResults, refusals := 0, 0, 0, 0, 0, 0
+	sigs, foreign, images, urlImages, errResults, refusals, badArgs := 0, 0, 0, 0, 0, 0, 0
 	media := map[ir.MediaKind]int{}
 	for _, m := range req.Messages {
 		for _, b := range m.Content {
 			switch b.Type {
+			case ir.BlockToolUse:
+				// 非法/非对象参数与协议无关：任何出站都会发生改写（对象槽位
+				// 挪进 RawArgsKey，字符串槽位原样透出但工具侧多半也解析不了），
+				// 与能力位无关，一律报告。
+				if b.ToolUse != nil {
+					if _, ok := ir.NormalizeToolInput(b.ToolUse.Input); !ok {
+						badArgs++
+					}
+				}
 			case ir.BlockThinking:
 				if b.Thinking != nil && b.Thinking.Signature != "" {
 					sigs++
@@ -126,6 +135,18 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		// 失败的工具结果在上游看来与成功结果同形，模型会把报错文本当成
 		// 正常返回值继续推理。读者能做的是把失败信息写进结果文本本身。
 		notes = append(notes, fmt.Sprintf("dropped error flag on %d tool result(s): upstream protocol cannot mark a tool call as failed", errResults))
+	}
+	if badArgs > 0 {
+		// 最常见来源是上一轮 max_tokens 把参数 JSON 截断。对象槽位挪进
+		// 显式键位（清空会让工具不带参数执行）；字符串槽位原样透出，
+		// 工具侧解析会失败——两种后果不同，分开说。
+		if caps.ToolInputObject {
+			notes = append(notes, fmt.Sprintf(
+				"rewrapped %d tool call argument(s): malformed or non-object JSON moved to %s, the tool will not receive its parameters", badArgs, ir.RawArgsKey))
+		} else {
+			notes = append(notes, fmt.Sprintf(
+				"passed through %d malformed tool call argument(s) verbatim: the tool will fail to parse them", badArgs))
+		}
 	}
 	if !caps.Sampling {
 		var params []string

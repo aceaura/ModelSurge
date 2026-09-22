@@ -224,7 +224,8 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 		"anthropic": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true, ToolResultError: true,
 			StructuredOutput: false,
-			Documents:        true, Audio: false, Video: false, Refusal: false, Citations: true},
+			Documents:        true, Audio: false, Video: false, Refusal: false, Citations: true,
+			ToolInputObject: true},
 		// 调参五位刻意不一致：Chat 全有，Responses 只有对数概率且没有独立开关
 		// （LogProbsViaTopN），anthropic 与 kiro 一个都没有。全真或全假都是漏洞。
 		"openai-chat": {ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
@@ -240,7 +241,9 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 		"kiro": {ThinkingSignature: false, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: false, Sampling: false, TopK: false, ParallelToolCalls: false, ToolResultError: true,
 			StructuredOutput: false,
-			Documents:        false, Audio: false, Video: false, Refusal: false, Citations: false},
+			Documents:        false, Audio: false, Video: false, Refusal: false, Citations: false,
+			// 参数槽位刻意不一致：anthropic/kiro 是 JSON 对象槽，OpenAI 两系是字符串槽。
+			ToolInputObject: true},
 	}
 	for name, exp := range want {
 		if got := capsOf(t, name); got != exp {

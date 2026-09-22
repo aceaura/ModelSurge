@@ -35,6 +35,8 @@ func (codec) Caps() proto.Capabilities {
 		// 载荷里没有 response_format 之类的字段。
 		StructuredOutput: false,
 		Citations:        true, // text.citations
+		// tool_use.input 是 JSON 对象槽位。
+		ToolInputObject: true,
 	}
 }
 
@@ -419,10 +421,9 @@ func encodeBlock(b ir.Block) block {
 		if b.ToolUse != nil {
 			out.ID = b.ToolUse.ID
 			out.Name = b.ToolUse.Name
-			out.Input = b.ToolUse.Input
-			if len(out.Input) == 0 {
-				out.Input = json.RawMessage(`{}`)
-			}
+			// 非法/非对象参数不能直接进 input：RawMessage 会让整条消息
+			// marshal 失败，工具调用块连同同消息的正文一起消失。
+			out.Input, _ = ir.NormalizeToolInput(b.ToolUse.Input)
 		}
 	case ir.BlockToolResult:
 		out.Type = "tool_result"

@@ -131,6 +131,19 @@ func (d *streamDecoder) feedToolCall(tc toolCall) []ir.Event {
 		d.thinkIdx = -1
 	}
 	pt := d.tools[tc.Index]
+	if pt != nil && tc.ID != "" && pt.id != "" && pt.id != tc.ID {
+		// 同一 index 带着新 id 回来：上游把槽位复用给了下一个调用
+		// （部分国产兼容端会这样发，new-api 也按此形态处理）。
+		// 不拆开会把两次调用的参数粘成一次，且第二次调用的 id 被吞掉。
+		if pt.started {
+			out = append(out, d.closeBlock(pt.blockIdx))
+		} else {
+			// 身份还没齐就被顶替：前一个调用永远不会有块，移出待关列表。
+			d.dropOpen(pt.blockIdx)
+		}
+		delete(d.tools, tc.Index)
+		pt = nil
+	}
 	if pt == nil {
 		pt = &pendingTool{blockIdx: d.nextBlock}
 		d.nextBlock++
@@ -173,13 +186,17 @@ func (d *streamDecoder) openBlock(t ir.BlockType, slot *int) []ir.Event {
 }
 
 func (d *streamDecoder) closeBlock(idx int) ir.Event {
+	d.dropOpen(idx)
+	return ir.Event{Type: ir.EvBlockStop, Index: idx}
+}
+
+func (d *streamDecoder) dropOpen(idx int) {
 	for i, v := range d.openBlocks {
 		if v == idx {
 			d.openBlocks = append(d.openBlocks[:i], d.openBlocks[i+1:]...)
 			break
 		}
 	}
-	return ir.Event{Type: ir.EvBlockStop, Index: idx}
 }
 
 // Finish 冲刷：关闭所有未闭合块，补 message_delta + message_stop。

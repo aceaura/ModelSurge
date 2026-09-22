@@ -77,6 +77,8 @@ func (Codec) Caps() proto.Capabilities {
 		Refusal: false,
 		// 载荷里没有任何来源标注的落点：正文能到，出处到不了。
 		Citations: false,
+		// toolUses[].input 是 JSON 对象槽位。
+		ToolInputObject: true,
 	}
 }
 
@@ -492,14 +494,16 @@ func sanitizeValue(v any) any {
 }
 
 // convertToolUse IR ToolUse -> Kiro toolUses 条目（名称别名）。
+// 参数非法/非对象时不能静默清空：input={} 会让工具不带参数执行，
+// 那是一次真实副作用，比 400 更糟。原文挪进 RawArgsKey 键位。
 func convertToolUse(tu ir.ToolUse) map[string]any {
-	input := map[string]any{}
-	if len(tu.Input) > 0 {
-		_ = json.Unmarshal(tu.Input, &input)
-	}
+	input, _ := ir.NormalizeToolInput(tu.Input)
+	obj := map[string]any{}
+	// 规整产物必是合法 JSON 对象，这里反序列化不会失败。
+	_ = json.Unmarshal(input, &obj)
 	return map[string]any{
 		"name":      AliasForToolName(tu.Name),
-		"input":     input,
+		"input":     obj,
 		"toolUseId": tu.ID,
 	}
 }

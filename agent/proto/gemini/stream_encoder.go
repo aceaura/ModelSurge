@@ -1,8 +1,6 @@
 package gemini
 
 import (
-	"encoding/json"
-
 	"github.com/aceaura/ModelSurge/agent/ir"
 	"github.com/aceaura/ModelSurge/agent/proto"
 )
@@ -78,10 +76,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvBlockStop:
 		if t := e.pendingTool[ev.Index]; t != nil {
 			delete(e.pendingTool, ev.Index)
-			args := json.RawMessage(t.args)
-			if len(args) == 0 {
-				args = json.RawMessage(`{}`)
-			}
+			// 截断/非对象参数放进 RawMessage 槽位会让这个 chunk marshal
+			// 失败，整块 functionCall 丢失；原文挪进 RawArgsKey 保真。
+			args, _ := ir.NormalizeToolInput(t.args)
 			p := content{Role: "model", Parts: []part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}}
 			ensureThoughtSignature(&p)
 			return e.chunk(p.Parts, ""), nil
@@ -127,10 +124,7 @@ func (e *streamEncoder) Finish() [][]byte {
 	var out [][]byte
 	for idx, t := range e.pendingTool {
 		delete(e.pendingTool, idx)
-		args := json.RawMessage(t.args)
-		if len(args) == 0 {
-			args = json.RawMessage(`{}`)
-		}
+		args, _ := ir.NormalizeToolInput(t.args)
 		p := content{Role: "model", Parts: []part{{FunctionCall: &functionCall{Name: t.name, Args: args, ID: t.id}}}}
 		ensureThoughtSignature(&p)
 		out = append(out, e.chunk(p.Parts, "")...)

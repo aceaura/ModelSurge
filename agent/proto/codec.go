@@ -103,6 +103,12 @@ type Capabilities struct {
 
 	// LogitBias token 偏置。只有 Chat 有这一维。
 	LogitBias bool
+
+	// ToolInputObject 工具参数槽位是 JSON 对象形态（Anthropic input、
+	// Gemini args、kiro input）而非字符串形态（Chat/Responses arguments）。
+	// 对象槽位装不下非法/非对象参数，会被规整进 ir.RawArgsKey 键位；
+	// 字符串槽位原样透传。两者诊断措辞不同，读者要改的地方也不同。
+	ToolInputObject bool
 }
 
 // InboundCodec 客户端入口协议编解码器。

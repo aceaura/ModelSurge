@@ -1,6 +1,7 @@
 package openairesponses
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -132,6 +133,90 @@ func TestCodexCodec(t *testing.T) {
 	for _, want := range []string{`"instructions":`, `"store":false`, `"effort":"xhigh"`, `reasoning.encrypted_content`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("encoded missing %s: %s", want, s)
+		}
+	}
+}
+
+func TestStreamDecodeFunctionArgumentsDoneWithoutDeltas(t *testing.T) {
+	dec := New().NewStreamDecoder()
+	if _, err := dec.Feed("", `{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"lookup"}}`); err != nil {
+		t.Fatal(err)
+	}
+	evs, err := dec.Feed("", `{"type":"response.function_call_arguments.done","output_index":1,"arguments":"{\"id\":1}"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Type != ir.EvToolInput || evs[0].Text != `{"id":1}` {
+		t.Fatalf("done-only events = %+v", evs)
+	}
+	evs, err = dec.Feed("", `{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"id\":1}"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Type != ir.EvBlockStop {
+		t.Fatalf("output_item.done duplicated arguments: %+v", evs)
+	}
+}
+
+func TestStreamDecodeFunctionArgumentsDoneCompletesDeltaPrefix(t *testing.T) {
+	dec := New().NewStreamDecoder()
+	_, _ = dec.Feed("", `{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"lookup"}}`)
+	evs, err := dec.Feed("", `{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"id\":"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Text != `{"id":` {
+		t.Fatalf("delta events = %+v", evs)
+	}
+	evs, err = dec.Feed("", `{"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"id\":1}"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Text != `1}` {
+		t.Fatalf("done suffix events = %+v", evs)
+	}
+	evs, err = dec.Feed("", `{"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"id\":1}"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 0 {
+		t.Fatalf("repeated done duplicated arguments: %+v", evs)
+	}
+}
+
+func TestStreamDecodeOutputItemDoneBackfillsArguments(t *testing.T) {
+	dec := New().NewStreamDecoder()
+	_, _ = dec.Feed("", `{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","call_id":"call_2","name":"lookup"}}`)
+	evs, err := dec.Feed("", `{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","call_id":"call_2","name":"lookup","arguments":"{\"id\":2}"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 2 || evs[0].Type != ir.EvToolInput || evs[0].Text != `{"id":2}` || evs[1].Type != ir.EvBlockStop {
+		t.Fatalf("output_item.done events = %+v", evs)
+	}
+}
+
+func TestStreamDecodeOutputItemAddedCarriesArguments(t *testing.T) {
+	dec := New().NewStreamDecoder()
+	evs, err := dec.Feed("", `{"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","call_id":"call_3","name":"lookup","arguments":"{\"id\":3}"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 2 || evs[0].Type != ir.EvBlockStart || evs[1].Type != ir.EvToolInput || evs[1].Text != `{"id":3}` {
+		t.Fatalf("output_item.added events = %+v", evs)
+	}
+}
+
+func TestStreamDecodeFunctionArgumentsDoneRejectsNonSuffix(t *testing.T) {
+	for _, full := range []string{`{"id":`, `{"name":1}`} {
+		dec := New().NewStreamDecoder()
+		_, _ = dec.Feed("", `{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"id\":1}"}`)
+		evs, err := dec.Feed("", `{"type":"response.function_call_arguments.done","output_index":0,"arguments":`+strconv.Quote(full)+`}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(evs) != 0 {
+			t.Fatalf("non-suffix full %q appended events: %+v", full, evs)
 		}
 	}
 }

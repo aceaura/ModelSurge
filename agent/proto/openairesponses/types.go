@@ -169,10 +169,11 @@ type streamEvent struct {
 	OutputIndex  int          `json:"output_index,omitempty"`
 	ContentIndex int          `json:"content_index,omitempty"`
 	SummaryIndex int          `json:"summary_index,omitempty"`
-	Item         *inputItem   `json:"item,omitempty"`     // output_item.added / done
-	Part         *contentPart `json:"part,omitempty"`     // content_part.added
-	Delta        string       `json:"delta,omitempty"`    // *.delta
-	Response     *responseObj `json:"response,omitempty"` // response.created / completed / incomplete / failed
+	Item         *inputItem   `json:"item,omitempty"`      // output_item.added / done
+	Part         *contentPart `json:"part,omitempty"`      // content_part.added
+	Delta        string       `json:"delta,omitempty"`     // *.delta
+	Arguments    string       `json:"arguments,omitempty"` // function_call_arguments.done
+	Response     *responseObj `json:"response,omitempty"`  // response.created / completed / incomplete / failed
 	// Annotation response.output_text.annotation.added 携带的单条引用。
 	// 该事件没有 delta 字段，正文与标注是两个独立事件。
 	Annotation *annotation `json:"annotation,omitempty"`

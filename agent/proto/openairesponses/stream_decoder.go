@@ -3,6 +3,7 @@ package openairesponses
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
 	"github.com/aceaura/ModelSurge/agent/proto"
@@ -19,6 +20,9 @@ type streamDecoder struct {
 	// tier 档位回显：response.created 与 completed/incomplete 都可能携带，
 	// 后者晚到时随终止的 message_delta 事件交付。
 	tier string
+	// toolArgs 记录已发出的参数前缀。done 事件携带完整值时只补缺失后缀，
+	// 既覆盖 done-only 上游，又不把已有 delta 重复一遍。
+	toolArgs map[int]string
 	// refusalOpen 已开启的拒绝块（按 output_index）。上游对被拒绝的消息仍然
 	// 先发 output_item.added type=message，从那一帧看不出是拒绝，块只能等
 	// response.refusal.delta 到了再补开。
@@ -33,7 +37,7 @@ const refusalBlockBase = 1 << 20
 func (d *streamDecoder) refusalIndex(outputIndex int) int { return refusalBlockBase + outputIndex }
 
 func (codec) NewStreamDecoder() proto.StreamDecoder {
-	return &streamDecoder{refusalOpen: map[int]bool{}}
+	return &streamDecoder{refusalOpen: map[int]bool{}, toolArgs: map[int]string{}}
 }
 
 func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
@@ -65,10 +69,11 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			return []ir.Event{{Type: ir.EvBlockStart, Index: se.OutputIndex, Block: &ir.Block{Type: ir.BlockText}}}, nil
 		case "function_call":
 			d.sawToolCall = true
-			return []ir.Event{{Type: ir.EvBlockStart, Index: se.OutputIndex, Block: &ir.Block{
+			out := []ir.Event{{Type: ir.EvBlockStart, Index: se.OutputIndex, Block: &ir.Block{
 				Type:    ir.BlockToolUse,
 				ToolUse: &ir.ToolUse{ID: se.Item.CallID, Name: se.Item.Name},
-			}}}, nil
+			}}}
+			return append(out, d.completeToolArgs(se.OutputIndex, se.Item.Arguments)...), nil
 		case "reasoning":
 			return []ir.Event{{Type: ir.EvBlockStart, Index: se.OutputIndex, Block: &ir.Block{
 				Type:     ir.BlockThinking,
@@ -115,9 +120,19 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 		return []ir.Event{{Type: ir.EvThinkingDelta, Index: se.OutputIndex, Text: se.Delta}}, nil
 	case "response.function_call_arguments.delta":
+		if se.Delta == "" {
+			return nil, nil
+		}
+		d.toolArgs[se.OutputIndex] += se.Delta
 		return []ir.Event{{Type: ir.EvToolInput, Index: se.OutputIndex, Text: se.Delta}}, nil
+	case "response.function_call_arguments.done":
+		return d.completeToolArgs(se.OutputIndex, se.Arguments), nil
 	case "response.output_item.done":
 		var out []ir.Event
+		if se.Item != nil && se.Item.Type == "function_call" {
+			out = append(out, d.completeToolArgs(se.OutputIndex, se.Item.Arguments)...)
+			delete(d.toolArgs, se.OutputIndex)
+		}
 		// 关 thinking 块前先发 signature_delta（对齐 sub2api :688）
 		if se.Item != nil && se.Item.Type == "reasoning" && se.Item.EncryptedContent != "" {
 			out = append(out, ir.Event{Type: ir.EvSigDelta, Index: se.OutputIndex, Text: se.Item.EncryptedContent,
@@ -172,6 +187,23 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return []ir.Event{{Type: ir.EvError, Err: e}}, nil
 	}
 	return nil, nil // response.queued / in_progress 等进度事件忽略
+}
+
+// completeToolArgs 用终态完整值补齐尚未收到的参数后缀。done 不是新一份参数，
+// 已由 delta 交付的前缀不得重复；终态比当前值短或分叉时也不能追加成畸形 JSON。
+func (d *streamDecoder) completeToolArgs(index int, full string) []ir.Event {
+	if full == "" {
+		return nil
+	}
+	current := d.toolArgs[index]
+	if current == full {
+		return nil
+	}
+	if !strings.HasPrefix(full, current) {
+		return nil
+	}
+	d.toolArgs[index] = full
+	return []ir.Event{{Type: ir.EvToolInput, Index: index, Text: strings.TrimPrefix(full, current)}}
 }
 
 // mapIncompleteReason 读 incomplete_details.reason 判断截断原因。

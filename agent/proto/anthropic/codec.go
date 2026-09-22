@@ -275,6 +275,9 @@ func decodeBlock(b block) ir.Block {
 	case "web_search_tool_result":
 		out.Type = ir.BlockWebSearchToolResult
 		out.WebSearchToolResult = decodeWebSearchToolResult(b.ToolUseID, b.Content)
+	case "container_upload":
+		out.Type = ir.BlockContainerUpload
+		out.ContainerUpload = &ir.ContainerUploadRef{FileID: b.FileID}
 	default:
 		// 未知块降级为文本，保证不丢信息
 		out.Type = ir.BlockText
@@ -613,6 +616,11 @@ func encodeBlock(b ir.Block) block {
 				})
 			}
 			out.Content = marshal(rs)
+		}
+	case ir.BlockContainerUpload:
+		out.Type = "container_upload"
+		if b.ContainerUpload != nil {
+			out.FileID = b.ContainerUpload.FileID
 		}
 	default:
 		// BlockRefusal 也落这里：Anthropic 没有 refusal 槽位，降级为文本而不是

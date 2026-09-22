@@ -38,6 +38,12 @@ const (
 	BlockThinking            BlockType = "thinking"
 	BlockServerToolUse       BlockType = "server_tool_use"
 	BlockWebSearchToolResult BlockType = "web_search_tool_result"
+	// BlockContainerUpload 容器文件引用块（anthropic container_upload）：
+	// 请求侧把已上传文件送进代码执行容器的输入目录，响应侧是模型运行
+	// 代码后产出的文件引用。与 BlockMedia 分开是因为它没有内容本体——
+	// 只有一个 file_id 和「进容器」的语义，塞进 Media.FileID 会让外族
+	// 把它当普通附件投递，上游按内容解码后 400。
+	BlockContainerUpload BlockType = "container_upload"
 )
 
 // Block 消息内容块。按 Type 取用对应字段，其余字段为零值。
@@ -51,6 +57,7 @@ type Block struct {
 	Thinking            *Thinking            // BlockThinking
 	ServerToolUse       *ServerToolUse       // BlockServerToolUse
 	WebSearchToolResult *WebSearchToolResult // BlockWebSearchToolResult
+	ContainerUpload     *ContainerUploadRef  // BlockContainerUpload
 	// Citations 本块正文引用的来源。挂在块上而非消息上，是因为三家协议都把它
 	// 绑到单个文本块：Anthropic 的 text.citations、Chat 的 message.annotations、
 	// Gemini 的 groundingSupports（按 part 定位）。偏移量也只有在单块正文内才
@@ -86,6 +93,12 @@ type Skill struct {
 	SkillID string
 	Type    string
 	Version string
+}
+
+// ContainerUploadRef 容器文件引用（container_upload 块的载荷）。
+// 只有 file_id：文件本体在 Files API 侧，块只是指针。
+type ContainerUploadRef struct {
+	FileID string
 }
 
 // Citation 正文中一段文字的来源标注。

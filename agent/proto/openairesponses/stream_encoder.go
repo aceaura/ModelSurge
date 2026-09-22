@@ -33,6 +33,8 @@ type streamEncoder struct {
 	droppedTier string
 	// droppedContainer 容器回显（anthropic 专属）被丢标记：Responses 无该槽位。
 	droppedContainer bool
+	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
+	droppedUploads int
 	// droppedSigs 被门控的外族/合成签名数，Notes() 收尾时报出。
 	droppedSigs int
 	completed   bool
@@ -191,6 +193,11 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 	case ir.BlockServerToolUse, ir.BlockWebSearchToolResult:
 		e.skip[ev.Index] = true
 		return nil, nil
+	case ir.BlockContainerUpload:
+		// 容器文件引用无 Responses 形态：整块跳过但计数，Notes() 报出。
+		e.skip[ev.Index] = true
+		e.droppedUploads++
+		return nil, nil
 	default: // text
 		b.typ = ir.BlockText
 		b.itemID = e.nextID("msg")
@@ -302,6 +309,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedContainer {
 		notes = append(notes, proto.ContainerDropNote())
 		e.droppedContainer = false
+	}
+	if e.droppedUploads > 0 {
+		notes = append(notes, proto.ContainerUploadDropNote(e.droppedUploads))
+		e.droppedUploads = 0
 	}
 	return notes
 }

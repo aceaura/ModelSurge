@@ -21,9 +21,11 @@ type streamEncoder struct {
 	droppedTier string
 	// droppedContainer 容器回显（anthropic 专属）被丢标记：Chat 无该槽位。
 	droppedContainer bool
-	toolIdx          map[int]int  // block index -> dense tool index
-	skipIdx          map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
-	refusalIdx       map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
+	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
+	droppedUploads int
+	toolIdx        map[int]int  // block index -> dense tool index
+	skipIdx        map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
+	refusalIdx     map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
 	// text 各块已下发的正文，供 annotations 反推 cited_text 与字符索引。
 	text     map[int]string
 	nextTool int
@@ -70,7 +72,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return nil, nil
 		}
 		if ev.Block != nil && ev.Block.Type != ir.BlockText && ev.Block.Type != ir.BlockThinking {
-			e.skipIdx[ev.Index] = true // server_tool_use / web_search_tool_result
+			e.skipIdx[ev.Index] = true // server_tool_use / web_search_tool_result / container_upload
+			if ev.Block.Type == ir.BlockContainerUpload {
+				e.droppedUploads++
+			}
 		}
 		return nil, nil // text/thinking 块开始无需输出
 	case ir.EvTextDelta:
@@ -157,6 +162,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedContainer {
 		notes = append(notes, proto.ContainerDropNote())
 		e.droppedContainer = false
+	}
+	if e.droppedUploads > 0 {
+		notes = append(notes, proto.ContainerUploadDropNote(e.droppedUploads))
+		e.droppedUploads = 0
 	}
 	return notes
 }

@@ -316,6 +316,8 @@ func toUnified(msgs []ir.Message, systemBlocks []ir.Block) ([]unifiedMsg, string
 				// 服务端工具块不回传：搜索结果已随 assistant 文本块（<web_search>
 				// 摘要）回显，模型上下文由该文本承载；若转为 toolUses/toolResults
 				// 反而因 web_search 未在客户端工具声明中触发全量工具剥离。
+			case ir.BlockContainerUpload:
+				// 容器文件引用不回传：Kiro 载荷没有 file_id 槽位，relay 诊断已报出。
 			}
 		}
 		u.text = strings.Join(textParts, "\n")

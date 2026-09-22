@@ -28,7 +28,9 @@ type streamEncoder struct {
 	// droppedContainer 容器回显（anthropic 专属维度）被丢标记：Gemini 响应
 	// 没有 container 槽位。
 	droppedContainer bool
-	finished         bool
+	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
+	droppedUploads int
+	finished       bool
 }
 
 // encText 一个正文块的流式下发记录。
@@ -97,6 +99,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvBlockStart:
 		if ev.Block != nil && ev.Block.Type == ir.BlockToolUse && ev.Block.ToolUse != nil {
 			e.pendingTool[ev.Index] = &encTool{name: ev.Block.ToolUse.Name, id: ev.Block.ToolUse.ID}
+		}
+		if ev.Block != nil && ev.Block.Type == ir.BlockContainerUpload {
+			// 容器文件引用无 Gemini part 形态：跳过但计数，Notes() 报出。
+			e.droppedUploads++
 		}
 		return nil, nil
 	case ir.EvToolInput:
@@ -200,6 +206,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedContainer {
 		notes = append(notes, proto.ContainerDropNote())
 		e.droppedContainer = false
+	}
+	if e.droppedUploads > 0 {
+		notes = append(notes, proto.ContainerUploadDropNote(e.droppedUploads))
+		e.droppedUploads = 0
 	}
 	return notes
 }

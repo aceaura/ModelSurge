@@ -87,6 +87,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	var notes []string
 
 	sigs, foreign, images, urlImages, errResults, refusals, badArgs := 0, 0, 0, 0, 0, 0, 0
+	uploads := 0
 	media := map[ir.MediaKind]int{}
 	for _, m := range req.Messages {
 		for _, b := range m.Content {
@@ -100,6 +101,8 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 						badArgs++
 					}
 				}
+			case ir.BlockContainerUpload:
+				uploads++
 			case ir.BlockThinking:
 				if b.Thinking != nil && b.Thinking.Signature != "" {
 					sigs++
@@ -170,6 +173,13 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 			notes = append(notes, fmt.Sprintf(
 				"passed through %d malformed tool call argument(s) verbatim: the tool will fail to parse them", badArgs))
 		}
+	}
+	if uploads > 0 && protoName != "anthropic" {
+		// 历史里的容器文件引用块无处安放：目标协议没有 container_upload
+		// 形态，模型看不到之前送进容器/由容器产出的文件。file_id 属客户端
+		// 凭据，不抄进注记。
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d container upload block(s): the target protocol has no container file-reference slot, the model cannot see files previously uploaded to or produced by the code-execution container", uploads))
 	}
 	if !caps.Sampling {
 		var params []string

@@ -338,6 +338,7 @@ func TierEchoDropNote(tier string) string {
 // 扫描结果即实编结果。
 func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArgs bool) []string {
 	var sigs, badArgs int
+	uploads := 0
 	for _, b := range resp.Content {
 		switch b.Type {
 		case ir.BlockThinking:
@@ -351,6 +352,8 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 					badArgs++
 				}
 			}
+		case ir.BlockContainerUpload:
+			uploads++
 		}
 	}
 	var notes []string
@@ -378,12 +381,24 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	if resp.Container != nil && protoName != "anthropic" {
 		notes = append(notes, ContainerDropNote())
 	}
+	// container_upload 块同理：外族没有容器文件引用槽位，模型产出/引用
+	// 的容器文件整块消失。
+	if uploads > 0 && protoName != "anthropic" {
+		notes = append(notes, ContainerUploadDropNote(uploads))
+	}
 	return notes
 }
 
 // ContainerDropNote 容器回显丢失注记：外族无 container 槽位时共用。
 func ContainerDropNote() string {
 	return "dropped container info: this protocol's response has no container field, the client cannot see or reuse the code-execution container that served the request"
+}
+
+// ContainerUploadDropNote 容器文件引用块丢失注记：外族无 container_upload
+// 槽位时共用（非流式扫描与流式编码器同一措辞）。
+func ContainerUploadDropNote(n int) string {
+	return fmt.Sprintf(
+		"dropped %d container upload block(s): this protocol has no container file-reference slot, the client cannot see files uploaded to or produced by the code-execution container", n)
 }
 
 // SigDropNote 流式编码器的外族签名丢弃注记（计数由编码器在门控分支累计）。

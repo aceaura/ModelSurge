@@ -98,6 +98,8 @@ type block struct {
 	Name      string          `json:"name,omitempty"`   // tool_use / server_tool_use
 	Input     json.RawMessage `json:"input,omitempty"`  // tool_use / server_tool_use
 	ToolUseID string          `json:"tool_use_id,omitempty"`
+	// FileID container_upload 块的文件引用（type=container_upload 时唯一载荷）。
+	FileID    string          `json:"file_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"` // tool_result / web_search_tool_result
 	IsError   bool            `json:"is_error,omitempty"`
 	Thinking  string          `json:"thinking,omitempty"`

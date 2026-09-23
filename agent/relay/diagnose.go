@@ -89,6 +89,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	sigs, foreign, images, urlImages, errResults, refusals, badArgs := 0, 0, 0, 0, 0, 0, 0
 	uploads, audioRefs, customCalls, customResults, redacted, opaque := 0, 0, 0, 0, 0, 0
 	serverCalls, serverResults := 0, 0
+	docCtx, docCites := 0, 0
 	media := map[ir.MediaKind]int{}
 	for _, m := range req.Messages {
 		if m.Role == ir.RoleAssistant && m.AudioID != "" {
@@ -133,6 +134,9 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 				}
 			case ir.BlockMedia:
 				countMedia(b.Media, media)
+				c, s := proto.DocConfigOf(b.Media)
+				docCtx += c
+				docCites += s
 			case ir.BlockRefusal:
 				refusals++
 			case ir.BlockToolResult:
@@ -150,6 +154,9 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 				for _, c := range b.ToolResult.Content {
 					if c.Type == ir.BlockMedia {
 						countMedia(c.Media, media)
+						dc, ds := proto.DocConfigOf(c.Media)
+						docCtx += dc
+						docCites += ds
 					}
 				}
 			}
@@ -168,6 +175,11 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream accepts inline base64 only, not remote URLs", urlImages))
 	}
 	notes = append(notes, mediaNotes(media, caps)...)
+	if (docCtx > 0 || docCites > 0) && protoName != "anthropic" {
+		// 文档块上的用途旁注与引用开关是 anthropic 专属配置：外族的附件槽位
+		// 只装文件本身。附件本体照常投递，故与 mediaNotes 的大类降级分开报。
+		notes = append(notes, proto.DocumentConfigDropNote(docCtx, docCites))
+	}
 	if refusals > 0 && !caps.Refusal {
 		// 历史里的拒绝会被并进普通文本发给上游。读者能做的是别把它当模型的
 		// 正常回答引用——上游看到的已经是不带标记的文本了。

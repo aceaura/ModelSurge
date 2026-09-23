@@ -281,6 +281,18 @@ func decodeBlock(b block, raw json.RawMessage) ir.Block {
 			out.Image = &ir.Image{MediaType: b.Source.MediaType, Data: b.Source.Data, URL: b.Source.URL}
 		}
 	case "document":
+		// source.type=content（官方 union 第四种形态，正文是字符串或 text/image
+		// 块数组）归不透明块，不投进 Media：Media 只有 base64 / URL / file_id
+		// 三种载体，装不下块数组。此前它落进 decodeDocument 的 default 被当
+		// base64 处理——Data 取空、MIME 兜底成 application/pdf，重新编码后写出
+		// 一个连 data 键都没有的 base64 PDF source：正文全丢，形状还非法
+		// （官方 Base64PDFSourceParam.data 是 Required），上游直接 400。
+		// 归不透明块后同族原样带回无损，外族整块丢弃并报损耗，两者都比伪造诚实。
+		if b.Source != nil && b.Source.Type == "content" {
+			out.Type = ir.BlockOpaque
+			out.Opaque = &ir.Opaque{WireType: b.Type, Body: raw}
+			return out
+		}
 		out.Type = ir.BlockMedia
 		out.Media = decodeDocument(b)
 	case "tool_use":
@@ -320,12 +332,17 @@ func decodeBlock(b block, raw json.RawMessage) ir.Block {
 	return out
 }
 
-// decodeDocument 解 document 块的四种 source 形态。
+// decodeDocument 解 document 块的 source 形态。source.type=content 不在此列，
+// 调用方已把它归成不透明块（Media 装不下块数组，见 decodeBlock）。
 // source.type=text 是内联纯文本，MIME 缺省按官方的 text/plain；其余形态缺省
 // application/pdf（对齐 cc-switch transform_responses.rs 的同款兜底）。
 // 缺省值不能留空：MIME 为空会让 MediaKindOf 判成 other，转出时投错槽位。
 func decodeDocument(b block) *ir.Media {
-	m := &ir.Media{Filename: b.Title}
+	m := &ir.Media{
+		Filename:         b.Title,
+		Context:          b.Context,
+		CitationsEnabled: decodeCitationsConfig(b.Citations),
+	}
 	if b.Source == nil {
 		m.Kind = ir.MediaDocument
 		m.MediaType = "application/pdf"
@@ -568,6 +585,12 @@ func encodeMedia(b ir.Block, out block) block {
 	m := b.Media
 	out.Type = "document"
 	out.Title = m.Filename
+	out.Context = m.Context
+	if m.CitationsEnabled != nil {
+		// 客户端的引用开关原样带回。丢了它上游按默认（不出引用）处理，
+		// 客户端明明开了文档引用却一条都收不到，且没有任何注记可循。
+		out.Citations = marshal(citationsConfig{Enabled: *m.CitationsEnabled})
+	}
 	switch {
 	case m.FileID != "":
 		out.Source = &mediaSource{Type: "file", FileID: m.FileID}

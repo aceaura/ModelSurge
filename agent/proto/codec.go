@@ -366,6 +366,7 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	var sigs, badArgs, customCalls int
 	uploads, redacted, opaque := 0, 0, 0
 	serverCalls, serverResults := 0, 0
+	docCtx, docCites := 0, 0
 	for _, b := range resp.Content {
 		switch b.Type {
 		case ir.BlockThinking:
@@ -373,6 +374,14 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 				(sigSlotless || !b.Thinking.SignatureGenuineFor(protoName)) {
 				sigs++
 			}
+		case ir.BlockMedia:
+			// 响应侧的文档块只在同族里带得回 context / citations 配置：外族的
+			// 附件槽位只装文件本身。本条只数配置，不判文档本体能否投递——
+			// 三族对本体的处置各不相同（gemini 走 inlineData 投得出去，OpenAI
+			// 两系投不出去），那是各自编码器的事。
+			c, s := DocConfigOf(b.Media)
+			docCtx += c
+			docCites += s
 		case ir.BlockRedactedThinking:
 			redacted++
 		case ir.BlockOpaque:
@@ -438,6 +447,9 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	}
 	if (serverCalls > 0 || serverResults > 0) && protoName != "anthropic" {
 		notes = append(notes, ServerToolDropNote(serverCalls, serverResults))
+	}
+	if (docCtx > 0 || docCites > 0) && protoName != "anthropic" {
+		notes = append(notes, DocumentConfigDropNote(docCtx, docCites))
 	}
 	if resp.Audio != nil && protoName != "openai-chat" {
 		notes = append(notes, AudioOutputDropNote())
@@ -528,6 +540,47 @@ func ServerToolDropNote(calls, results int) string {
 	}
 	return "dropped " + subject +
 		": this protocol's conversion emits no counterpart for Anthropic's hosted-tool blocks, so the receiving side sees neither which hosted search ran nor which pages it returned, and cannot replay either in a later turn"
+}
+
+// DocumentConfigDropNote 文档块配置丢失注记。Anthropic 的 document 块除附件本体
+// 外还带两项配置：context（客户端给模型的用途旁注）与 citations.enabled（文档引用
+// 开关）。外族的附件槽位只装文件本身，两项配置跨族必丢，且此前完全静默——
+// 客户端明明开了文档引用，回来一条都没有，却看不到任何迹象。ctx / cites 分别是
+// 带这两项配置的文档数，只渲染非零的那部分。配置内容属客户端提示词，不进注记。
+//
+// 与 ServerToolDropNote 同款纪律：措辞方向中立（请求侧受众是上游模型、响应侧
+// 受众是客户端，故用「接收端」），且不断言「协议没有槽位」——说的是本仓的转换
+// 没有对应字段，那才是可核实的事实。
+func DocumentConfigDropNote(ctx, cites int) string {
+	var subject, effect string
+	switch {
+	case ctx > 0 && cites > 0:
+		subject = fmt.Sprintf("the usage context on %d document(s) and the citation switch on %d document(s)", ctx, cites)
+		effect = "the guidance never reaches the receiving side and no document citation will come back"
+	case ctx > 0:
+		subject = fmt.Sprintf("the usage context on %d document(s)", ctx)
+		effect = "the guidance never reaches the receiving side, which gets the file alone"
+	default:
+		subject = fmt.Sprintf("the citation switch on %d document(s)", cites)
+		effect = "no document citation will come back"
+	}
+	return "dropped " + subject +
+		": this protocol's conversion has no field for per-document configuration, so " + effect
+}
+
+// DocConfigOf 报告一个附件是否带 Anthropic 的文档配置，两个返回值各为 0 或 1，
+// 便于调用方按块累加。请求侧诊断与非流式响应扫描共用，避免两处各写一遍判空。
+func DocConfigOf(m *ir.Media) (ctx, cites int) {
+	if m == nil {
+		return 0, 0
+	}
+	if m.Context != "" {
+		ctx = 1
+	}
+	if m.CitationsEnabled != nil {
+		cites = 1
+	}
+	return ctx, cites
 }
 
 // AudioOutputDropNote 模型音频输出丢失注记。完整音频只存在于 Chat 非流式

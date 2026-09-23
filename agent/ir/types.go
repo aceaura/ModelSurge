@@ -245,6 +245,14 @@ type Media struct {
 	// Format OpenAI input_audio 的 format 字段（"wav"/"mp3"）。它与 MediaType
 	// 可互推，但 Chat 协议只认 format，故原样留存避免反复猜。
 	Format string
+	// Context 文档块的用途说明（Anthropic document.context）：客户端告诉模型这份
+	// 附件是什么、该怎么用。其余三族的附件槽位没有对应字段，跨族必丢，入 IR 只为
+	// 同族往返保真与跨族损耗可见。属客户端提示词，不进日志与注记。
+	Context string
+	// CitationsEnabled 文档块的引用开关（Anthropic document.citations.enabled）。
+	// 用指针而不是 bool：「键缺失」与「显式 false」语义不同——后者是客户端主动
+	// 关掉文档引用，压成 false 会把主动关闭与没表态混为一谈，同族往返也不再逐字。
+	CitationsEnabled *bool
 }
 
 // MediaKindOf 从 MIME 推大类。空 MIME 归 MediaOther 而不是猜测：

@@ -90,13 +90,16 @@ type message struct {
 // server_tool_use 复用 ID/Name/Input，web_search_tool_result 复用
 // ToolUseID/Content（Content 为 web_search_result 子块数组）。
 type block struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	Source    *mediaSource    `json:"source,omitempty"` // image / document
-	Title     string          `json:"title,omitempty"`  // document 文件名
-	ID        string          `json:"id,omitempty"`     // tool_use / server_tool_use
-	Name      string          `json:"name,omitempty"`   // tool_use / server_tool_use
-	Input     json.RawMessage `json:"input,omitempty"`  // tool_use / server_tool_use
+	Type   string       `json:"type"`
+	Text   string       `json:"text,omitempty"`
+	Source *mediaSource `json:"source,omitempty"` // image / document
+	Title  string       `json:"title,omitempty"`  // document 文件名
+	// Context document 块的用途说明（官方 DocumentBlockParam.context）。与 text
+	// 块的正文不是一回事：它是客户端给模型的旁注，不进 IR 的 Text。
+	Context   string          `json:"context,omitempty"`
+	ID        string          `json:"id,omitempty"`    // tool_use / server_tool_use
+	Name      string          `json:"name,omitempty"`  // tool_use / server_tool_use
+	Input     json.RawMessage `json:"input,omitempty"` // tool_use / server_tool_use
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	// FileID container_upload 块的文件引用（type=container_upload 时唯一载荷）。
 	FileID    string          `json:"file_id,omitempty"`
@@ -137,8 +140,8 @@ type citationIn struct {
 	Title          string `json:"title,omitempty"`
 	CitedText      string `json:"cited_text,omitempty"`
 	EncryptedIndex string `json:"encrypted_index,omitempty"`
-	StartCharIndex int `json:"start_char_index"`
-	EndCharIndex   int `json:"end_char_index"`
+	StartCharIndex int    `json:"start_char_index"`
+	EndCharIndex   int    `json:"end_char_index"`
 	// Source search_result_location 的来源 URL——该形态没有 url 键。
 	Source string `json:"source,omitempty"`
 	// DocumentTitle char/page/content_block 三种形态的文档标题——它们没有 title 键。
@@ -175,6 +178,13 @@ type mediaSource struct {
 	Data      string `json:"data,omitempty"`
 	URL       string `json:"url,omitempty"`
 	FileID    string `json:"file_id,omitempty"`
+}
+
+// citationsConfig document / search_result 块上 citations 键承载的配置对象
+// （官方 CitationsConfigParam，只有 enabled 一个键）。与 text 块上同名的引用
+// 数组不是一回事，故单立一个类型，不复用 citationOut。
+type citationsConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 type cacheControl struct {

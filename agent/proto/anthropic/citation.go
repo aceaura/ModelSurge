@@ -20,6 +20,23 @@ func decodeCitations(raw json.RawMessage) []ir.Citation {
 	return citationsToIR(elems)
 }
 
+// decodeCitationsConfig 解析 document / search_result 块上 citations 键承载的
+// {"enabled":bool} 配置对象。返回 nil 表示客户端根本没给这个键——与显式给了
+// false 语义不同，故用指针保留三态。数组形态（text 块的引用）与非对象形态一律
+// 返回 nil：那是另一种东西，误当配置会在编码时写出一个假的开关。
+func decodeCitationsConfig(raw json.RawMessage) *bool {
+	if len(raw) == 0 || raw[0] != '{' {
+		return nil
+	}
+	var cfg citationsConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil
+	}
+	// enabled 缺键时官方语义为关闭，但「给了对象却没给 enabled」仍是一次显式
+	// 表态，按 false 原样带回，不吞掉整个配置对象。
+	return &cfg.Enabled
+}
+
 // citationsToIR 逐条以原文收，再把可跨协议的字段投影进 IR。
 //
 // 官方 union 有五种形态，其中只有 web_search_result_location 带 url、

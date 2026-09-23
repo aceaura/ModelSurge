@@ -7,7 +7,7 @@ import (
 
 // 上游错误体一律要解析出干净的消息与错误码。此前 relay 只做 excerpt(原文)，客户端
 // 拿到的 error.message 是一整段转义 JSON，上游自报的 code 只糊在文本里、Code 恒空；
-// 而同一个错误走 kiro 目标（解 ModelSurge 信封）却结构完整——两条路径口径相反。
+// 而同一个错误走 ModelSurge 信封时却结构完整——两条路径口径相反。
 func TestParseUpstreamErrorExtractsMessageAndCode(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -34,6 +34,10 @@ func TestParseUpstreamErrorExtractsMessageAndCode(t *testing.T) {
 		// error 对象里只有 code 没有 message 时，消息退到顶层键，code 仍要留住
 		{"code without message", `{"error":{"code":"context_length_exceeded"},"message":"too many tokens"}`,
 			"too many tokens", "context_length_exceeded"},
+		// status 写成数字的信封：字段类型不匹配不得连累解得好的 message 与 code。
+		// 修复前整个 error 对象被丢弃，Message 回落成转义原文、Code 恒空。
+		{"numeric status envelope", `{"error":{"code":"throttled","message":"slow down","retryable":true,"status":429}}`,
+			"slow down", "throttled"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -56,8 +60,8 @@ func TestParseUpstreamErrorExtractsMessageAndCode(t *testing.T) {
 // 规范类型与可重试性一律按状态码推，不采信上游自报的 type。上游的 type 是各家私有
 // 词表（OpenAI 写 "requests"/"server_error"，Anthropic 写 "overloaded_error"），照抄
 // 会让同一个 429 因错误体外形不同拿到两个规范类型，客户端与 SDK 的退避判断随之分叉。
-// kiro 路径早就是这条规则（kiro_remote.go 只取 ClassifyStatus 的 type、丢掉信封的），
-// 普通路径必须一致。
+// ModelSurge 信封路径早就是这条规则（只取 ClassifyStatus 的 type、丢掉信封自报的），
+// 直连路径必须一致。
 func TestParseUpstreamErrorTypeFollowsStatusNotSelfReport(t *testing.T) {
 	for _, tc := range []struct {
 		status    int
@@ -148,6 +152,8 @@ func TestParseUpstreamErrorNumericCodeIsNotAnErrorCode(t *testing.T) {
 		{"null code", `{"error":{"message":"m","code":null}}`, ""},
 		{"absent code", `{"error":{"message":"m"}}`, ""},
 		{"real string code", `{"error":{"message":"m","code":"context_length_exceeded"}}`, "context_length_exceeded"},
+		// status 是数字（信封形态）时同样只算状态码回声，不得当错误码收下。
+		{"numeric status", `{"error":{"code":429,"message":"m","status":503}}`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ParseUpstreamError(429, []byte(tc.body)).Code; got != tc.want {
@@ -167,5 +173,17 @@ func TestParseUpstreamErrorSurvivesMalformedBody(t *testing.T) {
 		if e == nil || e.Message == "" || e.Type != ErrTypeOverloaded || !e.Retryable {
 			t.Errorf("body=%q -> %+v，want 非空消息 + overloaded/true", body, e)
 		}
+	}
+}
+
+// message 自身解不出来（数字型）时消息回落原文，但同一个 error 对象里解得好的
+// code 不得跟着丢：归因靠的是 code，回落原文只负责让失败可见。
+func TestParseUpstreamErrorKeepsCodeWhenMessageUnusable(t *testing.T) {
+	e := ParseUpstreamError(400, []byte(`{"error":{"code":"context_length_exceeded","message":123}}`))
+	if e.Code != "context_length_exceeded" {
+		t.Errorf("Code = %q，want context_length_exceeded", e.Code)
+	}
+	if !strings.Contains(e.Message, "context_length_exceeded") {
+		t.Errorf("Message = %q，want 回落原文", e.Message)
 	}
 }

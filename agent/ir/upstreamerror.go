@@ -29,7 +29,10 @@ type upstreamErrorEnvelope struct {
 
 // upstreamErrorObject error 对象内部。Code 用 RawMessage 收：OpenAI 系是字符串
 // （"context_length_exceeded"）、Gemini/Azure 是数字或数字串（429），后者只是把
-// HTTP 状态码又说了一遍，不是错误码，必须区别对待。
+// HTTP 状态码又说了一遍，不是错误码，必须区别对待。Status 只有字符串形态有信息量
+// （Gemini 的 RESOURCE_EXHAUSTED）；信封与部分代理写成数字（status:429），那一样
+// 只是状态码回声，解不进来正好——但字段类型不匹配会让 Unmarshal 报错，调用方必须
+// 容忍，否则连解得好的 message 一起丢，客户端只能拿到转义原文。
 type upstreamErrorObject struct {
 	Message string          `json:"message"`
 	Type    string          `json:"type"`
@@ -45,14 +48,13 @@ const upstreamErrMessageLimit = 500
 // 此前 relay 只做 excerpt(原文) 塞进 Message：客户端拿到的 error.message 是一整段
 // 转义后的 JSON（`"{\"error\":{\"message\":\"Overloaded\",...}}"`），而上游自报的
 // 错误码（OpenAI 的 context_length_exceeded、Gemini 的 RESOURCE_EXHAUSTED）全糊在
-// 文本里，Code 恒空。同一个上游错误走 kiro 目标时反而结构完整——kiro_remote.go 解
-// ModelSurge 信封后填了 Code/Reason/干净的 Message，两条路径口径相反。
+// 文本里，Code 恒空——上游自报的错误码是归因的关键，糊在自由文本里等于没有。
 //
 // Type 与 Retryable 一律按状态码推（ClassifyStatus），不采信上游自报的 type：
-//   - kiro 路径早就是这么做的（`typ, _ := ir.ClassifyStatus(status)`），两条路径必须
-//     同一条规则，否则同一个上游 429 因错误体外形不同拿到两个规范类型；
 //   - 上游的 type 是各家私有词表（OpenAI 写 "requests"、"server_error"），照抄进
-//     规范类型会把客户端与 SDK 的重试判断带偏。
+//     规范类型会把客户端与 SDK 的重试判断带偏；
+//   - 只认状态码这一条规则，才不会让同一个上游 429 因错误体外形不同拿到两个
+//     规范类型。
 //
 // 解析不出消息时回落成截断后的原文：HTML 错误页、代理插的空壳 JSON 仍要可见，
 // 不能因为「不是认识的形状」就把上游的失败说成一句 "upstream error"。
@@ -81,12 +83,14 @@ func parseUpstreamErrorBody(body []byte) (msg, code string) {
 	}
 	if len(env.Error) > 0 {
 		if obj := strings.TrimSpace(string(env.Error)); obj != "" && obj[0] == '{' {
+			// 外层 body 已是合法 JSON，这里的 Unmarshal 只可能报字段类型不匹配；
+			// 而 Go 的解码器记下类型错误后会把其余键解完，所以不能拿 err != nil
+			// 当「什么都没解到」——那会因为一个不认识的字段形状丢掉整段上游消息。
 			var o upstreamErrorObject
-			if json.Unmarshal(env.Error, &o) == nil {
-				code = upstreamErrorCode(o)
-				if o.Message != "" {
-					return o.Message, code
-				}
+			_ = json.Unmarshal(env.Error, &o)
+			code = upstreamErrorCode(o)
+			if o.Message != "" {
+				return o.Message, code
 			}
 		} else {
 			// {"error":"upstream boom"} 这种把消息直接写成字符串的形态。

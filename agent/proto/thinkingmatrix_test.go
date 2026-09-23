@@ -9,7 +9,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -118,26 +117,6 @@ func TestBudgetOnlyReachesEffortProtocols(t *testing.T) {
 				}
 			})
 		}
-	}
-}
-
-// 客户端只给 budget 时 kiro 出站的档位也必须来自统一换算，而不是它自己那套
-// 与 new-api 不同源的阈值（>=8000 high / >=3000 medium / 其余 low）。
-//
-// 4096 在旧阈值下是 medium，在统一换算下也是 medium——所以这一格必须取一个
-// 两套阈值判断不同的值：5000 旧阈值算 medium，统一换算（<=8192）也是 medium；
-// 2000 旧阈值 low，统一换算（>1024）是 medium。取 2000 才能区分两者。
-func TestBudgetOnlyReachesKiroEffort(t *testing.T) {
-	// kiro 的 effort 通道按模型查表，需用有通道的模型名。
-	req := baseRequest(100000, &ir.ThinkingConfig{Enabled: true, BudgetTokens: 2000})
-	req.Model = "claude-sonnet-5"
-	body := encodeWithCompletion(t, "kiro", req)
-	if !strings.Contains(body, `"effort":"medium"`) {
-		t.Fatalf("kiro effort must be derived by the shared conversion (budget 2000 -> medium), got: %s", body)
-	}
-	// 旧的就地阈值会把 2000 判成 low，这条断言钉住换算已收敛到一处。
-	if strings.Contains(body, `"effort":"low"`) {
-		t.Fatalf("kiro used its own legacy thresholds instead of the shared conversion: %s", body)
 	}
 }
 

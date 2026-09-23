@@ -20,7 +20,7 @@ func TestDiagnoseToolModifiersDroppedOffAnthropic(t *testing.T) {
 		{Name: "d", AllowedCallers: []string{"direct"}},
 		{Name: "e"}, // 无修饰不计
 	}}
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "tool modifiers on 4 tool(s)") {
 			t.Errorf("%s 应报 4 件工具的修饰丢失：%q", name, got)
@@ -33,7 +33,7 @@ func TestDiagnoseToolModifiersDroppedOffAnthropic(t *testing.T) {
 
 func TestDiagnoseToolModifiersSilentWhenAbsent(t *testing.T) {
 	req := &ir.Request{Tools: []ir.Tool{{Name: "plain"}}}
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 无修饰误报：%v", name, notes)
 		}

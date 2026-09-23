@@ -6,7 +6,6 @@ import (
 
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -61,7 +60,7 @@ func TestChainFieldsRoundTripSameProtocol(t *testing.T) {
 // 其他三族没有会话链槽位：链锚点一个字符都不许进载荷。
 func TestChainFieldsNeverLeakToOtherProtocols(t *testing.T) {
 	r, _ := proto.MustInbound("openai-responses").DecodeRequest([]byte(chainBody))
-	for _, name := range []string{"anthropic", "openai-chat", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat"} {
 		out, err := proto.MustOutbound(name).EncodeRequest(r)
 		if err != nil {
 			t.Fatalf("%s: EncodeRequest err=%v", name, err)

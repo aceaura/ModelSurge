@@ -92,7 +92,7 @@ func TestInboundDecodesMedia(t *testing.T) {
 }
 
 // 图片仍须解成 BlockImage：把它一并卷进 BlockMedia 会让既有图片路径
-// （四个出站的图片槽位、kiro 的 images 数组）全部失效。
+// （四个出站的图片槽位）全部失效。
 func TestGeminiImageStillDecodesAsImage(t *testing.T) {
 	body := `{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"AAA="}}]}]}`
 	req, err := proto.MustInbound("gemini").DecodeRequest([]byte(body))
@@ -359,14 +359,16 @@ func TestAudioDegradesToPlaceholderOnAnthropic(t *testing.T) {
 	}
 }
 
-// kiro 一个附件槽位都没有，全部大类都必须降级为占位文本。
-func TestKiroDegradesAllMediaKinds(t *testing.T) {
-	for _, k := range []ir.MediaKind{ir.MediaDocument, ir.MediaAudio, ir.MediaVideo, ir.MediaOther} {
+// anthropic 只认 document：其余大类都没有槽位，必须降级为占位文本而不是
+// 整块消失。占位文本走的是同一段代码，逐类跑一遍防止某一类漏进 switch 的
+// default 之外。
+func TestAnthropicDegradesUnsupportedMediaKinds(t *testing.T) {
+	for _, k := range []ir.MediaKind{ir.MediaAudio, ir.MediaVideo, ir.MediaOther} {
 		t.Run(string(k), func(t *testing.T) {
 			req := mediaReq(&ir.Media{Kind: k, MediaType: "application/x-" + string(k), Data: pdfB64})
-			wire := wireOf(t, "kiro", req)
+			wire := wireOf(t, "anthropic", req)
 			if strings.Contains(wire, pdfB64) {
-				t.Errorf("附件内容被塞进了 kiro 载荷：\n%s", wire)
+				t.Errorf("装不下的附件内容被塞进了 anthropic 载荷：\n%s", wire)
 			}
 			if !strings.Contains(wire, "attachment dropped") {
 				t.Errorf("整块消失：\n%s", wire)
@@ -521,7 +523,7 @@ func TestOrphanToolResultKeepsMedia(t *testing.T) {
 // 本身就是该报的丢失。
 func TestNilMediaDegradesSafely(t *testing.T) {
 	req := mediaReq(nil)
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		t.Run(name, func(t *testing.T) {
 			wire := wireOf(t, name, req)
 			if !strings.Contains(wire, "attachment dropped") {

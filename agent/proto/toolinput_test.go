@@ -9,7 +9,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -56,11 +55,11 @@ func TestMalformedToolArgsNeverVanish(t *testing.T) {
 	}
 }
 
-// 对象槽位协议（anthropic/kiro）非法参数挪进 RawArgsKey 键位，原文可查；
+// 对象槽位协议（anthropic）非法参数挪进 RawArgsKey 键位，原文可查；
 // 字符串槽位协议（chat/responses）原样透传，协议允许任意字符串。
 func TestMalformedToolArgsDirectionalHandling(t *testing.T) {
 	const truncated = `{"city": "Par`
-	for _, name := range []string{"anthropic", "kiro"} {
+	for _, name := range []string{"anthropic"} {
 		body, _ := proto.MustOutbound(name).EncodeRequest(toolHistoryRequest(t, truncated))
 		s := string(body)
 		if !strings.Contains(s, ir.RawArgsKey) {
@@ -94,7 +93,7 @@ func TestCustomToolCrossProtocolObjectProjection(t *testing.T) {
 			}}}},
 		},
 	}
-	for _, name := range []string{"anthropic", "openai-chat", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat"} {
 		body, err := proto.MustOutbound(name).EncodeRequest(req)
 		if err != nil {
 			t.Fatalf("%s EncodeRequest: %v", name, err)
@@ -106,7 +105,7 @@ func TestCustomToolCrossProtocolObjectProjection(t *testing.T) {
 	}
 
 	resp := &ir.Response{ID: "r1", Model: "m", Content: []ir.Block{{Type: ir.BlockToolUse, ToolUse: call}}}
-	for _, name := range []string{"anthropic", "openai-chat", "gemini", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "gemini"} {
 		codec := proto.MustInbound(name)
 		body, err := codec.EncodeResponse(resp)
 		if err != nil {
@@ -192,20 +191,11 @@ func TestTruncatedStreamedArgsReachClient(t *testing.T) {
 	if !strings.Contains(string(in), ir.RawArgsKey) {
 		t.Errorf("聚合后截断原文丢失: %s", in)
 	}
-	// 非流式编码给客户端：input 是对象且不塌空。kiro 的 EncodeResponse 是
-	// 每行一条事件的 NDJSON，不是单个 JSON 文档，逐行校验。
+	// 非流式编码给客户端：input 是对象且不塌空。
 	for _, name := range proto.InboundNames() {
 		body, err := proto.MustInbound(name).EncodeResponse(resp)
 		if err != nil {
 			t.Errorf("%s: EncodeResponse err=%v", name, err)
-			continue
-		}
-		if name == "kiro" {
-			for line := range strings.Lines(string(body)) {
-				if strings.TrimSpace(line) != "" && !json.Valid([]byte(line)) {
-					t.Errorf("kiro: 事件行不是合法 JSON: %s", line)
-				}
-			}
 			continue
 		}
 		if !json.Valid(body) {
@@ -223,17 +213,6 @@ func TestEncodeResponseSanitizesDirectly(t *testing.T) {
 		body, err := proto.MustInbound(name).EncodeResponse(resp)
 		if err != nil {
 			t.Errorf("%s: EncodeResponse err=%v", name, err)
-			continue
-		}
-		if name == "kiro" {
-			for line := range strings.Lines(string(body)) {
-				if strings.TrimSpace(line) != "" && !json.Valid([]byte(line)) {
-					t.Fatalf("kiro: 事件行不是合法 JSON: %s", line)
-				}
-			}
-			if !strings.Contains(string(body), ir.RawArgsKey) {
-				t.Errorf("kiro: 原文没挪键: %s", body)
-			}
 			continue
 		}
 		if !json.Valid(body) {

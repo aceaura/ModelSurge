@@ -7,15 +7,16 @@ import (
 	"github.com/aceaura/ModelSurge/agent/ir"
 )
 
-// R58 service_tier / prompt_cache_key 诊断：无槽位（kiro）与有槽位但值集
+// R58 service_tier / prompt_cache_key 诊断：无槽位与有槽位但值集
 // 装不下（anthropic 的 priority、chat 的 ultrafast）是两种措辞，读者动作
 // 不同（前者认命，后者可以换档位值）。缓存键值不回显（客户端自选串）。
 
 func TestDiagnoseServiceTierNoSlot(t *testing.T) {
 	req := &ir.Request{ServiceTier: "auto"}
-	got := strings.Join(Diagnose(req, "kiro", capsOf(t, "kiro")), "; ")
+	const base = "anthropic"
+	got := strings.Join(Diagnose(req, base, capsWithout(t, base, "ServiceTier")), "; ")
 	if !strings.Contains(got, "no capacity tier field") {
-		t.Errorf("kiro 丢弃 service tier 未报告：%q", got)
+		t.Errorf("无档位槽位时丢弃 service tier 未报告：%q", got)
 	}
 	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
@@ -58,7 +59,7 @@ func TestDiagnoseServiceTierNoEquivalent(t *testing.T) {
 
 func TestDiagnosePromptCacheKeyDroppedOffOpenAI(t *testing.T) {
 	req := &ir.Request{PromptCacheKey: "secret-ish-client-chosen-key"}
-	for _, name := range []string{"anthropic", "kiro"} {
+	for _, name := range []string{"anthropic"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "prompt cache key") {
 			t.Errorf("%s 丢弃缓存键未报告：%q", name, got)
@@ -74,9 +75,9 @@ func TestDiagnosePromptCacheKeyDroppedOffOpenAI(t *testing.T) {
 	}
 }
 
-// 两维全缺省四家静默。
+// 两维全缺省时三个出站都静默。
 func TestDiagnoseRoutingParamsSilentWhenAbsent(t *testing.T) {
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(&ir.Request{}, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 空请求误报：%v", name, notes)
 		}

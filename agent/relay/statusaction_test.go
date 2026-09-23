@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,61 +8,77 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/aceaura/ModelSurge/agent/config"
 	"github.com/aceaura/ModelSurge/agent/ir"
-	"github.com/aceaura/ModelSurge/agent/proto"
 	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
 )
 
-// 跨路径不变量：同一个上游状态码，走 kiro 目标与走普通协议目标必须得出同一个调度
-// 动作。402 曾在此分叉——kiro 专属分支换目标，普通协议被 ClassifyStatus 的 default
-// 判成不可重试直接 stop，池子里明明还有可用账号却只用了一个。
-func TestLocalResultActionAgreesAcrossProtocols(t *testing.T) {
-	statuses := []int{400, 401, 402, 403, 404, 405, 408, 409, 410, 413, 422, 429, 451, 500, 502, 503, 504}
-	for _, status := range statuses {
-		e := ir.NewHTTPError(status, "boom")
-		for _, attempt := range []int{0, 2} {
-			kiro := localResultAction(candidate{protocol: "kiro"}, e, attempt, 3)
-			norm := localResultAction(candidate{protocol: "anthropic"}, e, attempt, 3)
-			if kiro != norm {
-				t.Errorf("status=%d attempt=%d：kiro=%q 普通协议=%q（跨路径口径相反）", status, attempt, kiro, norm)
+// 调度动作只由错误本身决定，与目标协议无关：localResultAction 的签名里已经没有
+// 候选，这条矩阵钉住「状态码 → 动作」这张表。402 曾在 default 分支被判成不可重试
+// 直接 stop，池子里明明还有可用账号却只用了一个。
+func TestLocalResultActionByStatus(t *testing.T) {
+	const sameTargetRetries = 3
+	cases := []struct {
+		status        int
+		wantFirst     string // attempt=0
+		wantExhausted string // attempt=sameTargetRetries
+	}{
+		{400, replayv1.ActionStop, replayv1.ActionStop},
+		{401, replayv1.ActionRetryTarget, replayv1.ActionSwitchTarget},
+		// 402/429 走专属分支：同目标重试耗尽与否都直接换号。
+		{402, replayv1.ActionSwitchTarget, replayv1.ActionSwitchTarget},
+		{403, replayv1.ActionRetryTarget, replayv1.ActionSwitchTarget},
+		{404, replayv1.ActionStop, replayv1.ActionStop},
+		{405, replayv1.ActionStop, replayv1.ActionStop},
+		{408, replayv1.ActionRetryTarget, replayv1.ActionSwitchTarget},
+		{409, replayv1.ActionStop, replayv1.ActionStop},
+		{410, replayv1.ActionStop, replayv1.ActionStop},
+		{413, replayv1.ActionStop, replayv1.ActionStop},
+		{422, replayv1.ActionStop, replayv1.ActionStop},
+		{425, replayv1.ActionRetryTarget, replayv1.ActionSwitchTarget},
+		{429, replayv1.ActionSwitchTarget, replayv1.ActionSwitchTarget},
+		{451, replayv1.ActionStop, replayv1.ActionStop},
+		{500, replayv1.ActionRetryTarget, replayv1.ActionSwitchTarget},
+		{502, replayv1.ActionRetryTarget, replayv1.ActionSwitchTarget},
+		{503, replayv1.ActionRetryTarget, replayv1.ActionSwitchTarget},
+		{504, replayv1.ActionRetryTarget, replayv1.ActionSwitchTarget},
+	}
+	for _, c := range cases {
+		e := ir.NewHTTPError(c.status, "boom")
+		t.Run(fmt.Sprintf("%d/first", c.status), func(t *testing.T) {
+			if got := localResultAction(e, 0, sameTargetRetries); got != c.wantFirst {
+				t.Errorf("status=%d attempt=0 action=%q，want %q", c.status, got, c.wantFirst)
 			}
-		}
+		})
+		t.Run(fmt.Sprintf("%d/exhausted", c.status), func(t *testing.T) {
+			if got := localResultAction(e, sameTargetRetries, sameTargetRetries); got != c.wantExhausted {
+				t.Errorf("status=%d attempt=%d action=%q，want %q", c.status, sameTargetRetries, got, c.wantExhausted)
+			}
+		})
 	}
 }
 
-// 402/429 都要**立刻**换目标，不在同一个账号上重试：账号没钱不会因为再问一次就有钱，
-// 限流也不会。同目标重试只是白烧一轮配额窗口。
-func TestLocalResultActionSwitchesImmediatelyOnQuota(t *testing.T) {
-	for _, status := range []int{http.StatusPaymentRequired, http.StatusTooManyRequests} {
+// 上下文超限一律 stop：换账号、原地重试都不会让请求变小，重试只是把同一个必然
+// 失败的请求再发几遍。这条优先于状态码——上游可能报成 400 也可能报成 429。
+func TestLocalResultActionStopsOnContextExceeded(t *testing.T) {
+	for _, status := range []int{400, 429, 500} {
 		e := ir.NewHTTPError(status, "boom")
-		if got := localResultAction(candidate{protocol: "anthropic"}, e, 0, 3); got != replayv1.ActionSwitchTarget {
-			t.Errorf("status=%d attempt=0 action=%q，want switch_target", status, got)
-		}
-		if got := localResultAction(candidate{protocol: "kiro"}, e, 0, 3); got != replayv1.ActionSwitchTarget {
-			t.Errorf("kiro status=%d attempt=0 action=%q，want switch_target", status, got)
+		e.Reason = ReasonContextExceeded
+		if got := localResultAction(e, 0, 3); got != replayv1.ActionStop {
+			t.Errorf("status=%d 上下文超限 action=%q，want stop", status, got)
 		}
 	}
 }
 
-// kiro 的 401/403 首次尝试仍原地重试：kiro 的 token 刷新有竞态，Upstream 会把 401
-// 判成不可重试（ClassifyKiroError 的 recoverable 集里没有 401），这条 kiro 专属救援
-// 不得被 402 的通用化改动顺带抹掉。
-func TestKiroAuthFailureStillRetriesTargetOnce(t *testing.T) {
-	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
-		e := &ir.Error{StatusCode: status, Type: ir.ErrTypeAuth, Message: "boom", Retryable: false}
-		if got := localResultAction(candidate{protocol: "kiro"}, e, 0, 3); got != replayv1.ActionRetryTarget {
-			t.Errorf("kiro status=%d attempt=0 action=%q，want retry_target", status, got)
-		}
-		if got := localResultAction(candidate{protocol: "kiro"}, e, 2, 3); got != replayv1.ActionStop {
-			t.Errorf("kiro status=%d attempt=2 action=%q，want stop（上游已判不可重试）", status, got)
-		}
+// nil 错误不是失败，但也不该让调度器继续换目标。
+func TestLocalResultActionNilErrorStops(t *testing.T) {
+	if got := localResultAction(nil, 0, 3); got != replayv1.ActionStop {
+		t.Errorf("nil error action=%q，want stop", got)
 	}
 }
 
-// 端到端：普通协议目标返回 402（账号欠费）时必须换着账号试完整个池子。
+// 端到端：上游返回 402（账号欠费）时必须换着账号试完整个池子。
 // 修复前 dispatch=1 —— 池里 4 个可用账号一个都没用上。
-func TestPaymentRequiredBurnsPoolOnNormalProtocol(t *testing.T) {
+func TestPaymentRequiredBurnsPool(t *testing.T) {
 	var hits atomic.Int32
 	up := statusUpstream(t, http.StatusPaymentRequired, "credit balance exhausted", &hits)
 	defer up.Close()
@@ -74,22 +89,6 @@ func TestPaymentRequiredBurnsPoolOnNormalProtocol(t *testing.T) {
 	}
 	if w.Code != http.StatusPaymentRequired {
 		t.Fatalf("客户端状态码=%d，want 402（不得被类型反推改写成 429）", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), ir.ErrTypeRateLimit) {
-		t.Fatalf("客户端错误类型=%s，want 含 %s", w.Body.String(), ir.ErrTypeRateLimit)
-	}
-}
-
-// kiro 路径的 402 行为不得因专属分支被通用分支接管而变化：仍然换满一池，
-// 且规范类型与普通路径一致（rate_limit_error，不再是 upstream_error）。
-func TestPaymentRequiredBurnsPoolOnKiro(t *testing.T) {
-	rp := &quotaKiroReplay{status: http.StatusPaymentRequired, limit: poolLimit}
-	w := quotaForward(t, rp, "public")
-	if rp.calls != poolLimit+1 {
-		t.Fatalf("kiro 402 dispatch=%d，want %d", rp.calls, poolLimit+1)
-	}
-	if w.Code != http.StatusPaymentRequired {
-		t.Fatalf("客户端状态码=%d，want 402", w.Code)
 	}
 	if !strings.Contains(w.Body.String(), ir.ErrTypeRateLimit) {
 		t.Fatalf("客户端错误类型=%s，want 含 %s", w.Body.String(), ir.ErrTypeRateLimit)
@@ -126,51 +125,4 @@ func statusUpstream(t *testing.T, status int, message string, hits *atomic.Int32
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"error":{"type":"x","message":` + fmt.Sprintf("%q", message) + `}}`))
 	}))
-}
-
-func quotaForward(t *testing.T, rp Replay, model string) *httptest.ResponseRecorder {
-	t.Helper()
-	f := NewForwarder(&config.Config{}, rp, nil)
-	w := httptest.NewRecorder()
-	f.Forward(t.Context(), w, proto.MustInbound("anthropic"), &ir.Request{
-		Model: model, MaxTokens: 64,
-		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
-	}, "client-key")
-	return w
-}
-
-// quotaKiroReplay 让 ExecuteKiro 返回给定状态码与空 body（非 ModelSurge 信封形态，
-// 走 openKiroReplay 的 ir.NewHTTPError 分支）。每次 Dispatch 发一个新 TargetID，
-// 超过 limit 就报池子空了，好把「烧了几个账号」变成可数的。
-type quotaKiroReplay struct {
-	status int
-	limit  int
-	calls  int
-}
-
-func (r *quotaKiroReplay) Dispatch(context.Context, replayv1.DispatchRequest) (replayv1.TargetLease, error) {
-	r.calls++
-	if r.calls > r.limit {
-		return replayv1.TargetLease{}, fmt.Errorf("pool exhausted after %d targets", r.limit)
-	}
-	return replayv1.TargetLease{
-		RequestID: "req", GroupID: "g", TargetID: fmt.Sprintf("t%d", r.calls),
-		Protocol: "kiro", NativeModel: "public",
-	}, nil
-}
-
-func (*quotaKiroReplay) Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error) {
-	return replayv1.ResultResponse{Applied: true}, nil
-}
-
-func (*quotaKiroReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
-}
-
-func (r *quotaKiroReplay) ExecuteKiro(context.Context, replayv1.KiroExecuteRequest) (*http.Response, error) {
-	return &http.Response{
-		StatusCode: r.status,
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body:       http.NoBody,
-	}, nil
 }

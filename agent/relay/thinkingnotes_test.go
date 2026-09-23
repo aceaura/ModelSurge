@@ -24,10 +24,6 @@ func (*thinkNotesReplay) Report(context.Context, replayv1.ResultReport) (replayv
 	return replayv1.ResultResponse{}, nil
 }
 
-func (*thinkNotesReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
-}
-
 // 换算发生在拿到 lease 之后、按目标 max_tokens 算出来，Diagnose 看不到；
 // 两者必须在响应头里汇合，否则客户端看到的 budget_tokens 与它给的 effort
 // 之间没有任何可追溯的说明。

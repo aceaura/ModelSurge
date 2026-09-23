@@ -18,14 +18,13 @@ func refusalReq() *ir.Request {
 
 // 历史里的拒绝会被并进普通文本发给无槽位的上游。这件事必须报出来，否则读者
 // 会以为模型仍能看出那一轮是拒绝。真实 Caps 下 openai 两系有槽位、anthropic
-// 与 kiro 没有，四个出站同时覆盖到分支的两侧。
+// 没有，三个出站同时覆盖到分支的两侧。
 func TestDiagnoseRefusalPerProtocol(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		want bool
 	}{
 		{"anthropic", true},
-		{"kiro", true},
 		{"openai-chat", false},
 		{"openai-responses", false},
 	} {

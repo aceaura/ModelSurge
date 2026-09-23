@@ -1,9 +1,8 @@
 // clientheaders.go 客户端入站请求里需要转交上游的 wire 头（目前只有 anthropic-beta）。
 //
 // 走 context 而不是 ir.Request：ir.Request 是跨协议的规范请求，Clone 是 JSON 往返，
-// 而 kiro 数据面把整个 ir.Request 序列化进信封交给 Replay——放进去等于把一个只对
-// anthropic wire 有意义的头塞进 kiro 载荷与所有出站编码器的视野。它和 request id
-// 同源同寿命（一次请求、只给上游看），按同一套 ctx 载体走。
+// 把一个只对 anthropic wire 有意义的头放进去等于让它进入所有出站编码器的视野。
+// 它和 request id 同源同寿命（一次请求、只给上游看），按同一套 ctx 载体走。
 package relay
 
 import (

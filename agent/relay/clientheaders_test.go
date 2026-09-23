@@ -52,7 +52,7 @@ func TestParseAnthropicBetas(t *testing.T) {
 
 // beta 是 Anthropic 私有词汇：转交给非 anthropic wire 的上游轻则被忽略、重则 400。
 func TestApplyClientWireHeadersOnlyOnAnthropicUpstream(t *testing.T) {
-	for _, protoName := range []string{"anthropic", "openai-chat", "openai-responses", "codex", "gemini", "kiro"} {
+	for _, protoName := range []string{"anthropic", "openai-chat", "openai-responses", "codex", "gemini"} {
 		t.Run(protoName, func(t *testing.T) {
 			ctx := WithClientHeaders(context.Background(), http.Header{
 				"Anthropic-Beta": []string{"context-1m-2025-08-07"},

@@ -158,7 +158,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	if images > 0 && !caps.Images {
 		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream protocol has no image input", images))
 	} else if urlImages > 0 && !caps.ImageURLs {
-		// 只有形态装不下：上游收 base64 不收远程 URL（kiro）。与整协议无图片能力
+		// 只有形态装不下：上游收 base64 不收远程 URL。与整协议无图片能力
 		// 分开报，是因为读者的下一步动作不同——这里换成 base64 内联即可。
 		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream accepts inline base64 only, not remote URLs", urlImages))
 	}
@@ -351,7 +351,7 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 	}
 	if req.SafetyIdentifier != "" {
 		// safety_identifier 与 user 同一维度：出站 anthropic 且 user_id 槽被占
-		// 时挤不进去，其余无 UserID 位的协议（kiro）直接丢。值不回显。
+		// 时挤不进去，其余无 UserID 位的协议直接丢。值不回显。
 		switch {
 		case !caps.UserID:
 			notes = append(notes,
@@ -551,8 +551,8 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 	}
 	if t := req.Thinking; t != nil && protoName != "openai-responses" && protoName != "codex" {
 		// reasoning 的摘要详略与 context/mode 只有 responses 一族有槽位：chat 的
-		// reasoning_effort 是单值、anthropic 的 thinking 块只管开关与预算、kiro 的
-		// effort 片段同理，三维都装不下，丢弃并报出。
+		// reasoning_effort 是单值、anthropic 的 thinking 块只管开关与预算，
+		// 三维都装不下，丢弃并报出。
 		if t.Summary != "" {
 			notes = append(notes, fmt.Sprintf(
 				"dropped reasoning summary preference %q: the target protocol has no summary-verbosity field, reasoning summaries come in the upstream default form", t.Summary))

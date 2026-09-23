@@ -31,8 +31,7 @@ func r91Block() ir.Block {
 		Opaque: &ir.Opaque{WireType: r91WireType, Body: []byte(r91Body)}}
 }
 
-// 入站外族：anthropic 之外的三家客户端协议。kiro 不在列——agent 侧的 kiro
-// 出站族已按定案移除，此处不再为它新增断言。
+// 入站外族：anthropic 之外的三家客户端协议。
 var r91ForeignInbound = []string{"openai-chat", "openai-responses", "gemini"}
 
 func r91Stream() []ir.Event {

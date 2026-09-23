@@ -12,7 +12,7 @@ import (
 func TestDiagnoseContainerDroppedOffAnthropic(t *testing.T) {
 	req := &ir.Request{Container: &ir.Container{ID: "ctr_1",
 		Skills: []ir.Skill{{SkillID: "s1", Type: "custom"}}}}
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "dropped container parameter") {
 			t.Errorf("%s 应报 container 丢失：%q", name, got)
@@ -23,7 +23,7 @@ func TestDiagnoseContainerDroppedOffAnthropic(t *testing.T) {
 	}
 	// 缺席静默。
 	req.Container = nil
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 无 container 误报：%v", name, notes)
 		}

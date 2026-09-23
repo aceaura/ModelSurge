@@ -15,7 +15,7 @@ import (
 
 const searchQuery = `{"query":"weather in Paris"}`
 
-// serverToolStream 与 relay.synthWebSearchEvents 同形：
+// serverToolStream 服务端工具的事件形态：
 // server_tool_use(+input delta) / web_search_tool_result / 摘要文本。
 func serverToolStream() []ir.Event {
 	return []ir.Event{

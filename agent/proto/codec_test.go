@@ -6,7 +6,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -19,7 +18,7 @@ func TestDirectionalRegistry(t *testing.T) {
 		t.Fatal("GetOutbound(gemini) succeeded, want inbound-only rejection")
 	}
 
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro", "codex"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "codex"} {
 		if _, err := proto.GetInbound(name); err != nil {
 			t.Errorf("GetInbound(%s): %v", name, err)
 		}

@@ -93,7 +93,7 @@ func TestContextTooLargeEndToEnd(t *testing.T) {
 	defer provider.Close()
 
 	replay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == replayv1.BasePath + "/dispatch" {
+		if r.URL.Path == replayv1.BasePath+"/dispatch" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": replayv1.Error{Code: replayv1.CodeContextTooLarge, Message: "estimated 300000 tokens exceed all candidate context windows"}})

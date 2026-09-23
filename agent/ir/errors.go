@@ -7,7 +7,7 @@ type Error struct {
 	StatusCode int    // HTTP 状态码；流内错误时为推断值
 	Type       string // 规范错误类型，如 "rate_limit_error"、"invalid_request_error"
 	Code       string // 协议相关错误码，原样保留
-	Reason     string // 上游错误原因码（如 Kiro "INVALID_MODEL_ID"），调度决策用
+	Reason     string // 上游自报的错误原因码，原样保留，调度决策用
 	Message    string // 脱敏后的用户可读信息
 	Retryable  bool   // 是否可换上游重试
 	// RetryAfter 上游在错误响应头里给出的退避提示（Retry-After 原文，秒数或
@@ -38,10 +38,9 @@ const (
 // ClassifyStatus 按 HTTP 状态码推断规范错误类型与可重试性。
 //
 // 402 与 413 单列，不落到 default 的 upstream_error：
-//   - 402 是账号余额/配额耗尽，不是「上游坏了」。Upstream 侧 kiro 分类表
-//     （upstream/account/errors.go ClassifyKiroError）早已把 402 与 403/429 同列
-//     为 RECOVERABLE=换号可救；两个参考仓也一致（sub2api 把 401/402/403/429/5xx
-//     同归 UpstreamFailoverError，new-api 的默认重试区间 401-407 含 402）。判成
+//   - 402 是账号余额/配额耗尽，不是「上游坏了」。两个参考仓也一致（sub2api 把
+//     401/402/403/429/5xx 同归 UpstreamFailoverError，new-api 的默认重试区间
+//     401-407 含 402）。判成
 //     upstream_error 会让客户端读到「服务端故障」，而按 5xx 语义自行重试同一个
 //     欠费账号，永远得到同一个 402。
 //   - 413 是请求体过大，换谁都会被同样拒绝。relay 自己造 413 的两处

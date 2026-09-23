@@ -3,7 +3,6 @@ package relay
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -183,9 +182,6 @@ func (failDispatchReplay) Dispatch(context.Context, replayv1.DispatchRequest) (r
 func (failDispatchReplay) Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error) {
 	return replayv1.ResultResponse{}, nil
 }
-func (failDispatchReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
-}
 
 // 超时家族必须换满整池。408/425 修复前落 ClassifyStatus 的 default 判不可重试，
 // 第一个目标就放弃（dispatch=1），而同为超时的 504/524 会烧到池子见底——同一种
@@ -212,117 +208,50 @@ func TestTimeoutFamilyBurnsPool(t *testing.T) {
 	}
 }
 
-// 跨路径不变量：同一个上游错误，走普通协议目标与走 kiro 目标的**非信封**回落分支
-// 必须得出同一个规范类型、同一段消息、同一个上游错误码，并同样透传 Retry-After。
-//
-// 回落分支只收「不是 ModelSurge 信封」的 body：信封的判据是 error.code 为非空字符串，
-// 所以 OpenAI 形状（error.code 是字符串）会走信封分支，Gemini 形状（error.code 是数字，
-// 解不进 replayv1.Error 的 string 字段）与只有 message 的形状才会落到这里。这正是代理
-// 插的 502、HTML 错误页、上游原生错误体到达 kiro 目标时的真实形态。
-func TestNonEnvelopeUpstreamErrorAgreesAcrossKiroAndNormalPath(t *testing.T) {
+// 非信封错误体的端到端口径：代理插的 502、上游原生错误体、只有 message 的形状
+// 都要走同一条解析（ir.ParseUpstreamError）。期望值直接取自它——客户端看到的与
+// 上报给 Replay 的必须与之逐字一致，relay 若在错误路径上另造一套口径就会在这里分叉。
+// 502/503 也在表里：这两档可重试，会先换目标再回落，比 4xx 多走一段调度。
+// 第三条是 ModelSurge 信封形状（status 是数字）：字段类型不匹配曾让整个 error 对象
+// 被丢弃，客户端拿到的 message 是一整段转义原文、code 全丢。
+func TestNonEnvelopeUpstreamErrorReachesClientParsed(t *testing.T) {
 	for _, body := range []string{
 		`{"error":{"message":"proxy gave up","type":"server_error"}}`,
 		`{"error":{"code":503,"message":"upstream unavailable","status":"UNAVAILABLE"}}`,
+		`{"error":{"code":"throttled","message":"slow down","retryable":true,"status":429}}`,
 	} {
 		for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusTooManyRequests} {
 			t.Run(fmt.Sprintf("%d/%s", status, body[:24]), func(t *testing.T) {
-				normal := ir.ParseUpstreamError(status, []byte(body))
-
-				rp := &bodyKiroReplay{
-					status: status, body: body, limit: 1,
-					header: http.Header{"Retry-After": []string{"31"}},
-				}
+				want := ir.ParseUpstreamError(status, []byte(body))
+				var hits atomic.Int32
+				up := bodyUpstream(t, status, http.Header{"Retry-After": []string{"31"}}, body, &hits)
+				defer up.Close()
+				rp := &poolReplay{baseURL: up.URL, limit: 1}
 				w := fwdTo(t, rp, "openai-chat")
 
-				if rp.reportedMessage != normal.Message {
-					t.Errorf("kiro 上报消息=%q，普通路径解析=%q（两条路径口径不同）",
-						rp.reportedMessage, normal.Message)
+				if len(rp.reports) == 0 {
+					t.Fatalf("没有上报结果（upstreamHits=%d）", hits.Load())
+				}
+				if got := rp.reports[len(rp.reports)-1].Message; got != want.Message {
+					t.Errorf("上报消息=%q，解析结论=%q", got, want.Message)
 				}
 				if w.Code != status {
-					t.Errorf("kiro 客户端状态码=%d，want %d", w.Code, status)
+					t.Errorf("客户端状态码=%d，want %d", w.Code, status)
 				}
-				if !strings.Contains(w.Body.String(), normal.Type) {
-					t.Errorf("kiro 客户端错误体缺规范类型 %q：%s", normal.Type, w.Body.String())
+				if !strings.Contains(w.Body.String(), want.Type) {
+					t.Errorf("客户端错误体缺规范类型 %q：%s", want.Type, w.Body.String())
 				}
+				// 转义引号是「原文整段入 Message」的特征；解析后不该再出现。
 				if strings.Contains(w.Body.String(), `\"`) {
-					t.Errorf("kiro 路径客户端错误体仍是转义原文：%s", w.Body.String())
+					t.Errorf("客户端错误体仍是转义原文：%s", w.Body.String())
 				}
-				if normal.Code != "" && !strings.Contains(w.Body.String(), normal.Code) {
-					t.Errorf("kiro 路径丢了上游错误码 %q：%s", normal.Code, w.Body.String())
+				if want.Code != "" && !strings.Contains(w.Body.String(), want.Code) {
+					t.Errorf("丢了上游错误码 %q：%s", want.Code, w.Body.String())
 				}
 				if got := w.Header().Get("Retry-After"); got != "31" {
-					t.Errorf("kiro 回落分支 Retry-After=%q，want 31", got)
+					t.Errorf("Retry-After=%q，want 31", got)
 				}
 			})
 		}
 	}
-}
-
-// kiro 路径的信封分支同样要透传 Retry-After：Upstream 转发上游 429 时若带了退避
-// 提示，客户端不能仅仅因为这次请求被路由到 kiro 目标就拿不到它。
-func TestRetryAfterForwardedOnKiroEnvelopeError(t *testing.T) {
-	envelope := `{"error":{"code":"throttled","message":"slow down","retryable":true,"status":429}}`
-	rp := &bodyKiroReplay{
-		status: http.StatusTooManyRequests,
-		body:   envelope,
-		header: http.Header{"Retry-After": []string{"17"}},
-		limit:  1,
-	}
-	w := fwdTo(t, rp, "anthropic")
-	if got := w.Header().Get("Retry-After"); got != "17" {
-		t.Errorf("Retry-After = %q，want 17", got)
-	}
-	if w.Code != http.StatusTooManyRequests {
-		t.Errorf("客户端状态码=%d，want 429", w.Code)
-	}
-	if rp.reportedMessage != "slow down" {
-		t.Errorf("上报消息=%q，want 信封里的干净消息", rp.reportedMessage)
-	}
-}
-
-// bodyKiroReplay 让 ExecuteKiro 返回给定状态码/响应头/响应体，用来分别驱动
-// openKiroReplay 的信封分支与非信封回落分支。Report 记下 relay 上报的消息，
-// 用来与普通路径逐字对照。
-// Dispatch 超过 limit 就报池子空了：忽略 TriedIDs 恒发同一个目标会让重试循环挂死。
-type bodyKiroReplay struct {
-	status          int
-	body            string
-	header          http.Header
-	limit           int
-	calls           int
-	reportedMessage string
-}
-
-func (r *bodyKiroReplay) Dispatch(context.Context, replayv1.DispatchRequest) (replayv1.TargetLease, error) {
-	r.calls++
-	if r.limit > 0 && r.calls > r.limit {
-		return replayv1.TargetLease{}, fmt.Errorf("pool exhausted after %d targets", r.limit)
-	}
-	return replayv1.TargetLease{
-		RequestID: "req", GroupID: "g", TargetID: fmt.Sprintf("t%d", r.calls),
-		Protocol: "kiro", NativeModel: "public",
-	}, nil
-}
-
-func (r *bodyKiroReplay) Report(_ context.Context, rep replayv1.ResultReport) (replayv1.ResultResponse, error) {
-	r.reportedMessage = rep.Message
-	return replayv1.ResultResponse{Applied: true}, nil
-}
-
-func (*bodyKiroReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
-}
-
-func (r *bodyKiroReplay) ExecuteKiro(context.Context, replayv1.KiroExecuteRequest) (*http.Response, error) {
-	h := http.Header{"Content-Type": []string{"application/json"}}
-	for k, vs := range r.header {
-		for _, v := range vs {
-			h.Add(k, v)
-		}
-	}
-	return &http.Response{
-		StatusCode: r.status,
-		Header:     h,
-		Body:       io.NopCloser(strings.NewReader(r.body)),
-	}, nil
 }

@@ -70,7 +70,7 @@ func TestCacheControlAbsentStaysAbsent(t *testing.T) {
 	}
 	out, err := (codec{}).EncodeRequest(&ir.Request{Model: "m", MaxTokens: 10,
 		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
-		Tools: []ir.Tool{{Name: "ping", InputSchema: []byte(`{"type":"object"}`)}}})
+		Tools:    []ir.Tool{{Name: "ping", InputSchema: []byte(`{"type":"object"}`)}}})
 	if err != nil {
 		t.Fatalf("EncodeRequest: %v", err)
 	}

@@ -96,7 +96,7 @@ func TestEncodeResponse_ThoughtSignatureGatedByOrigin(t *testing.T) {
 		}
 		return string(out)
 	}
-	for _, from := range []string{"anthropic", "kiro", ir.SigSynthetic, ""} {
+	for _, from := range []string{"anthropic", ir.SigSynthetic, ""} {
 		s := enc(from)
 		if !strings.Contains(s, "想") {
 			t.Errorf("from=%q 思考正文被丢了：%s", from, s)

@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"strings"
 	"testing"
 )
@@ -11,24 +12,44 @@ import (
 // thinkingmount_test.go 源码级守卫：每条上游请求路径都必须调用
 // ir.CompleteThinking。
 //
-// 为什么需要源码级守卫而不是行为断言：本包有四条互不相通的上游路径
-// （attempt / attemptKiro / fetchSummary / fetchKiroSummary），各自 Clone
-// 请求后独立编码，没有共同漏斗。漏掉任何一条都是静默的——请求照常成功，
-// 只是那一维悄悄换成了出站协议自己的硬编码缺省。编译器管不住这种遗漏，
-// 而按行为逐条覆盖需要为每条路径搭一套上游夹具（kiro 路径还要 replay mock）。
+// 为什么需要源码级守卫而不是行为断言：本包有两条互不相通的上游路径
+// （attempt / fetchSummary），各自 Clone 请求后独立编码，没有共同漏斗。
+// 漏掉任何一条都是静默的——请求照常成功，只是那一维悄悄换成了出站协议自己的
+// 硬编码缺省。编译器管不住这种遗漏，而按行为逐条覆盖需要为每条路径搭一套
+// 上游夹具。
 //
 // 形态取自既有纪律：R18 的 transportOptions、R28 的 newListener 都是把
-// 「装配」抽出来测；这里装配点无法收拢（四条路径的前后处理各不相同），
+// 「装配」抽出来测；这里装配点无法收拢（两条路径的前后处理各不相同），
 // 于是退一步用 AST 断言每条路径都调了那一行。
 
 // upstreamRequestPaths 需要推理风格补全的函数名 -> 所在文件。
 // 新增上游路径时必须同时在这里登记，否则本用例不会覆盖到它——这一点由
 // TestNoUnregisteredUpstreamPath 兜住（它反向扫描所有 Clone 点）。
 var upstreamRequestPaths = map[string]string{
-	"attempt":          "forward.go",
-	"attemptKiro":      "kiro_remote.go",
-	"fetchSummary":     "autocompact.go",
-	"fetchKiroSummary": "autocompact.go",
+	"attempt":      "forward.go",
+	"fetchSummary": "autocompact.go",
+}
+
+// packageFiles 本包全部非测试源文件。反向守卫必须扫全量而不是手写清单：
+// 清单会随文件增删悄悄失真，漏扫的文件里的 Clone / Diagnose 调用点就没人管了。
+func packageFiles(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	var files []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		files = append(files, name)
+	}
+	if len(files) == 0 {
+		t.Fatal("没扫到任何源文件，反向守卫会假通过")
+	}
+	return files
 }
 
 func TestEveryUpstreamPathCompletesThinking(t *testing.T) {
@@ -52,11 +73,10 @@ func TestNoUnregisteredUpstreamPath(t *testing.T) {
 	allowed := map[string]string{
 		// tryAutoCompact 的 Clone 只是历史快照，供 SplitForCompact /
 		// BuildCompactRequest / BuildCompactedHistory 重建用；它触发的上游调用
-		// 走 runCompactCall -> fetchSummary / fetchKiroSummary，两者已登记。
-		"tryAutoCompact":          "autocompact.go",
-		"appendRecoveryDirective": "toolpolicy.go", // 在已补全的 upReq 上追加指令
+		// 走 runCompactCall -> fetchSummary，已登记。
+		"tryAutoCompact": "autocompact.go",
 	}
-	for _, file := range []string{"forward.go", "kiro_remote.go", "autocompact.go", "toolpolicy.go"} {
+	for _, file := range packageFiles(t) {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, file, nil, 0)
 		if err != nil {
@@ -87,14 +107,11 @@ func TestNoUnregisteredUpstreamPath(t *testing.T) {
 
 // clientFacingPaths 会向客户端写响应的上游路径 -> 所在文件。
 // 这些路径必须调 Diagnose 并把结果落到 X-ModelSurge-Notes；
-// 压缩路径（fetchSummary / fetchKiroSummary）不写客户端响应，故不在列。
+// 压缩路径（fetchSummary）不写客户端响应，故不在列。
 var clientFacingPaths = map[string]string{
-	"attempt":     "forward.go",
-	"attemptKiro": "kiro_remote.go",
+	"attempt": "forward.go",
 }
 
-// kiro 路径曾经整条绕过 Diagnose：候选的 codec 为 nil，连能力声明都取不到，
-// 于是它丢掉的签名、URL 图片、采样参数、并行开关全部无声。守卫钉住装配点。
 func TestEveryClientFacingPathDiagnoses(t *testing.T) {
 	for fn, file := range clientFacingPaths {
 		t.Run(fn, func(t *testing.T) {
@@ -113,7 +130,7 @@ func TestEveryClientFacingPathDiagnoses(t *testing.T) {
 
 // 反向守卫：Diagnose 的每个调用点都在已登记的客户端可见路径里。
 func TestNoUnregisteredDiagnoseCallSite(t *testing.T) {
-	for _, file := range []string{"forward.go", "kiro_remote.go", "autocompact.go", "toolpolicy.go", "diagnose.go"} {
+	for _, file := range packageFiles(t) {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, file, nil, 0)
 		if err != nil {

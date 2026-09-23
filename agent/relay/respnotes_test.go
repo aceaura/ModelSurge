@@ -1,9 +1,6 @@
 package relay
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -278,68 +275,31 @@ func TestMainPumpEmitsNoteFrameForDroppedSignature(t *testing.T) {
 	}
 }
 
-// kiro NDJSON 非流式聚合路：聚合器把截断参数挪键，注记经 collectKiroToClient
-// 进响应头。
-func TestKiroCollectPathCarriesAggregatorNotes(t *testing.T) {
-	var body bytes.Buffer
-	for _, ev := range []ir.Event{
-		{Type: ir.EvMessageStart, MessageID: "msg", Model: "public"},
-		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "c1", Name: "f"}}},
-		{Type: ir.EvToolInput, Index: 0, Text: `{"a": 1`},
-		{Type: ir.EvBlockStop, Index: 0},
-		{Type: ir.EvMessageDelta, StopReason: ir.StopToolUse},
-		{Type: ir.EvMessageStop},
-	} {
-		if err := json.NewEncoder(&body).Encode(ev); err != nil {
-			t.Fatal(err)
-		}
-	}
-	replay := &kiroExecuteReplay{
-		lease: replayv1.TargetLease{RequestID: "req", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"},
-		body:  io.NopCloser(bytes.NewReader(body.Bytes())),
-	}
-	forwarder := NewForwarder(&config.Config{}, replay, nil)
+// 主 SSE 流式路的畸形工具参数：原文逐字保留 + 注记落 SSE 注释帧。
+// 与 TestMainCollectPathCarriesAggregatorNotes 是同一份损耗的两条投递通道
+// （流式头已发出，只能走注释帧），少一条运维就在流式上瞎。
+func TestMainStreamPathPreservesMalformedToolArgsWithNote(t *testing.T) {
+	up := sseUpstream(t, []string{
+		`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"native","content":[],"usage":{"input_tokens":11}}}`,
+		`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"f"}}`,
+		`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\": 1"}}`,
+		`event: content_block_stop` + "\n" + `data: {"type":"content_block_stop","index":0}`,
+		`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":3}}`,
+		`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
+	}, nil)
+	f := NewForwarder(&config.Config{}, &thinkNotesReplay{lease: sseLease(up.URL)}, nil)
 	w := httptest.NewRecorder()
-	forwarder.Forward(t.Context(), w, proto.MustInbound("anthropic"), &ir.Request{
-		Model: "public", MaxTokens: 64,
+	f.Forward(t.Context(), w, proto.MustInbound("anthropic"), &ir.Request{
+		Model: "m", MaxTokens: 64, Stream: true,
 		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
 	}, "client-key")
 
-	if h := w.Header().Get("X-ModelSurge-Notes"); !strings.Contains(h, "rewrapped 1 malformed tool call argument(s)") {
-		t.Fatalf("kiro 聚合路挪键注记未进响应头：%q", h)
-	}
-}
-
-// kiro NDJSON 流式路：外族签名被客户端编码器门控，注记落 SSE 注释帧。
-func TestKiroStreamPathEmitsNoteFrame(t *testing.T) {
-	s := forwardKiroEvents(t, []ir.Event{
-		{Type: ir.EvMessageStart, MessageID: "msg", Model: "public"},
-		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockThinking, Thinking: &ir.Thinking{}}},
-		{Type: ir.EvThinkingDelta, Index: 0, Text: "想"},
-		{Type: ir.EvSigDelta, Index: 0, Text: "sig-r55-kiro", SignatureFrom: "gemini"},
-		{Type: ir.EvBlockStop, Index: 0},
-		{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn},
-		{Type: ir.EvMessageStop},
-	})
-	if !strings.Contains(s, ": modelsurge-note: dropped 1 thought signature(s)") {
-		t.Fatalf("kiro 流式路签名损耗注释帧缺失：\n%s", s)
-	}
-}
-
-func TestKiroStreamPathPreservesMalformedToolArgsWithNote(t *testing.T) {
-	s := forwardKiroEvents(t, []ir.Event{
-		{Type: ir.EvMessageStart, MessageID: "msg", Model: "public"},
-		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "c1", Name: "f"}}},
-		{Type: ir.EvToolInput, Index: 0, Text: `{"a": 1`},
-		{Type: ir.EvBlockStop, Index: 0},
-		{Type: ir.EvMessageDelta, StopReason: ir.StopMaxTokens},
-		{Type: ir.EvMessageStop},
-	})
+	s := w.Body.String()
 	if !strings.Contains(s, `\"a\": 1`) {
-		t.Fatalf("kiro 流式路畸形原文缺失：\n%s", s)
+		t.Fatalf("流式路畸形原文缺失：\n%s", s)
 	}
 	if !strings.Contains(s, ": modelsurge-note: preserved 1 malformed tool call argument(s) as raw text") {
-		t.Fatalf("kiro 流式路畸形参数注释帧缺失：\n%s", s)
+		t.Fatalf("流式路畸形参数注释帧缺失：\n%s", s)
 	}
 }
 

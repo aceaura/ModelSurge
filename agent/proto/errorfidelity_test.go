@@ -60,7 +60,7 @@ func TestRenderErrorInfersStatusForStreamErrors(t *testing.T) {
 	}
 }
 
-// 上游错误码（如 kiro 的 INVALID_MODEL_ID、responses 的 cyber_policy）
+// 上游错误码（如 responses 的 cyber_policy）
 // 原样保留，不得在渲染时丢掉。
 func TestRenderErrorCarriesUpstreamCode(t *testing.T) {
 	e := &ir.Error{StatusCode: 429, Type: ir.ErrTypeRateLimit, Code: "quota_exhausted", Message: "slow down"}

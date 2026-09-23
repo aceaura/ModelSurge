@@ -16,7 +16,7 @@ func TestDiagnoseReportsDroppedReasoningSubParams(t *testing.T) {
 		Enabled: true, Effort: ir.EffortHigh, Summary: "detailed",
 		Context: json.RawMessage(`"all_turns"`), Mode: json.RawMessage(`"pro"`),
 	}}
-	for _, name := range []string{"openai-chat", "anthropic", "kiro"} {
+	for _, name := range []string{"openai-chat", "anthropic"} {
 		t.Run(name, func(t *testing.T) {
 			notes := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 			for _, want := range []string{

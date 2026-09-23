@@ -4,12 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -108,8 +106,8 @@ func TestCodexEndpoint(t *testing.T) {
 	}
 }
 
-func TestEndpointRejectsKiroGeminiAndUnknownProtocols(t *testing.T) {
-	for _, protocol := range []string{"kiro", "gemini", "unknown"} {
+func TestEndpointRejectsGeminiAndUnknownProtocols(t *testing.T) {
+	for _, protocol := range []string{"gemini", "unknown"} {
 		if _, _, err := endpoint(protocol, "https://provider.test", "key", "model"); err == nil {
 			t.Fatalf("endpoint(%q) unexpectedly succeeded", protocol)
 		}
@@ -133,113 +131,135 @@ func (r *rejectingLeaseReplay) Dispatch(context.Context, replayv1.DispatchReques
 func (*rejectingLeaseReplay) Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error) {
 	return replayv1.ResultResponse{}, nil
 }
-func (*rejectingLeaseReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
-}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
-type kiroExecuteReplay struct {
-	lease        replayv1.TargetLease
-	executeCalls atomic.Int64
-	body         io.ReadCloser
-	header       http.Header
-	executeReq   replayv1.KiroExecuteRequest
-}
-
-// kiroHeader ndjson 内容类型 + 测试额外指定的头（验证上游响应头回传用）。
-func (r *kiroExecuteReplay) kiroHeader() http.Header {
-	h := http.Header{"Content-Type": []string{"application/x-ndjson"}}
-	for k, vs := range r.header {
-		h[k] = append([]string(nil), vs...)
+// sseFrames 一段最小完整 anthropic SSE 流，正文是 text。
+func sseFrames(text string) []string {
+	return []string{
+		"event: message_start\ndata: " + `{"type":"message_start","message":{"id":"m1","model":"native","usage":{"input_tokens":7}}}`,
+		"event: content_block_start\ndata: " + `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		"event: content_block_delta\ndata: " + `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` + strconv.Quote(text) + `}}`,
+		"event: content_block_stop\ndata: " + `{"type":"content_block_stop","index":0}`,
+		"event: message_delta\ndata: " + `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}`,
+		"event: message_stop\ndata: " + `{"type":"message_stop"}`,
 	}
-	return h
 }
 
-func (r *kiroExecuteReplay) Dispatch(context.Context, replayv1.DispatchRequest) (replayv1.TargetLease, error) {
+// sseUpstream 起一个逐帧 flush 的 anthropic SSE 上游。hits 非 nil 时逐次累加，
+// 用来数「重试到底打了几个上游」——只看 Dispatch 次数会把「换了目标但没发请求」
+// 也算成一次重发。
+func sseUpstream(t *testing.T, frames []string, hits *atomic.Int32) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if hits != nil {
+			hits.Add(1)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, f := range frames {
+			_, _ = w.Write([]byte(f + "\n\n"))
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// sseLease 指向给定上游的 anthropic 租约。
+func sseLease(baseURL string) replayv1.TargetLease {
+	return replayv1.TargetLease{
+		RequestID: "req", GroupID: "group", TargetID: "anthropic-1",
+		Protocol: "anthropic", NativeModel: "native", BaseURL: baseURL, Credential: "sk-up",
+	}
+}
+
+// logProbeReplay 记下调度请求里带的 request_id：访问日志的关联性断言要用它
+// 而不是自己猜一个 id。
+type logProbeReplay struct {
+	lease     replayv1.TargetLease
+	requestID atomic.Value
+}
+
+func (r *logProbeReplay) Dispatch(_ context.Context, req replayv1.DispatchRequest) (replayv1.TargetLease, error) {
+	r.requestID.Store(req.RequestID)
 	return r.lease, nil
 }
-func (*kiroExecuteReplay) Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error) {
+
+func (*logProbeReplay) Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error) {
 	return replayv1.ResultResponse{Applied: true}, nil
 }
-func (r *kiroExecuteReplay) ExecuteKiro(_ context.Context, req replayv1.KiroExecuteRequest) (*http.Response, error) {
-	r.executeCalls.Add(1)
-	r.executeReq = req
-	if r.body != nil {
-		return &http.Response{StatusCode: http.StatusOK, Header: r.kiroHeader(), Body: r.body}, nil
+
+func (r *logProbeReplay) id(t *testing.T) string {
+	t.Helper()
+	id, _ := r.requestID.Load().(string)
+	if id == "" {
+		t.Fatal("request_id 没有随调度请求传出去")
 	}
-	events := []ir.Event{
-		{Type: ir.EvMessageStart, MessageID: "msg", Model: "public"},
-		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}},
-		{Type: ir.EvTextDelta, Index: 0, Text: "from replay"},
-		{Type: ir.EvBlockStop, Index: 0},
-		{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn, Usage: &ir.Usage{OutputTokens: 3}},
-		{Type: ir.EvMessageStop},
-	}
-	var body bytes.Buffer
-	for _, event := range events {
-		_ = json.NewEncoder(&body).Encode(event)
-	}
-	return &http.Response{StatusCode: http.StatusOK, Header: r.kiroHeader(), Body: io.NopCloser(bytes.NewReader(body.Bytes()))}, nil
-}
-func (*kiroExecuteReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
+	return id
 }
 
-func TestAgentDataPlaneLogsUseSameRequestIDAndRedactSecrets(t *testing.T) {
+// captureLogs 把 agent 的日志改道到缓冲区，返回读取函数。
+func captureLogs(t *testing.T) func() string {
+	t.Helper()
 	var logs bytes.Buffer
-	oldWriter := log.Writer()
-	oldFlags := log.Flags()
+	oldWriter, oldFlags := log.Writer(), log.Flags()
 	log.SetOutput(&logs)
 	log.SetFlags(0)
 	t.Cleanup(func() {
 		log.SetOutput(oldWriter)
 		log.SetFlags(oldFlags)
 	})
+	return logs.String
+}
 
-	replay := &kiroExecuteReplay{lease: replayv1.TargetLease{RequestID: "lease-id", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"}}
+func TestAgentDataPlaneLogsUseSameRequestIDAndRedactSecrets(t *testing.T) {
+	readLogs := captureLogs(t)
+	up := sseUpstream(t, sseFrames("from upstream"), nil)
+	replay := &logProbeReplay{lease: sseLease(up.URL)}
 	f := NewForwarder(&config.Config{AccessLogEnabled: true}, replay, nil)
 	w := httptest.NewRecorder()
-	f.Forward(t.Context(), w, proto.MustInbound("anthropic"), &ir.Request{Model: "public", Stream: true, Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "private-message"}}}}}, "client-secret-key")
-	if replay.executeReq.RequestID == "" {
-		t.Fatal("Kiro request_id was not propagated")
-	}
-	got := logs.String()
-	for _, phase := range []string{"phase=request_in", "phase=dispatch_out", "phase=dispatch_in", "phase=upstream_out", "phase=upstream_in", "phase=kiro_stream_done", "phase=client_out"} {
-		if !strings.Contains(got, phase+" request_id="+replay.executeReq.RequestID) {
+	f.Forward(t.Context(), w, proto.MustInbound("anthropic"), &ir.Request{
+		Model: "m", MaxTokens: 64, Stream: true,
+		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "private-message"}}}},
+	}, "client-secret-key")
+
+	id := replay.id(t)
+	got := readLogs()
+	for _, phase := range []string{
+		"phase=request_in", "phase=dispatch_out", "phase=dispatch_in",
+		"phase=upstream_out", "phase=upstream_in", "phase=upstream_stream_done", "phase=client_out",
+	} {
+		if !strings.Contains(got, phase+" request_id="+id) {
 			t.Errorf("missing correlated %s in logs: %s", phase, got)
 		}
 	}
-	for _, forbidden := range []string{"client-secret-key", "private-message", "Authorization", "access-token"} {
+	for _, forbidden := range []string{"client-secret-key", "private-message", "Authorization", "sk-up"} {
 		if strings.Contains(got, forbidden) {
 			t.Errorf("logs leaked %q: %s", forbidden, got)
 		}
 	}
 }
 
-func TestKiroStrictPolicyLogsAggregatedUpstreamAndClientFrames(t *testing.T) {
-	var logs bytes.Buffer
-	oldWriter := log.Writer()
-	oldFlags := log.Flags()
-	log.SetOutput(&logs)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(oldWriter)
-		log.SetFlags(oldFlags)
-	})
-
-	replay := &kiroExecuteReplay{lease: replayv1.TargetLease{GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"}}
+// 严格工具策略（tool_choice=none 一类）会把上游流聚合成一整条再写出，走的
+// 是另一组出口；聚合帧与客户端帧的统计同样要落日志，且不得出现 frames=0
+// ——那意味着摘要器一个事件都没看到，日志成了空壳。
+func TestStrictPolicyLogsAggregatedUpstreamAndClientFrames(t *testing.T) {
+	readLogs := captureLogs(t)
+	up := sseUpstream(t, sseFrames("aggregated"), nil)
+	replay := &logProbeReplay{lease: sseLease(up.URL)}
 	forwarder := NewForwarder(&config.Config{AccessLogEnabled: true}, replay, nil)
 	forwarder.Forward(t.Context(), httptest.NewRecorder(), proto.MustInbound("anthropic"), &ir.Request{
-		Model: "public", Stream: true, ToolChoice: &ir.ToolChoice{Mode: ir.ChoiceNone},
+		Model: "m", MaxTokens: 64, Stream: true, ToolChoice: &ir.ToolChoice{Mode: ir.ChoiceNone},
 		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "private-message"}}}},
 	}, "client-secret-key")
 
-	got := logs.String()
-	for _, phase := range []string{"phase=upstream_stream_done request_id=" + replay.executeReq.RequestID, "phase=client_out request_id=" + replay.executeReq.RequestID} {
-		if !strings.Contains(got, phase) {
+	id := replay.id(t)
+	got := readLogs()
+	for _, phase := range []string{"phase=upstream_stream_done", "phase=client_out"} {
+		if !strings.Contains(got, phase+" request_id="+id) {
 			t.Errorf("missing %s: %s", phase, got)
 		}
 	}
@@ -253,66 +273,36 @@ func TestKiroStrictPolicyLogsAggregatedUpstreamAndClientFrames(t *testing.T) {
 	}
 }
 
-func TestKiroLeaseUsesReplayExecuteInsteadOfDirectHTTP(t *testing.T) {
-	replay := &kiroExecuteReplay{lease: replayv1.TargetLease{RequestID: "req", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"}}
-	f := NewForwarder(&config.Config{}, replay, nil)
-	var directCalls atomic.Int64
-	f.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		directCalls.Add(1)
-		return nil, fmt.Errorf("direct HTTP must not be used")
-	})}
-	w := httptest.NewRecorder()
-	f.Forward(t.Context(), w, proto.MustInbound("anthropic"), &ir.Request{Model: "public", Stream: true, Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}}}, "client-key")
-	if replay.executeCalls.Load() != 1 || directCalls.Load() != 0 {
-		t.Fatalf("execute calls=%d direct calls=%d", replay.executeCalls.Load(), directCalls.Load())
-	}
-	if !strings.Contains(w.Body.String(), "from replay") {
-		t.Fatalf("body=%s", w.Body.String())
-	}
-}
-
-func TestKiroStreamFlushesTextBeforeUpstreamCloses(t *testing.T) {
-	reader, writer := io.Pipe()
+// 上游还在吐字时客户端就必须已经收到：攒到上游关流再一次性写出会把流式
+// 退化成非流式，长回答的客户端要等满整个生成时长才看到第一个字。
+func TestStreamFlushesTextBeforeUpstreamCloses(t *testing.T) {
 	release := make(chan struct{})
-	defer func() {
+	t.Cleanup(func() {
 		select {
 		case <-release:
 		default:
 			close(release)
 		}
-	}()
-	go func() {
-		encoder := json.NewEncoder(writer)
-		for _, event := range []ir.Event{
-			{Type: ir.EvMessageStart, MessageID: "msg", Model: "public"},
-			{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}},
-			{Type: ir.EvTextDelta, Index: 0, Text: "early text"},
-		} {
-			if err := encoder.Encode(event); err != nil {
-				return
-			}
+	})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, f := range sseFrames("early text")[:3] { // 到 text_delta 为止
+			_, _ = w.Write([]byte(f + "\n\n"))
+			w.(http.Flusher).Flush()
 		}
 		<-release
-		for _, event := range []ir.Event{
-			{Type: ir.EvBlockStop, Index: 0},
-			{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn},
-			{Type: ir.EvMessageStop},
-		} {
-			if err := encoder.Encode(event); err != nil {
-				return
-			}
+		for _, f := range sseFrames("early text")[3:] {
+			_, _ = w.Write([]byte(f + "\n\n"))
+			w.(http.Flusher).Flush()
 		}
-		_ = writer.Close()
-	}()
+	}))
+	t.Cleanup(up.Close)
 
-	replay := &kiroExecuteReplay{
-		lease: replayv1.TargetLease{RequestID: "req", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"},
-		body:  reader,
-	}
-	forwarder := NewForwarder(&config.Config{}, replay, nil)
+	forwarder := NewForwarder(&config.Config{}, &logProbeReplay{lease: sseLease(up.URL)}, nil)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		forwarder.Forward(r.Context(), w, proto.MustInbound("anthropic"), &ir.Request{
-			Model: "public", Stream: true,
+			Model: "m", MaxTokens: 64, Stream: true,
 			Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
 		}, "client-key")
 	}))
@@ -344,7 +334,6 @@ func TestKiroStreamFlushesTextBeforeUpstreamCloses(t *testing.T) {
 	}
 	close(release)
 }
-
 func TestDispatchFailureLogsClientErrorWithoutSecrets(t *testing.T) {
 	var logs bytes.Buffer
 	oldWriter := log.Writer()

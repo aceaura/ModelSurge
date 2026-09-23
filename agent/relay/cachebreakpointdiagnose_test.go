@@ -19,7 +19,7 @@ func TestDiagnoseCacheBreakpointsDroppedOffAnthropic(t *testing.T) {
 		}}},
 		Tools: []ir.Tool{{Name: "ping", CacheCtl: "ephemeral"}},
 	}
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "3 cache breakpoint(s)") {
 			t.Errorf("%s 应报 3 个断点丢失：%q", name, got)
@@ -34,7 +34,7 @@ func TestDiagnoseCacheBreakpointsDroppedOffAnthropic(t *testing.T) {
 func TestDiagnoseCacheBreakpointsSilentWhenAbsent(t *testing.T) {
 	req := &ir.Request{Messages: []ir.Message{{Role: ir.RoleUser,
 		Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}}}
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 无断点误报：%v", name, notes)
 		}

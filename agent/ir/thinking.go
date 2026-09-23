@@ -10,12 +10,12 @@ import "fmt"
 // 客户端要 effort=high 拿到 4096（Anthropic 缺省），要 budget=32768 拿到
 // medium。两种情形都是 HTTP 200 且无任何说明。
 //
-// 换算落在 IR 而非各 codec：kiro 上游路径（relay/kiro_remote.go）直接
-// marshal canonical IR 交给 replay，既不走 ClampThinking 也不走 codec 的
-// EncodeRequest，任何落在 codec 里的换算对它都不生效。
+// 换算落在 IR 而非各 codec：补出来的值要让每个出站编码器和 relay 侧的
+// IR 消费者（预算日志、ClampThinking 排序）看到同一份，落在 codec 里就得
+// 四处重抄同一段换算。
 
 // 档位全序（低 -> 高）。minimal 是 OpenAI Responses 的档位，
-// xhigh/max 见于 Kiro 与 Codex 扩展。
+// xhigh/max 见于 Codex 扩展。
 const (
 	EffortNone    = "none"
 	EffortMinimal = "minimal"

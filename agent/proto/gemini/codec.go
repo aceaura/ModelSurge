@@ -208,8 +208,8 @@ func decodeRole(role string) ir.Role {
 // decodeFuncResponseText functionResponse.response 是任意 JSON object。
 // 优先提取常见的字符串字段，否则保留原始 JSON 文本，保证不丢信息。
 // funcResponseIsError Gemini 没有 is_error 标志位，官方示例约定把失败写成
-// response 里的 error 键。识别它才能让下游（Anthropic 的 is_error、
-// kiro 的 status=error）把「工具失败」如实传下去——否则模型会把失败读成成功。
+// response 里的 error 键。识别它才能让下游（Anthropic 的 is_error）把
+// 「工具失败」如实传下去——否则模型会把失败读成成功。
 func funcResponseIsError(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false

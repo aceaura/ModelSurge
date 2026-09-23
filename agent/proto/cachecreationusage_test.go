@@ -9,7 +9,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -164,7 +163,7 @@ func TestAnthropicStreamPreservesCacheCreationDetails(t *testing.T) {
 
 func TestCacheCreationDetailLossReportedOnlyForForeignProtocols(t *testing.T) {
 	resp := cacheCreationResponse()
-	for _, name := range []string{"openai-chat", "openai-responses", "gemini", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses", "gemini"} {
 		notes := proto.MustInbound(name).ResponseNotes(resp)
 		if !containsCacheCreationNote(notes) {
 			t.Errorf("%s notes = %v", name, notes)

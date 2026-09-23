@@ -8,7 +8,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -76,9 +75,8 @@ func TestExplicitEffortNoneReachesOpenAIWire(t *testing.T) {
 }
 
 // 同一个 vendor 档位值从两个入口进来必须读出同一套语义。此前 responses 把
-// minimal 读成「不思考」而 chat 读成「思考」：同一个客户端值换个入口，
-// kiro 出站就从 effort="minimal" 变成 effort="none"（该族在思考关闭时显式写
-// none），彻底掐掉客户端要的思考。
+// minimal 读成「不思考」而 chat 读成「思考」：同一个客户端值换个入口，出站
+// 就从「最少思考」变成「不思考」，彻底掐掉客户端要的思考。
 func TestSameEffortValueMeansSameThingFromEitherInbound(t *testing.T) {
 	for _, effort := range []string{"none", "minimal", "low", "medium", "high"} {
 		t.Run(effort, func(t *testing.T) {
@@ -120,25 +118,32 @@ func decodeThinking(t *testing.T, inbound, body string) *ir.ThinkingConfig {
 	return r.Thinking
 }
 
-// kiro 有 effort 通道的模型上，minimal 不得变成 none。
-func TestMinimalDoesNotBecomeSilenceOnKiroWire(t *testing.T) {
+// minimal 是「最少的思考」，不是「不思考」：任何出站都不得把它写成 none。
+// 三个有 effort 通道的出站还必须把档位原样落地（clamp 只许发生在越值集时，
+// minimal 在 OpenAI 两系值集之内）。
+func TestMinimalNeverBecomesSilenceOnAnyWire(t *testing.T) {
 	bodies := []struct{ inbound, body string }{
-		{"openai-responses", `{"model":"gpt-5.6-sol","reasoning":{"effort":"minimal"},"input":` + rfUserInput + `}`},
-		{"openai-chat", `{"model":"gpt-5.6-sol","reasoning_effort":"minimal",` +
+		{"openai-responses", `{"model":"m","reasoning":{"effort":"minimal"},"input":` + rfUserInput + `}`},
+		{"openai-chat", `{"model":"m","reasoning_effort":"minimal",` +
 			`"messages":[{"role":"user","content":"hi"}]}`},
 	}
+	effortChannel := map[string]string{
+		"openai-chat":      `"reasoning_effort":"minimal"`,
+		"openai-responses": `"effort":"minimal"`,
+		"codex":            `"effort":"minimal"`,
+	}
 	for _, c := range bodies {
-		t.Run(c.inbound, func(t *testing.T) {
-			body := rfConvert(t, c.inbound, c.body, "kiro")
-			if strings.Contains(body, `"effort":"none"`) {
-				t.Errorf("minimal 在 kiro 线上变成了「不思考」：%s", body)
-			}
-			// 该模型有 reasoning effort 通道，档位必须落地（minimal 越 kiro 值集，
-			// 由 clampEffort 就近采纳，具体采纳到哪一档不是本用例的判据）。
-			if !strings.Contains(body, `"effort":`) {
-				t.Errorf("kiro 线上没有任何 effort：%s", body)
-			}
-		})
+		for _, outbound := range []string{"anthropic", "openai-chat", "openai-responses", "codex"} {
+			t.Run(c.inbound+"->"+outbound, func(t *testing.T) {
+				body := rfConvert(t, c.inbound, c.body, outbound)
+				if strings.Contains(body, `"none"`) {
+					t.Errorf("minimal 在线上变成了「不思考」：%s", body)
+				}
+				if want, ok := effortChannel[outbound]; ok && !strings.Contains(body, want) {
+					t.Errorf("有 effort 通道的出站没落地 minimal，缺 %s：%s", want, body)
+				}
+			})
+		}
 	}
 }
 

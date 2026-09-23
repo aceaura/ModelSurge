@@ -1,5 +1,4 @@
-// idle_timeout.go 流式响应的 chunk 间读超时看门狗
-// （KiroaaS STREAMING_READ_TIMEOUT 的 relay 侧等价物）。
+// idle_timeout.go 流式响应的 chunk 间读超时看门狗。
 // 模型思考/工具调用间隙可能长时间无数据，看门狗在 timeout 内
 // 无新 chunk 时强制关闭底层连接（阻塞中的读取随即返回错误），
 // 避免僵死流。

@@ -7,14 +7,13 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
 
 // user 维度横切：anthropic 的 metadata.user_id 与 chat/responses 的 user 是
-// 同一维度，IR 统一放 Metadata["user_id"]。三路入站都要解出来；出站只有
-// kiro 没有这一维，不得泄漏也不得编造。
+// 同一维度，IR 统一放 Metadata["user_id"]。三路入站都要解出来；四个出站都有
+// 落点，值必须原样落地、不得编造。
 
 const userClue = "u-r53-clue-9x7"
 
@@ -54,21 +53,6 @@ func TestUserIDReachesCapableUpstreams(t *testing.T) {
 			if !strings.Contains(string(out), userClue) {
 				t.Errorf("%s->%s: user id 没到出站载荷: %s", inName, outName, out)
 			}
-		}
-	}
-}
-
-// kiro 没有 user 槽位：线索值一个字符都不许出现在载荷里（kiro 载荷带随机
-// hex 会话 id，按值探会假阳性，这里探的是客户端给的线索串本身）。
-func TestUserIDNeverLeaksIntoKiro(t *testing.T) {
-	for inName, body := range userInboundBodies() {
-		r, _ := proto.MustInbound(inName).DecodeRequest([]byte(body))
-		out, err := proto.MustOutbound("kiro").EncodeRequest(r)
-		if err != nil {
-			t.Fatalf("%s->kiro: EncodeRequest err=%v", inName, err)
-		}
-		if strings.Contains(string(out), userClue) {
-			t.Errorf("%s->kiro: user id 泄漏进无此维度的协议: %s", inName, out)
 		}
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -22,7 +21,7 @@ func TestAudioOutputResponseNotes(t *testing.T) {
 	if notes := proto.MustInbound("openai-chat").ResponseNotes(resp); len(notes) != 0 {
 		t.Errorf("Chat non-stream can carry audio output: %v", notes)
 	}
-	for _, name := range []string{"anthropic", "openai-responses", "gemini", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-responses", "gemini"} {
 		t.Run(name, func(t *testing.T) {
 			got := strings.Join(proto.MustInbound(name).ResponseNotes(resp), "; ")
 			if !strings.Contains(got, "dropped model audio output") {
@@ -36,7 +35,7 @@ func TestAudioOutputResponseNotes(t *testing.T) {
 		})
 	}
 	resp.Audio = nil
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "gemini", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "gemini"} {
 		if notes := proto.MustInbound(name).ResponseNotes(resp); len(notes) != 0 {
 			t.Errorf("%s reported absent audio: %v", name, notes)
 		}
@@ -46,7 +45,7 @@ func TestAudioOutputResponseNotes(t *testing.T) {
 func TestAudioOutputForeignNonStreamDoesNotLeak(t *testing.T) {
 	resp := &ir.Response{ID: "r", Model: "m", StopReason: ir.StopEndTurn, Audio: r70Audio,
 		Content: []ir.Block{{Type: ir.BlockText, Text: "caption"}}}
-	for _, name := range []string{"anthropic", "openai-responses", "gemini", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-responses", "gemini"} {
 		t.Run(name, func(t *testing.T) {
 			body, err := proto.MustInbound(name).EncodeResponse(resp)
 			if err != nil {

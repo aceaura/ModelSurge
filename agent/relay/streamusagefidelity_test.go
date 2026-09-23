@@ -1,12 +1,11 @@
 // streamusagefidelity_test.go 流式 usage 帧的客户端 opt-in 端到端保真。
 //
-// 覆盖三条写出路径（普通 SSE 流、聚合转流、kiro ndjson 流）与两条不变量：
+// 覆盖两条写出路径（普通 SSE 流、聚合转流）与两条不变量：
 // 客户端没 opt-in 就看不到 usage-only 帧；记账上报的 usage 与客户端呈现解耦，
 // 不随 opt-in 变化。
 package relay
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -241,52 +240,6 @@ func TestUsageOptInDoesNotSuppressOtherClientProtocols(t *testing.T) {
 	}
 }
 
-// kiro ndjson 写出路径同样受门控：三个出口任一漏传客户端意图都会在这里暴露。
-func TestKiroStreamPathRespectsUsageOptIn(t *testing.T) {
-	for _, optIn := range []bool{false, true} {
-		t.Run("optIn="+boolStr(optIn), func(t *testing.T) {
-			rp := &kiroExecuteReplay{
-				lease: replayv1.TargetLease{RequestID: "req", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"},
-				body:  kiroUsageNDJSON(t),
-			}
-			w := forwardUsage(t, rp, "openai-chat", &config.Config{}, func(r *ir.Request) {
-				r.Model = "public"
-				r.IncludeUsage = optIn
-			})
-			if w.Code != http.StatusOK {
-				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-			}
-			body := w.Body.String()
-			if got := strings.Contains(body, `"choices":[]`); got != optIn {
-				t.Fatalf("kiro 路径 usage-only 帧出现=%v，want %v\n%s", got, optIn, body)
-			}
-			if !strings.Contains(body, `"content":"hi"`) {
-				t.Fatalf("kiro 路径正文丢了：%s", body)
-			}
-		})
-	}
-}
-
-func kiroUsageNDJSON(t *testing.T) io.ReadCloser {
-	t.Helper()
-	var buf bytes.Buffer
-	start := ir.Usage{InputTokens: 100, CacheReadTokens: 40}
-	delta := ir.Usage{OutputTokens: 5}
-	for _, ev := range []ir.Event{
-		{Type: ir.EvMessageStart, MessageID: "m1", Model: "public", Usage: &start},
-		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}},
-		{Type: ir.EvTextDelta, Index: 0, Text: "hi"},
-		{Type: ir.EvBlockStop, Index: 0},
-		{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn, Usage: &delta},
-		{Type: ir.EvMessageStop},
-	} {
-		if err := json.NewEncoder(&buf).Encode(ev); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return io.NopCloser(bytes.NewReader(buf.Bytes()))
-}
-
 // 估算用量（estimate_usage 开启且上游没报）不得推给没 opt-in 的客户端：那是
 // 本地按字符数粗估的值，客户端当成上游实测数拿去计费会算错。
 func TestEstimatedUsageNotShownToClientWithoutOptIn(t *testing.T) {
@@ -340,56 +293,6 @@ func TestHiddenThoughtsDecoratorForwardsUsageOptIn(t *testing.T) {
 			}
 		})
 	}
-}
-
-// 严格 tool_choice 分支走 attemptKiroStrict：与 streamKiroToClient 完全独立的第二个
-// kiro 出口（恒聚合后由 writeResponse 合成事件流），opt-in 得在这条路上同样生效。
-// 夹具须返回一次命名的 tool_use，否则策略校验不过，压根走不到写出那一步。
-func TestKiroStrictPathRespectsUsageOptIn(t *testing.T) {
-	for _, optIn := range []bool{false, true} {
-		t.Run("optIn="+boolStr(optIn), func(t *testing.T) {
-			rp := &kiroExecuteReplay{
-				lease: replayv1.TargetLease{RequestID: "req", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"},
-				body:  kiroStrictUsageNDJSON(t),
-			}
-			w := forwardUsage(t, rp, "openai-chat", &config.Config{}, func(r *ir.Request) {
-				r.Model = "public"
-				r.IncludeUsage = optIn
-				r.Tools = []ir.Tool{{Name: "t", Description: "d"}}
-				r.ToolChoice = &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: "t"}
-			})
-			if w.Code != http.StatusOK {
-				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-			}
-			body := w.Body.String()
-			if got := strings.Contains(body, `"choices":[]`); got != optIn {
-				t.Fatalf("kiro 严格分支 usage-only 帧出现=%v，want %v\n%s", got, optIn, body)
-			}
-			if !strings.Contains(body, `"name":"t"`) {
-				t.Fatalf("kiro 严格分支工具调用丢了：%s", body)
-			}
-		})
-	}
-}
-
-func kiroStrictUsageNDJSON(t *testing.T) io.ReadCloser {
-	t.Helper()
-	var buf bytes.Buffer
-	start := ir.Usage{InputTokens: 100, CacheReadTokens: 40}
-	delta := ir.Usage{OutputTokens: 5}
-	for _, ev := range []ir.Event{
-		{Type: ir.EvMessageStart, MessageID: "m1", Model: "public", Usage: &start},
-		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockToolUse,
-			ToolUse: &ir.ToolUse{ID: "tu_1", Name: "t", Input: json.RawMessage(`{}`)}}},
-		{Type: ir.EvBlockStop, Index: 0},
-		{Type: ir.EvMessageDelta, StopReason: ir.StopToolUse, Usage: &delta},
-		{Type: ir.EvMessageStop},
-	} {
-		if err := json.NewEncoder(&buf).Encode(ev); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return io.NopCloser(bytes.NewReader(buf.Bytes()))
 }
 
 func boolStr(b bool) string {

@@ -17,7 +17,7 @@ func TestDiagnoseChatExtrasDroppedOffChat(t *testing.T) {
 		Prediction:       []byte(`{"type":"content","content":"x"}`),
 		WebSearchOptions: []byte(`{"search_context_size":"high"}`),
 	}
-	for _, name := range []string{"anthropic", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-responses"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		for _, want := range []string{"dropped modalities/audio config", "dropped prediction config", "dropped web_search_options"} {
 			if !strings.Contains(got, want) {
@@ -45,7 +45,7 @@ func TestDiagnoseChatExtrasPartial(t *testing.T) {
 
 func TestDiagnoseChatExtrasSilentWhenAbsent(t *testing.T) {
 	req := &ir.Request{}
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 空请求误报：%v", name, notes)
 		}

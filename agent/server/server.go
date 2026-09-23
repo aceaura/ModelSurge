@@ -14,7 +14,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/config"
 	"github.com/aceaura/ModelSurge/agent/ir"
 	"github.com/aceaura/ModelSurge/agent/proto"
-	"github.com/aceaura/ModelSurge/agent/proto/kiro"
 	"github.com/aceaura/ModelSurge/agent/relay"
 	"github.com/aceaura/ModelSurge/agent/replayclient"
 	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
@@ -198,8 +197,8 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleModels 列出账号池可用模型（Manager.Models 并集口径）。
-// Claude ID 以横线形态展示（model_meta.go DashifyClaudeID：Claude Code /
-// Desktop 只认横线形态；请求侧 normalize 等价解析回点号）。
+// Claude ID 以横线形态展示：Claude Code / Desktop 只认横线形态，
+// 请求侧 normalize 等价解析回点号。
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	models, err := s.replay.Models(r.Context())
 	if err != nil {
@@ -219,12 +218,21 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 		first = false
 		sb.WriteString(`{"id":`)
-		sb.WriteString(strconv.Quote(kiro.DashifyClaudeID(m.Name)))
+		sb.WriteString(strconv.Quote(dashifyClaudeID(m.Name)))
 		sb.WriteString(`,"object":"model"}`)
 	}
 	sb.WriteString(`]}`)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(sb.String()))
+}
+
+// dashifyClaudeID 把 Claude 模型 ID 的点号版本位换成横线（claude-opus-4.5 ->
+// claude-opus-4-5）。非 Claude 模型原样返回。
+func dashifyClaudeID(modelID string) string {
+	if !strings.Contains(strings.ToLower(modelID), "claude") {
+		return modelID
+	}
+	return strings.ReplaceAll(modelID, ".", "-")
 }
 
 func (s *Server) renderError(w http.ResponseWriter, codec proto.InboundCodec, e *ir.Error) {

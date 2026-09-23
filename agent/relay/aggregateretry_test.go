@@ -1,11 +1,8 @@
 package relay
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,11 +25,10 @@ import (
 // poolReplay 每次 Dispatch 发一个新目标，超过 limit 就报池子空了：这样「烧了几个
 // 账号」变成可数的，也不会像忽略 TriedIDs 的夹具那样让重试循环挂死。
 type poolReplay struct {
-	protocol string
-	baseURL  string
-	ndjson   func(call int) io.ReadCloser
-	limit    int
-	calls    int
+	baseURL string
+	limit   int
+	calls   int
+	reports []replayv1.ResultReport
 }
 
 func (r *poolReplay) Dispatch(context.Context, replayv1.DispatchRequest) (replayv1.TargetLease, error) {
@@ -40,33 +36,15 @@ func (r *poolReplay) Dispatch(context.Context, replayv1.DispatchRequest) (replay
 	if r.calls > r.limit {
 		return replayv1.TargetLease{}, fmt.Errorf("pool exhausted after %d targets", r.limit)
 	}
-	lease := replayv1.TargetLease{RequestID: "req", GroupID: "g", TargetID: fmt.Sprintf("t%d", r.calls)}
-	if r.protocol == "kiro" {
-		lease.Protocol = "kiro"
-		lease.NativeModel = "public"
-		return lease, nil
-	}
-	lease.Protocol = "anthropic"
-	lease.NativeModel = "native"
-	lease.BaseURL = r.baseURL
-	lease.Credential = "sk-up"
-	return lease, nil
-}
-
-func (*poolReplay) Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error) {
-	return replayv1.ResultResponse{Applied: true}, nil
-}
-
-func (*poolReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
-}
-
-func (r *poolReplay) ExecuteKiro(context.Context, replayv1.KiroExecuteRequest) (*http.Response, error) {
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
-		Body:       r.ndjson(r.calls),
+	return replayv1.TargetLease{
+		RequestID: "req", GroupID: "g", TargetID: fmt.Sprintf("t%d", r.calls),
+		Protocol: "anthropic", NativeModel: "native", BaseURL: r.baseURL, Credential: "sk-up",
 	}, nil
+}
+
+func (r *poolReplay) Report(_ context.Context, rep replayv1.ResultReport) (replayv1.ResultResponse, error) {
+	r.reports = append(r.reports, rep)
+	return replayv1.ResultResponse{Applied: true}, nil
 }
 
 func poolForward(t *testing.T, rp *poolReplay, model string, stream bool) *httptest.ResponseRecorder {
@@ -78,20 +56,6 @@ func poolForward(t *testing.T, rp *poolReplay, model string, stream bool) *httpt
 		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
 	}, "client-key")
 	return w
-}
-
-func sseUpstream(t *testing.T, frames []string, hits *atomic.Int32) *httptest.Server {
-	t.Helper()
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		for _, fr := range frames {
-			_, _ = w.Write([]byte(fr + "\n\n"))
-			w.(http.Flusher).Flush()
-		}
-	}))
-	t.Cleanup(up.Close)
-	return up
 }
 
 const (
@@ -185,72 +149,5 @@ func TestStreamedErrorNeverRetriesAfterBytesWritten(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), ir.ErrTypeInvalidReq) {
 		t.Errorf("错误没下发给客户端：body=%.300s", w.Body.String())
-	}
-}
-
-func kiroNDJSON(events ...ir.Event) io.ReadCloser {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	for _, ev := range events {
-		if err := enc.Encode(ev); err != nil {
-			panic(err)
-		}
-	}
-	return io.NopCloser(bytes.NewReader(buf.Bytes()))
-}
-
-// kiro 数据面的可重试性归 Upstream 判：它手上有 ClassifyKiroError，认得 kiro 的
-// 原因码，agent 只看得到规范类型。今天两者等价（Upstream 的流内 EvError 恒为
-// upstream_error + 可重试），这条锁的是「agent 不再按类型覆盖 Upstream 的结论」，
-// 两个方向都测，防将来被"顺手统一"。
-//
-// 注意 fixture 不带 Reason：kiro 的 401/403/402/INVALID_MODEL_ID 由
-// localResultAction 的专属分支直接决定动作，根本不查 Retryable，带上就测不到这一轴。
-func TestKiroAggregateErrorHonorsUpstreamRetryable(t *testing.T) {
-	// 两种到达形态走的是 aggregateKiro 里两个不同的出口：首事件即错误 → 错误经
-	// aggregator.Finish() 出来；错误在流中途 → 循环里直接 return。两处都不许覆盖。
-	for _, shape := range []struct {
-		label  string
-		events func(err ir.Event) []ir.Event
-	}{
-		{"首事件即错误", func(err ir.Event) []ir.Event { return []ir.Event{err} }},
-		{"错误在流中途", func(err ir.Event) []ir.Event {
-			return []ir.Event{
-				{Type: ir.EvMessageStart, MessageID: "msg", Model: "public"},
-				{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}},
-				err,
-			}
-		}},
-	} {
-		for _, tc := range []struct {
-			label        string
-			retryable    bool
-			wantDispatch int
-		}{
-			{"upstream 判不可重试", false, 1},
-			{"upstream 判可重试", true, poolLimit + 1},
-		} {
-			t.Run(shape.label+"/"+tc.label, func(t *testing.T) {
-				rp := &poolReplay{
-					protocol: "kiro",
-					limit:    poolLimit,
-					ndjson: func(int) io.ReadCloser {
-						return kiroNDJSON(shape.events(ir.Event{Type: ir.EvError, Err: &ir.Error{
-							StatusCode: http.StatusBadRequest,
-							Type:       ir.ErrTypeUpstream,
-							Message:    "boom",
-							Retryable:  tc.retryable,
-						}})...)
-					},
-				}
-				w := poolForward(t, rp, "public", false)
-				if rp.calls != tc.wantDispatch {
-					t.Errorf("Dispatch 调用数 = %d，应为 %d", rp.calls, tc.wantDispatch)
-				}
-				if !strings.Contains(w.Body.String(), "boom") {
-					t.Errorf("错误没下发给客户端：body=%.300s", w.Body.String())
-				}
-			})
-		}
 	}
 }

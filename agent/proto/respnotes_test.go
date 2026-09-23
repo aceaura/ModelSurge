@@ -9,7 +9,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -38,29 +37,22 @@ func anyNoteContains(notes []string, sub string) bool {
 	return false
 }
 
-// 外族签名在四个有门控的入站都要报丢；kiro 透传签名不报；
+// 外族签名在有门控的入站都要报丢；
 // 无槽位的 chat 措辞与「签错家族」不同——读者要改的地方不同。
 func TestResponseNotesForeignSignature(t *testing.T) {
 	cases := []struct {
 		protoName string
 		sigFrom   string
-		wantSub   string // 空串表示不应出现签名注记
+		wantSub   string
 	}{
 		{"anthropic", "gemini", "different protocol family"},
 		{"openai-chat", "anthropic", "no signature slot"},
 		{"openai-responses", "anthropic", "different protocol family"},
 		{"codex", "anthropic", "different protocol family"},
 		{"gemini", "anthropic", "different protocol family"},
-		{"kiro", "anthropic", ""}, // kiro 透传签名不门控
 	}
 	for _, c := range cases {
 		notes := proto.MustInbound(c.protoName).ResponseNotes(r55Resp(c.sigFrom, json.RawMessage(`{"a":1}`)))
-		if c.wantSub == "" {
-			if anyNoteContains(notes, "signature") {
-				t.Errorf("%s: 透传签名却报丢失：%v", c.protoName, notes)
-			}
-			continue
-		}
 		if !anyNoteContains(notes, "dropped 1 thought signature(s)") || !anyNoteContains(notes, c.wantSub) {
 			t.Errorf("%s: 外族签名未报或措辞错：%v", c.protoName, notes)
 		}
@@ -82,11 +74,11 @@ func TestResponseNotesGenuineSignatureSilent(t *testing.T) {
 	}
 }
 
-// 畸形工具参数：对象槽位（anthropic/gemini/kiro）挪键必报；
+// 畸形工具参数：对象槽位（anthropic/gemini）挪键必报；
 // 字符串槽位（chat/responses）保留原文，但也要明确报告不可安全执行。
 func TestResponseNotesMalformedArgs(t *testing.T) {
 	bad := json.RawMessage(`{"a": 1`) // max_tokens 截断的典型形态
-	for _, name := range []string{"anthropic", "gemini", "kiro"} {
+	for _, name := range []string{"anthropic", "gemini"} {
 		notes := proto.MustInbound(name).ResponseNotes(r55Resp(name, bad))
 		if !anyNoteContains(notes, "rewrapped 1 malformed tool call argument(s)") || !anyNoteContains(notes, ir.RawArgsKey) {
 			t.Errorf("%s: 挪键未报：%v", name, notes)
@@ -109,7 +101,7 @@ func TestResponseNotesCleanResponseSilent(t *testing.T) {
 		{Type: ir.BlockText, Text: "hi"},
 		{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: "c", Name: "f", Input: json.RawMessage(`{"a":1}`)}},
 	}}
-	for _, name := range []string{"anthropic", "gemini", "kiro", "openai-chat", "openai-responses"} {
+	for _, name := range []string{"anthropic", "gemini", "openai-chat", "openai-responses"} {
 		if notes := proto.MustInbound(name).ResponseNotes(resp); len(notes) != 0 {
 			t.Errorf("%s: 干净响应误报：%v", name, notes)
 		}

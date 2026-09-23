@@ -47,7 +47,6 @@ type Forwarder struct {
 type Replay interface {
 	Dispatch(context.Context, replayv1.DispatchRequest) (replayv1.TargetLease, error)
 	Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error)
-	WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error)
 }
 
 func NewForwarder(cfg *config.Config, replay Replay, store *agentstore.Store) *Forwarder {
@@ -103,8 +102,6 @@ func staticEndpoint(protocol, baseURL, apiKey, nativeModel string, extra map[str
 	}, nil
 }
 
-// kiroEndpoint kiro 账号：每次请求现取 token（GetAccessToken 含预刷新），
-// host 按 profileArn 分流（runtime/q），头伪造 KiroIDE 指纹。
 // endpoint api-key 账号的上游请求 URL 与鉴权头。
 func endpoint(protocol, baseURL, apiKey, nativeModel string) (url string, headers map[string]string, err error) {
 	switch protocol {
@@ -155,24 +152,12 @@ func (f *Forwarder) Forward(ctx context.Context, w http.ResponseWriter, clientCo
 	f.forwardRemote(ctx, w, clientCodec, req, clientKey)
 }
 
-// accountCandidate 把账号转为转发候选。api-key 走静态端点；
-// kiro 走动态端点（每次请求现取 token）并要求运行时就位。
-// forwardScheduled 账号池调度模式：粘性取号 + 错误分类处置。
+// resolvedCandidate 把调度租约转为转发候选：解析出站 codec、静态端点与鉴权头。
 func resolvedCandidate(t replayv1.TargetLease) (candidate, error) {
 	if !allowedOutboundProtocol(t.Protocol) {
 		return candidate{}, fmt.Errorf("unsupported outbound protocol %q", t.Protocol)
 	}
 	ov := overridesFrom(t)
-	if t.Protocol == "kiro" {
-		// codec 只用于能力声明与诊断：数据面在 Upstream 侧（ExecuteKiro），
-		// 这里不会调它的 EncodeRequest。ov 同样要带上，否则账号级
-		// request_overrides 对 kiro 目标会静默失效。
-		c, err := proto.GetOutbound("kiro")
-		if err != nil {
-			return candidate{}, err
-		}
-		return candidate{name: t.TargetID, protocol: t.Protocol, codec: c, ov: ov}, nil
-	}
 	c, err := proto.GetOutbound(t.Protocol)
 	if err != nil {
 		return candidate{}, err
@@ -209,7 +194,7 @@ func overridesFrom(t replayv1.TargetLease) *ir.Overrides {
 
 func allowedOutboundProtocol(protocol string) bool {
 	switch protocol {
-	case "anthropic", "openai-chat", "openai-responses", "codex", "kiro":
+	case "anthropic", "openai-chat", "openai-responses", "codex":
 		return true
 	default:
 		return false
@@ -218,7 +203,7 @@ func allowedOutboundProtocol(protocol string) bool {
 
 func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, req *ir.Request, clientKey string) {
 	requestID := requestIDFrom(ctx)
-	// 估算输入+输出预算（kiro 入站有专用 tokenizer 时用之，CountTokens 同款取法）。
+	// 估算输入+输出预算（入站 codec 自带 tokenizer 时用之，CountTokens 同款取法）。
 	est := estimateReqTokens(clientCodec, req)
 	tried := map[string]bool{}
 	attempts := map[string]int{}
@@ -341,7 +326,7 @@ func (f *Forwarder) forwardRemote(ctx context.Context, w http.ResponseWriter, cl
 			attempts[lease.TargetID] = attempt + 1
 			action := result.Action
 			if action == "" {
-				action = localResultAction(cand, aerr, attempt, f.sameAccountRetries)
+				action = localResultAction(aerr, attempt, f.sameAccountRetries)
 			}
 			switch action {
 			case replayv1.ActionRetryTarget:
@@ -391,25 +376,16 @@ func modelUnavailableDispatch(err error) bool {
 	return e.Code == replayv1.CodeTargetUnavailable || e.Code == replayv1.CodeContextTooLarge
 }
 
-func localResultAction(cand candidate, err *ir.Error, attempt, sameTargetRetries int) string {
+func localResultAction(err *ir.Error, attempt, sameTargetRetries int) string {
 	if err == nil {
 		return replayv1.ActionStop
 	}
 	if err.Reason == ReasonContextExceeded {
 		return replayv1.ActionStop
 	}
-	if cand.protocol == "kiro" {
-		if (err.StatusCode == http.StatusUnauthorized || err.StatusCode == http.StatusForbidden) && attempt == 0 {
-			return replayv1.ActionRetryTarget
-		}
-		if err.Reason == "INVALID_MODEL_ID" {
-			return replayv1.ActionSwitchTarget
-		}
-	}
 	// 402（余额/配额耗尽）与 429 同样直接换目标：账号没钱不会因为再问一次就有钱，
-	// 同目标重试只是白烧一轮。此前 402 只在上面的 kiro 专属分支里换目标，普通协议
-	// 走 ClassifyStatus 的 default 判成不可重试直接 stop——同一个欠费上游，走 kiro
-	// 目标会换号、走 anthropic 直连就放弃，池子里明明还有可用账号。
+	// 同目标重试只是白烧一轮。ClassifyStatus 的 default 会把 402 判成不可重试直接
+	// stop——同一个欠费上游，池子里明明还有可用账号却放弃了。
 	if err.StatusCode == http.StatusTooManyRequests || err.StatusCode == http.StatusPaymentRequired {
 		return replayv1.ActionSwitchTarget
 	}
@@ -478,9 +454,6 @@ func (f *Forwarder) openUpstream(ctx context.Context, cand candidate, upReq *ir.
 // attempt 对单个上游做一次转发尝试。wrote 表示是否已向客户端写出字节。
 // onUsage 非空时上报响应中的真实 usage（调度模式记账用；估算值不调）。
 func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCodec proto.InboundCodec, cand candidate, req *ir.Request, onUsage func(*ir.Usage)) (wrote bool, err *ir.Error) {
-	if cand.protocol == "kiro" {
-		return f.attemptKiro(ctx, w, clientCodec, cand, req, onUsage)
-	}
 	// 上游永远流式
 	upReq := req.Clone()
 	upReq.Model = cand.native
@@ -529,20 +502,13 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	// 客户端一个字节都没写，且下游三条路（SSE 流、聚合转流、兜底 JSON）共用。
 	forwardUpstreamHeaders(w, resp)
 
-	// body 形态适配（可选 codec 缝）：kiro 二进制 eventstream -> SSE；
-	// 适配过的 body 一律走流式路径。
-	var upBody io.Reader = resp.Body
 	isSSE := strings.Contains(resp.Header.Get("Content-Type"), "event-stream")
-	if bw, ok := cand.codec.(interface{ WrapResponseBody(io.Reader) io.Reader }); ok {
-		upBody = bw.WrapResponseBody(resp.Body)
-		isSSE = true
-	}
 
 	dec := f.newDecoder(cand, req)
 
 	// 兜底：上游忽略 stream=true 返回完整 JSON
 	if !isSSE {
-		full, readErr := io.ReadAll(upBody)
+		full, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
 			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: readErr.Error(), Retryable: true}
 		}
@@ -572,16 +538,16 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	}
 
 	if req.Stream {
-		return f.streamUpstreamToClient(ctx, cancel, w, clientCodec, cand, req, dec, upBody, onUsage)
+		return f.streamUpstreamToClient(ctx, cancel, w, clientCodec, cand, req, dec, resp.Body, onUsage)
 	}
-	return f.collectUpstreamToClient(ctx, cancel, w, clientCodec, cand, req, dec, upBody, onUsage)
+	return f.collectUpstreamToClient(ctx, cancel, w, clientCodec, cand, req, dec, resp.Body, onUsage)
 }
 
 func (f *Forwarder) newDecoder(cand candidate, _ *ir.Request) proto.StreamDecoder {
 	return cand.codec.NewStreamDecoder()
 }
 
-// recordTruncation 流结束后探测解码器的截断上报缝并记录（kiro 实现）。
+// recordTruncation 流结束后探测解码器的截断上报缝并记录（可选实现）。
 func (f *Forwarder) recordTruncation(dec proto.StreamDecoder, upName string) {
 	tr, ok := dec.(proto.TruncationReporter)
 	if !ok {
@@ -602,8 +568,7 @@ func (f *Forwarder) candidateFirstTokenTimeout(candidate, *ir.Request) time.Dura
 }
 
 // awaitFirstEvent 等上游的第一个 SSE 事件；超时则取消本次请求并返回可重试错误。
-// 参考 kiro-gateway stream_with_first_token_retry：建连成功不代表上游健康，
-// 迟迟不出首 chunk 应视为失败换上游。
+// 建连成功不代表上游健康，迟迟不出首 chunk 应视为失败换上游。
 func (f *Forwarder) awaitFirstEvent(er *EventReader, cancel context.CancelFunc, timeout time.Duration) (SSEEvent, bool, *ir.Error) {
 	type result struct {
 		ev  SSEEvent
@@ -740,7 +705,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 			return true, nil
 		}
 	}
-	emit(f.interceptWebSearch(ctx, cand, req, dec.Finish()))
+	emit(dec.Finish())
 	f.recordTruncation(dec, cand.name)
 	fin := enc.Finish()
 	csum.framesAdd(len(fin))
@@ -834,7 +799,7 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 		}
 		feed(ev)
 	}
-	for _, e := range f.interceptWebSearch(ctx, cand, req, dec.Finish()) {
+	for _, e := range dec.Finish() {
 		agg.Feed(e)
 	}
 	f.recordTruncation(dec, cand.name)
@@ -852,10 +817,6 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 	notes = append(notes, agg.Notes()...)
 	return resp, notes, nil
 }
-
-// CountTokens 处理 Anthropic count_tokens 请求：优先转发给 anthropic 账号
-// 原生计数；无可用账号时本地粗估并记日志。粗估按首个候选的协议语义
-// （kiro 账号 → kiro tokenizer；其余 → IR 通用估算）。
 
 // estimateUsageOnResponse 上游未给 usage 且开启估算时，按请求/响应文本粗估。
 func (f *Forwarder) estimateUsageOnResponse(req *ir.Request, resp *ir.Response, upName string) {
@@ -1103,13 +1064,9 @@ func excerpt(s string) string {
 	return s
 }
 
+// CountTokens 处理 Anthropic count_tokens 请求：本地按 IR 通用估算返回。
 func (f *Forwarder) CountTokens(req *ir.Request) (int, []byte) {
 	est := ir.EstimateRequestTokens(req)
-	if c, err := proto.GetOutbound("kiro"); err == nil {
-		if te, ok := c.(interface{ EstimateRequestTokens(*ir.Request) int }); ok {
-			est = te.EstimateRequestTokens(req)
-		}
-	}
 	return 200, []byte(fmt.Sprintf(`{"input_tokens":%d}`, est))
 }
 func triedIDs(m map[string]bool) []string {

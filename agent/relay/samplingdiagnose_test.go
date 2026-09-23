@@ -21,19 +21,19 @@ func TestDiagnoseSamplingPerProtocol(t *testing.T) {
 	}{
 		{"presence_penalty", "no penalty parameter",
 			func(r *ir.Request) { r.PresencePenalty = &pp },
-			map[string]bool{"anthropic": true, "kiro": true, "openai-responses": true, "openai-chat": false}},
+			map[string]bool{"anthropic": true, "openai-responses": true, "openai-chat": false}},
 		{"seed", "no seed parameter",
 			func(r *ir.Request) { r.Seed = &seed },
-			map[string]bool{"anthropic": true, "kiro": true, "openai-responses": true, "openai-chat": false}},
+			map[string]bool{"anthropic": true, "openai-responses": true, "openai-chat": false}},
 		{"n", "no multi-candidate parameter",
 			func(r *ir.Request) { r.Candidates = &n },
-			map[string]bool{"anthropic": true, "kiro": true, "openai-responses": true, "openai-chat": false}},
+			map[string]bool{"anthropic": true, "openai-responses": true, "openai-chat": false}},
 		{"logprobs", "no log probability parameter",
 			func(r *ir.Request) { r.LogProbs, r.TopLogProbs = &yes, &top },
-			map[string]bool{"anthropic": true, "kiro": true, "openai-responses": false, "openai-chat": false}},
+			map[string]bool{"anthropic": true, "openai-responses": false, "openai-chat": false}},
 		{"logit_bias", "no logit bias parameter",
 			func(r *ir.Request) { r.LogitBias = map[string]float64{"1234": -50} },
-			map[string]bool{"anthropic": true, "kiro": true, "openai-responses": true, "openai-chat": false}},
+			map[string]bool{"anthropic": true, "openai-responses": true, "openai-chat": false}},
 	}
 	for _, c := range cases {
 		for name, shouldWarn := range c.warns {
@@ -54,7 +54,7 @@ func TestDiagnoseSamplingPerProtocol(t *testing.T) {
 func TestDiagnoseSamplingSilentWhenAbsent(t *testing.T) {
 	req := &ir.Request{Model: "m", MaxTokens: 64,
 		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}}}
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		for _, note := range Diagnose(req, name, capsOf(t, name)) {
 			for _, dim := range []string{"penalty", "seed", "candidate", "log probability", "logit bias"} {
 				if strings.Contains(note, dim) {

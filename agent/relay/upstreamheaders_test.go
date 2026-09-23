@@ -21,7 +21,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/ir"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
-	"github.com/aceaura/ModelSurge/replay/contract/replayv1"
 )
 
 // wireHeader 客户端真正收到的头（写出头之后的修改不计）。
@@ -71,7 +70,7 @@ func vendorHeaders() http.Header {
 }
 
 // 限流头是客户端做自适应退避与配额展示的唯一信号；全丢的话客户端只能当作
-// 「无限制」，然后在 429 上硬撞。四条写出路径都要覆盖。
+// 「无限制」，然后在 429 上硬撞。三条写出路径都要覆盖。
 func TestUpstreamRateLimitHeadersReachClient(t *testing.T) {
 	for _, sse := range []bool{true, false} {
 		for _, client := range []string{"anthropic", "openai-chat"} {
@@ -142,7 +141,7 @@ func TestForwardUpstreamHeadersReplacesAcrossAttempts(t *testing.T) {
 }
 
 // 反向代理（nginx 一类）默认缓冲响应，SSE 会被攒到最后一次性吐出，客户端看到的
-// 是「流式变非流式」。三个 SSE 出口都要显式关掉缓冲。
+// 是「流式变非流式」。两个 SSE 出口都要显式关掉缓冲。
 func TestSSEResponsesDisableProxyBuffering(t *testing.T) {
 	t.Run("普通流", func(t *testing.T) {
 		up := headerUpstream(t, nil, true)
@@ -154,14 +153,6 @@ func TestSSEResponsesDisableProxyBuffering(t *testing.T) {
 		rp := &reportCaptureReplay{lease: usageLease("anthropic", up.URL)}
 		assertNoBuffering(t, forwardUsage(t, rp, "anthropic", &config.Config{}, nil))
 	})
-	t.Run("kiro流", func(t *testing.T) {
-		rp := &kiroExecuteReplay{
-			lease: replayv1.TargetLease{RequestID: "req", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"},
-			body:  kiroUsageNDJSON(t),
-		}
-		w := forwardUsage(t, rp, "anthropic", &config.Config{}, func(r *ir.Request) { r.Model = "public" })
-		assertNoBuffering(t, w)
-	})
 }
 
 func assertNoBuffering(t *testing.T, w *httptest.ResponseRecorder) {
@@ -172,37 +163,6 @@ func assertNoBuffering(t *testing.T, w *httptest.ResponseRecorder) {
 	if got := wireHeader(w).Get("X-Accel-Buffering"); got != "no" {
 		t.Fatalf("X-Accel-Buffering=%q, want \"no\"（实际收到的头：%v）", got, wireHeader(w))
 	}
-}
-
-// kiro 数据面走 Replay 而非直连厂商，是与普通路径完全独立的第二组出口
-// （streamKiroToClient / attemptKiroStrict），头回传得在这两条上同样生效。
-func TestKiroPathsForwardUpstreamHeaders(t *testing.T) {
-	lease := replayv1.TargetLease{RequestID: "req", GroupID: "group", TargetID: "kiro/public", Protocol: "kiro"}
-	t.Run("流式", func(t *testing.T) {
-		rp := &kiroExecuteReplay{lease: lease, body: kiroUsageNDJSON(t), header: vendorHeaders()}
-		w := forwardUsage(t, rp, "openai-chat", &config.Config{}, func(r *ir.Request) { r.Model = "public" })
-		if w.Code != http.StatusOK {
-			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-		}
-		if got := wireHeader(w).Get("X-Ratelimit-Remaining-Requests"); got != "3" {
-			t.Errorf("kiro 流式缺限流头：%q（实际收到的头：%v）", got, wireHeader(w))
-		}
-		assertNoBuffering(t, w)
-	})
-	t.Run("严格工具分支", func(t *testing.T) {
-		rp := &kiroExecuteReplay{lease: lease, body: kiroStrictUsageNDJSON(t), header: vendorHeaders()}
-		w := forwardUsage(t, rp, "openai-chat", &config.Config{}, func(r *ir.Request) {
-			r.Model = "public"
-			r.Tools = []ir.Tool{{Name: "t", Description: "d"}}
-			r.ToolChoice = &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: "t"}
-		})
-		if w.Code != http.StatusOK {
-			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-		}
-		if got := wireHeader(w).Get("X-Request-Id"); got != "req_up_1" {
-			t.Errorf("kiro 严格分支缺上游 request id：%q（实际收到的头：%v）", got, wireHeader(w))
-		}
-	})
 }
 
 // 非流式 JSON 响应同样要带头：客户端在同步调用上一样依赖限流信号，且这条路径

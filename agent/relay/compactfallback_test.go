@@ -70,10 +70,6 @@ func (r *compactReplay) Report(_ context.Context, report replayv1.ResultReport) 
 	return replayv1.ResultResponse{}, nil
 }
 
-func (*compactReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
-}
-
 func (r *compactReplay) dispatched() []replayv1.DispatchRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -300,10 +296,6 @@ func (r *dispatchFailReplay) Dispatch(_ context.Context, d replayv1.DispatchRequ
 
 func (*dispatchFailReplay) Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error) {
 	return replayv1.ResultResponse{}, nil
-}
-
-func (*dispatchFailReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
 }
 
 // Compact 标记经 Clone 保留（重试路径 req.Clone 语义）。

@@ -114,7 +114,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	// Enabled 只由 effort 决定：summary/context/mode 都不是「要不要思考」的表态。
 	// minimal 算开思考——它是「最少的思考」，不是「不思考」；chat 入站同款值就是
 	// 这么读的，两族口径必须一致，否则同一个 vendor 值换个入口就变成相反语义
-	// （kiro 出站按 Enabled 写 effort，读成关就成了 "none"）。
+	// （出站按 Enabled 写 effort，读成关就成了 "none"）。
 	if req.Reasoning != nil {
 		out.Thinking = &ir.ThinkingConfig{
 			Enabled: req.Reasoning.Effort != "" && req.Reasoning.Effort != "none",
@@ -453,8 +453,7 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			out.Include = append(out.Include, "reasoning.encrypted_content")
 		case t.Effort == "none":
 			// 显式关也要写出来：省略整个 reasoning 不等于「不思考」，上游会按自己的
-			// 默认档（medium）思考，客户端要的「别思考」就成了「中档思考」。kiro
-			// 出站早就照此办理（effortFragment 在思考关闭时显式写 "none"）。
+			// 默认档（medium）思考，客户端要的「别思考」就成了「中档思考」。
 			rs.Effort = "none"
 		}
 		// 关着却带别的档位（账号覆盖强制关、anthropic disabled 配 output_config.effort）

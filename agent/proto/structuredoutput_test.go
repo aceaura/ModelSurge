@@ -13,8 +13,8 @@ import (
 //
 // 四种入站形态：Chat 的 response_format、Responses 的 text.format、
 // Gemini 的 responseMimeType + responseSchema、Anthropic 的 output_config.format
-// （2026 新增，仅 json_schema 形态）。kiro 没有落点，
-// 由 Capabilities.StructuredOutput + 诊断兜底（见 relay 侧测试）。
+// （2026 新增，仅 json_schema 形态）。没有落点的上游由
+// Capabilities.StructuredOutput + 诊断兜底（见 relay 侧测试）。
 
 const schemaLiteral = `{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`
 
@@ -112,7 +112,7 @@ func TestGeminiDecodesSchemaWithoutMime(t *testing.T) {
 }
 
 // type:"text" 是协议默认值，等同于「客户端没提要求」，不能进 IR——
-// 否则下游会为一个不存在的诉求触发诊断，并给 anthropic/kiro 报假有损。
+// 否则下游会为一个不存在的诉求触发诊断，并报假有损。
 func TestPlainTextFormatDoesNotEnterIR(t *testing.T) {
 	for _, c := range []struct{ name, body string }{
 		{"openai-chat", `{"model":"m","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"text"}}`},
@@ -300,11 +300,11 @@ func TestGeminiSchemaSurvivesToOpenAI(t *testing.T) {
 	}
 }
 
-// 无落点的上游（kiro）必须声明能力缺失，由诊断层报出；anthropic 2026 起
-// 有 output_config.format 槽位（仅 schema 约束形态），声明时要带受限位。
-func TestProtocolsWithoutStructuredOutputDeclareIt(t *testing.T) {
+// 四个出站都有结构化输出落点，必须如实声明；anthropic 2026 起的
+// output_config.format 只装得下 schema 约束形态，声明时要带受限位。
+func TestStructuredOutputCapabilityAndSchemaOnlyBit(t *testing.T) {
 	for name, want := range map[string]bool{
-		"anthropic": true, "kiro": false,
+		"anthropic":   true,
 		"openai-chat": true, "openai-responses": true,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -315,7 +315,7 @@ func TestProtocolsWithoutStructuredOutputDeclareIt(t *testing.T) {
 	}
 	// 受限位只有 anthropic 置真：其余三家两种形态都能表达。
 	for name, want := range map[string]bool{
-		"anthropic": true, "kiro": false,
+		"anthropic":   true,
 		"openai-chat": false, "openai-responses": false,
 	} {
 		t.Run(name+"/schema-only", func(t *testing.T) {

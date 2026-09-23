@@ -14,7 +14,7 @@ func TestDiagnoseContainerUploadDroppedOffAnthropic(t *testing.T) {
 		{Type: ir.BlockText, Text: "run this"},
 		{Type: ir.BlockContainerUpload, ContainerUpload: &ir.ContainerUploadRef{FileID: "file_secret1"}},
 	}}}}
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "dropped 1 container upload block(s)") {
 			t.Errorf("%s 应报 container_upload 丢失：%q", name, got)
@@ -33,12 +33,12 @@ func TestDiagnoseContainerUploadCountAndAbsent(t *testing.T) {
 		{Type: ir.BlockContainerUpload, ContainerUpload: &ir.ContainerUploadRef{FileID: "file_1"}},
 		{Type: ir.BlockContainerUpload, ContainerUpload: &ir.ContainerUploadRef{FileID: "file_2"}},
 	}}}}
-	got := strings.Join(Diagnose(req, "kiro", capsOf(t, "kiro")), "; ")
+	got := strings.Join(Diagnose(req, "openai-chat", capsOf(t, "openai-chat")), "; ")
 	if !strings.Contains(got, "dropped 2 container upload block(s)") {
 		t.Errorf("多块应计数：%q", got)
 	}
 	req.Messages[0].Content = nil
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 无块误报：%v", name, notes)
 		}

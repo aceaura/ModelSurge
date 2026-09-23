@@ -148,7 +148,7 @@ type webSearchResultBlock struct {
 	Type             string `json:"type"` // "web_search_result"
 	Title            string `json:"title"`
 	URL              string `json:"url"`
-	EncryptedContent string `json:"encrypted_content"` // 原文摘要（KiroaaS 语义）
+	EncryptedContent string `json:"encrypted_content"` // 原文摘要（上游侧加密，原样透传）
 }
 
 // mediaSource image 与 document 共用的 source 外形。

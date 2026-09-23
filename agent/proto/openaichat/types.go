@@ -179,7 +179,7 @@ type tool struct {
 }
 
 // UnmarshalJSON 兼容 Cursor 扁平工具形态 {name, description, input_schema}
-// （无 type/function 包装，KiroaaS converters_openai.py:261-302 同款）：
+// （无 type/function 包装）：
 // 常规解析失败且能解出 name 时按扁平 DTO 解析，映射为 Type:"function"。
 func (t *tool) UnmarshalJSON(data []byte) error {
 	type plain tool

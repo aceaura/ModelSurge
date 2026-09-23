@@ -13,7 +13,7 @@ import (
 
 func TestDiagnoseConversationDroppedOffChainProtocols(t *testing.T) {
 	req := &ir.Request{ConversationID: "conv-1"}
-	for _, name := range []string{"anthropic", "openai-chat", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "conversation anchor") {
 			t.Errorf("%s 丢弃 conversation 锚点未报告：%q", name, got)
@@ -30,7 +30,7 @@ func TestDiagnoseConversationDroppedOffChainProtocols(t *testing.T) {
 func TestDiagnoseBackgroundDroppedOffResponsesFamily(t *testing.T) {
 	on := true
 	req := &ir.Request{Background: &on}
-	for _, name := range []string{"anthropic", "openai-chat", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "background mode") {
 			t.Errorf("%s 丢弃 background 未报告：%q", name, got)
@@ -44,7 +44,7 @@ func TestDiagnoseBackgroundDroppedOffResponsesFamily(t *testing.T) {
 	// 显式 false 是客户端的选择不是能力诉求：同步响应正合其意，不该报
 	off := false
 	reqOff := &ir.Request{Background: &off}
-	for _, name := range []string{"anthropic", "openai-chat", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat"} {
 		if notes := Diagnose(reqOff, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s background=false 误报：%v", name, notes)
 		}
@@ -53,7 +53,7 @@ func TestDiagnoseBackgroundDroppedOffResponsesFamily(t *testing.T) {
 
 func TestDiagnoseIncludeDroppedOffResponsesFamily(t *testing.T) {
 	req := &ir.Request{Include: []string{"message.output_text.logprobs", "code_interpreter_call.outputs"}}
-	for _, name := range []string{"anthropic", "openai-chat", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "2 include value(s)") {
 			t.Errorf("%s 丢弃 include 未报告：%q", name, got)
@@ -68,7 +68,7 @@ func TestDiagnoseIncludeDroppedOffResponsesFamily(t *testing.T) {
 
 func TestDiagnosePromptRefDroppedOffResponsesFamily(t *testing.T) {
 	req := &ir.Request{Prompt: &ir.PromptRef{ID: "pmpt-1", Version: "3"}}
-	for _, name := range []string{"anthropic", "openai-chat", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "prompt template reference") {
 			t.Errorf("%s 丢弃 prompt 模板引用未报告：%q", name, got)
@@ -83,7 +83,7 @@ func TestDiagnosePromptRefDroppedOffResponsesFamily(t *testing.T) {
 
 // 四维全缺省时四家都必须静默。
 func TestDiagnoseResponsesExtrasSilentWhenAbsent(t *testing.T) {
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(&ir.Request{}, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 空请求误报：%v", name, notes)
 		}

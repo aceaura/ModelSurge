@@ -8,7 +8,7 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 )
 
-// R60：缓存断点跨族零泄漏。断点是 anthropic 专属维度，OpenAI 两系与 kiro
+// R60：缓存断点跨族零泄漏。断点是 anthropic 专属维度，OpenAI 两系
 // 的载荷里一个字符都不能出现（丢的部分由诊断报出，见 relay 侧测试）。
 
 func TestCacheBreakpointsNeverLeakToOtherFamilies(t *testing.T) {
@@ -18,7 +18,7 @@ func TestCacheBreakpointsNeverLeakToOtherFamilies(t *testing.T) {
 			{Type: ir.BlockText, Text: "hi", CacheCtl: "ephemeral", CacheTTL: "1h"}}}},
 		Tools: []ir.Tool{{Name: "ping", InputSchema: []byte(`{"type":"object"}`),
 			CacheCtl: "ephemeral", CacheTTL: "1h"}}}
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		out, err := proto.MustOutbound(name).EncodeRequest(req)
 		if err != nil {
 			t.Fatalf("%s EncodeRequest: %v", name, err)

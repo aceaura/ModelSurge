@@ -28,7 +28,7 @@ const (
 	BlockMedia BlockType = "media"
 	// BlockRefusal 模型拒绝作答的正文。文本放 Text 字段。
 	// 与 BlockText 分开是因为 OpenAI 两系有独立槽位（Chat 的 message.refusal、
-	// Responses 的 refusal content part），而 Anthropic 与 kiro 没有——合进
+	// Responses 的 refusal content part），而 Anthropic 与 Gemini 没有——合进
 	// BlockText 会让同协议往返把拒绝降级成普通回答，客户端无法区分「模型拒绝了」
 	// 和「模型这么答的」。只靠 stop_reason=refusal 也不够：正文若丢，客户端看到
 	// 的是一条空消息配一个拒绝标记，像成功的空回复。
@@ -331,8 +331,9 @@ func SigFrom(protoName, sig string) string {
 	return protoName
 }
 
-// SigSynthetic 本代理自己造出来的占位签名的来源标记（kiro 的 fake reasoning
-// 不带真签名，但 thinking 块下游需要一个非空值占位）。它与任何协议名都不相等，
+// SigSynthetic 本代理自己造出来的占位签名的来源标记（Gemini 出站拿不到真
+// thoughtSignature 时塞的占位值被客户端原样回传，不能被洗白成真签名）。
+// 它与任何协议名都不相等，
 // 因此永远过不了同族门控——占位签名既不会被回传给上游，也不会被写进客户端的
 // 原生签名位冒充真签名（客户端拿它重放必被上游拒绝）。
 const SigSynthetic = "synthetic"
@@ -370,7 +371,7 @@ type Tool struct {
 	CacheTTL string
 	// Strict 工具入参 schema 严格校验开关（anthropic tool.strict、OpenAI 两系
 	// function.strict）。三态指针：nil=没给（上游默认），显式 false 是「明确
-	// 不要严格校验」，与没给语义不同。kiro 没有这一维。
+	// 不要严格校验」，与没给语义不同。
 	Strict *bool
 	// 以下四维是 anthropic 工具定义的 2026 修饰槽位，其余协议的工具定义
 	// 一个都没有（跨族丢+报）：
@@ -444,8 +445,8 @@ type ThinkingConfig struct {
 // 各协议形态：Chat 的 response_format、Responses 的 text.format、
 // Gemini 的 generationConfig.responseMimeType + responseSchema、
 // Anthropic 的 output_config.format（仅 json_schema 形态，2026 新增）。
-// kiro 原生没有这一维——官方做法是把 schema 塞进 system 提示或
-// 声明一个单工具后强制调用，两者都是改写请求语义，不在本层做。
+// 装不下这一维的协议只能把 schema 塞进 system 提示或声明单工具后强制调用，
+// 两者都是改写请求语义，不在本层做。
 type ResponseFormat struct {
 	// Name schema 名称（OpenAI json_schema.name），无对应形态的协议会丢掉。
 	Name string
@@ -642,7 +643,7 @@ type Overrides struct {
 // ThinkingOverride thinking 配置覆盖，强制语义：
 // Enabled=true 强制开启（BudgetTokens<=0 时由目标 codec 兜底默认值）；
 // Enabled=false 强制剥掉 thinking 参数（对上游不发送该字段）。
-// Effort 为 OpenAI 风格等级，仅 openai/kiro/gemini 上游取用。
+// Effort 为 OpenAI 风格等级，仅 openai/gemini 上游取用。
 type ThinkingOverride struct {
 	Enabled      bool   `json:"enabled" yaml:"enabled"`
 	BudgetTokens int    `json:"budget_tokens,omitempty" yaml:"budget_tokens,omitempty"`

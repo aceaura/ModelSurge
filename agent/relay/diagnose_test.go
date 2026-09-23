@@ -30,7 +30,7 @@ func TestDiagnoseCustomTools(t *testing.T) {
 			t.Fatalf("%s native custom tools reported loss: %v", name, notes)
 		}
 	}
-	for _, name := range []string{"anthropic", "openai-chat", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat"} {
 		joined := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		for _, want := range []string{
 			"custom tool definition", "dropped format", "custom tool call", "custom tool output", "custom tool_choice",

@@ -11,7 +11,7 @@ import (
 
 // R61：工具 strict（schema 严格校验保证）三族贯通。官方 SDK 核对
 // （2026-09-22）：anthropic Tool.strict、OpenAI chat FunctionDefinition.strict、
-// responses FunctionTool.strict 同义同形；kiro 没有这一维。
+// responses FunctionTool.strict 同义同形。
 // 三态指针：显式 false 与没给语义不同，都必须保真。
 
 func boolPtr(b bool) *bool { return &b }
@@ -78,20 +78,6 @@ func TestToolStrictRoundTrip(t *testing.T) {
 	}
 }
 
-// 跨族到 kiro：strict 一个字符都不进载荷（丢的部分由诊断报出）。
-func TestToolStrictNeverLeaksToKiro(t *testing.T) {
-	req := &ir.Request{Model: "m", MaxTokens: 100,
-		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
-		Tools:    []ir.Tool{{Name: "ping", InputSchema: []byte(`{"type":"object"}`), Strict: boolPtr(true)}}}
-	out, err := proto.MustOutbound("kiro").EncodeRequest(req)
-	if err != nil {
-		t.Fatalf("EncodeRequest: %v", err)
-	}
-	if strings.Contains(string(out), "strict") {
-		t.Errorf("kiro 泄漏 strict: %s", out)
-	}
-}
-
 // R62：anthropic 工具修饰四维跨族零泄漏。
 func TestToolModifiersNeverLeakToOtherFamilies(t *testing.T) {
 	fa := false
@@ -99,9 +85,9 @@ func TestToolModifiersNeverLeakToOtherFamilies(t *testing.T) {
 		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
 		Tools: []ir.Tool{{Name: "ping", InputSchema: []byte(`{"type":"object"}`),
 			DeferLoading: true, EagerInputStreaming: &fa,
-			InputExamples: []json.RawMessage{[]byte(`{"name":"x"}`)},
+			InputExamples:  []json.RawMessage{[]byte(`{"name":"x"}`)},
 			AllowedCallers: []string{"direct"}}}}
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		out, err := proto.MustOutbound(name).EncodeRequest(req)
 		if err != nil {
 			t.Fatalf("%s EncodeRequest: %v", name, err)
@@ -114,4 +100,3 @@ func TestToolModifiersNeverLeakToOtherFamilies(t *testing.T) {
 		}
 	}
 }
-

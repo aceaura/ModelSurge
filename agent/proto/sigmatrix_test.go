@@ -17,7 +17,7 @@ import (
 //     客户端会把它当真凭据在下一轮回传，同样被拒——而且这次是它自己被拒。
 //
 // 第二条是本轮修的缺口：此前响应侧编码器一个都不看来源，外族签名与本代理
-// 自己造的占位签名（kiro fake reasoning）都会被原样洗进原生签名位。
+// 自己造的占位签名（ir.SigSynthetic）都会被原样洗进原生签名位。
 
 // sigSlotOf 各协议原生签名位的 JSON 键。空值表示该协议没有签名形态。
 var sigSlotOf = map[string]string{
@@ -25,7 +25,6 @@ var sigSlotOf = map[string]string{
 	"openai-responses": `"encrypted_content"`,
 	"gemini":           `"thoughtSignature"`,
 	"openai-chat":      "",
-	"kiro":             `"signature"`,
 }
 
 func thinkingResponse(sig, from string) *ir.Response {
@@ -46,7 +45,7 @@ func TestResponseSignatureSlotGatedByOrigin(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetInbound(%s): %v", name, err)
 		}
-		for _, from := range []string{"anthropic", "openai-responses", "gemini", "kiro", ir.SigSynthetic, ""} {
+		for _, from := range []string{"anthropic", "openai-responses", "gemini", ir.SigSynthetic, ""} {
 			body, err := c.EncodeResponse(thinkingResponse("SIGVALUE", from))
 			if err != nil {
 				t.Fatalf("%s EncodeResponse(from=%s): %v", name, from, err)
@@ -104,18 +103,18 @@ func thinkingRequest(sig, from string) *ir.Request {
 // （anthropic degradeThinking / responses 跳过整块），这里把它钉住，
 // 防止响应侧的门控被误加到请求侧、或请求侧门控被后续改动放宽。
 func TestRequestSignatureReplayedOnlySameFamily(t *testing.T) {
-	for _, name := range []string{"anthropic", "openai-responses", "openai-chat", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-responses", "openai-chat"} {
 		c, err := proto.GetOutbound(name)
 		if err != nil {
 			t.Fatalf("GetOutbound(%s): %v", name, err)
 		}
-		for _, from := range []string{"anthropic", "openai-responses", "gemini", "kiro", ir.SigSynthetic, ""} {
+		for _, from := range []string{"anthropic", "openai-responses", "gemini", ir.SigSynthetic, ""} {
 			body, err := c.EncodeRequest(thinkingRequest("SIGVALUE", from))
 			if err != nil {
 				t.Fatalf("%s EncodeRequest(from=%s): %v", name, from, err)
 			}
 			s := string(body)
-			// kiro 与 chat 无签名回放能力（Caps.ThinkingSignature=false），
+			// chat 无签名回放能力（Caps.ThinkingSignature=false），
 			// 同族也不回传；其余协议仅同族回传。
 			want := from == name && c.Caps().ThinkingSignature
 			if got := strings.Contains(s, "SIGVALUE"); got != want {
@@ -173,7 +172,7 @@ func TestStreamSignatureCarriesOrigin(t *testing.T) {
 // 合成来源与任何协议名都不相等：这是占位签名不被洗白的唯一依据。
 func TestSyntheticOriginMatchesNoProtocol(t *testing.T) {
 	th := &ir.Thinking{Signature: "sig_deadbeef", SignatureFrom: ir.SigSynthetic}
-	for _, name := range []string{"anthropic", "openai-responses", "openai-chat", "gemini", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-responses", "openai-chat", "gemini"} {
 		if th.SignatureGenuineFor(name) {
 			t.Errorf("合成签名在 %s 上被判成真签名", name)
 		}

@@ -1,9 +1,6 @@
 package relay
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -215,15 +212,28 @@ func TestHideThoughtsForwardsFinish(t *testing.T) {
 	}
 }
 
-// 端到端：装配点在 Forward 入口，五处写出点靠装饰器覆盖。
+// thinkingSSE 与 thinkingStream 同一份内容的 anthropic SSE 形态：思考块带签名，
+// 后接可见正文。
+func thinkingSSE() []string {
+	return []string{
+		"event: message_start\ndata: " + `{"type":"message_start","message":{"id":"msg","type":"message","role":"assistant","model":"native","content":[],"usage":{"input_tokens":7}}}`,
+		"event: content_block_start\ndata: " + `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+		"event: content_block_delta\ndata: " + `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"secret reasoning"}}`,
+		"event: content_block_delta\ndata: " + `{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-bytes"}}`,
+		"event: content_block_stop\ndata: " + `{"type":"content_block_stop","index":0}`,
+		"event: content_block_start\ndata: " + `{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+		"event: content_block_delta\ndata: " + `{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"visible answer"}}`,
+		"event: content_block_stop\ndata: " + `{"type":"content_block_stop","index":1}`,
+		"event: message_delta\ndata: " + `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		"event: message_stop\ndata: " + `{"type":"message_stop"}`,
+	}
+}
+
+// 端到端：装配点在 Forward 入口，多处写出点靠装饰器覆盖。
 // 只测装饰器本身会漏掉「入口忘了包」这一类遗漏。
 func TestForwardHidesThoughtsEndToEnd(t *testing.T) {
-	var nd bytes.Buffer
-	for _, ev := range thinkingStream() {
-		_ = json.NewEncoder(&nd).Encode(ev)
-	}
-	replay := &kiroExecuteReplay{lease: kiroLease(), body: io.NopCloser(bytes.NewReader(nd.Bytes()))}
-	f := NewForwarder(&config.Config{}, replay, nil)
+	up := sseUpstream(t, thinkingSSE(), nil)
+	f := NewForwarder(&config.Config{}, &logProbeReplay{lease: sseLease(up.URL)}, nil)
 	w := httptest.NewRecorder()
 	f.Forward(t.Context(), w, proto.MustInbound("gemini"), &ir.Request{
 		Model:    "claude-sonnet-5",

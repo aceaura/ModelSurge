@@ -8,7 +8,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -41,7 +40,6 @@ func TestMapServiceTierEchoValues(t *testing.T) {
 		{"auto", "anthropic", "", false},
 		{"flex", "anthropic", "", false},
 		{"priority", "gemini", "", false},
-		{"priority", "kiro", "", false},
 	} {
 		got, ok := proto.MapServiceTierEcho(c.tier, c.target)
 		if ok != c.ok || got != c.want {

@@ -34,10 +34,6 @@ func (r *outboxReplay) Report(context.Context, replayv1.ResultReport) (replayv1.
 	return replayv1.ResultResponse{}, nil
 }
 
-func (r *outboxReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, errors.New("unused")
-}
-
 func (r *outboxReplay) callCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

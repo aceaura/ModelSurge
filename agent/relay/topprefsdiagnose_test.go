@@ -13,7 +13,7 @@ import (
 
 func TestDiagnoseTopCacheCtlCountedOffAnthropic(t *testing.T) {
 	req := &ir.Request{TopCacheCtl: "ephemeral", TopCacheTTL: "1h"}
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "dropped 1 cache breakpoint(s)") {
 			t.Errorf("%s 顶层糖应计入断点数：%q", name, got)
@@ -40,7 +40,7 @@ func TestDiagnoseTopCacheCtlAddsToBlockCount(t *testing.T) {
 
 func TestDiagnoseInferenceGeoDroppedOffAnthropic(t *testing.T) {
 	req := &ir.Request{InferenceGeo: "us"}
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "dropped inference_geo") {
 			t.Errorf("%s 应报 inference_geo 丢失：%q", name, got)
@@ -57,7 +57,7 @@ func TestDiagnoseInferenceGeoDroppedOffAnthropic(t *testing.T) {
 
 func TestDiagnoseTopPrefsSilentWhenAbsent(t *testing.T) {
 	req := &ir.Request{}
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 空请求误报：%v", name, notes)
 		}

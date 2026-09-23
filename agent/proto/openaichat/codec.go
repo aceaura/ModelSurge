@@ -472,8 +472,7 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			out.ReasoningEffort = effort
 		case r.Thinking.Effort == "none":
 			// 显式关也要写出来：省略 reasoning_effort 不等于「不思考」，上游会按
-			// 自己的默认档思考，客户端要的「别思考」就成了「中档思考」。kiro 出站
-			// 早就照此办理（effortFragment 在思考关闭时显式写 "none"）。
+			// 自己的默认档思考，客户端要的「别思考」就成了「中档思考」。
 			out.ReasoningEffort = "none"
 		}
 		// 关着却带别的档位（账号覆盖强制关）时不写：写出去等于把「关」翻译成「开」。

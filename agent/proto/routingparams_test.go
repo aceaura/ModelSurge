@@ -8,7 +8,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -127,18 +126,19 @@ func TestServiceTierUnknownValuePassthroughInFamily(t *testing.T) {
 	}
 }
 
-// 缓存键与档位对 kiro 一个字符都不进载荷。
-func TestRoutingParamsNeverLeakToKiro(t *testing.T) {
+// anthropic 既没有缓存键槽位，值集也装不下 priority：两项都一个字符都不进载荷
+// （丢的部分由诊断报出）。
+func TestRoutingParamsNeverLeakToAnthropic(t *testing.T) {
 	req := &ir.Request{Model: "m", MaxTokens: 100, ServiceTier: "priority", PromptCacheKey: r58CacheKeyClue,
 		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}}}
-	out, err := proto.MustOutbound("kiro").EncodeRequest(req)
+	out, err := proto.MustOutbound("anthropic").EncodeRequest(req)
 	if err != nil {
 		t.Fatalf("EncodeRequest: %v", err)
 	}
 	body := string(out)
 	for _, probe := range []string{"service_tier", "prompt_cache_key", "priority", r58CacheKeyClue} {
 		if strings.Contains(body, probe) {
-			t.Errorf("kiro 泄漏 %q: %s", probe, body)
+			t.Errorf("anthropic 泄漏 %q: %s", probe, body)
 		}
 	}
 }

@@ -28,7 +28,7 @@ func TestClassifyContextError(t *testing.T) {
 		{"generic code", 413, "context_too_large", "", true},
 		{"deepseek code", 400, "Error: input tokens 100000 exceed the context length_exceeded limit", "", true},
 		{"anthropic prompt too long", 400, "prompt is too long: 210000 tokens > 200000 maximum", "", true},
-		{"kiro conversation too long", 400, "conversation too long: please start a new conversation", "", true},
+		{"conversation too long", 400, "conversation too long: please start a new conversation", "", true},
 		{"context window exceeded", 400, "The context window is too large for this request", "", true},
 		{"context length exceeded", 400, "your request exceeds the context length limit", "", true},
 		{"token limit with context", 400, "this request exceeds the token limit for the context", "", true},
@@ -70,9 +70,6 @@ func (r *reportCaptureReplay) Dispatch(_ context.Context, req replayv1.DispatchR
 func (r *reportCaptureReplay) Report(_ context.Context, report replayv1.ResultReport) (replayv1.ResultResponse, error) {
 	r.reports = append(r.reports, report)
 	return replayv1.ResultResponse{}, nil
-}
-func (*reportCaptureReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
 }
 
 // 超限错误：单次上游调用（无原位重试、不换目标）、outcome=context_exceeded、

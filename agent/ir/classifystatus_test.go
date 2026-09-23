@@ -3,9 +3,8 @@ package ir
 import "testing"
 
 // 402 与 413 不得落到 default 的 upstream_error。402 是账号余额/配额耗尽，属账号级
-// 问题（upstream/account/errors.go 的 ClassifyKiroError 早已把 402 与 403/429 同列
-// 为「换号可救」）；413 是请求体过大，换谁都会被同样拒绝，与 relay 自己造 413 的
-// 两处（contexterr.go、replayDispatchError 的 CodeContextTooLarge）同为
+// 问题（换号可救，与 403/429 同列）；413 是请求体过大，换谁都会被同样拒绝，与 relay
+// 自己造 413 的两处（contexterr.go、replayDispatchError 的 CodeContextTooLarge）同为
 // invalid_request。判成 upstream_error 会让客户端读成「服务端故障」并按 5xx 语义
 // 反复重试一个必然失败的请求。
 func TestClassifyStatusQuotaAndTooLarge(t *testing.T) {

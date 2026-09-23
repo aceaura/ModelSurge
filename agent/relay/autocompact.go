@@ -2,10 +2,8 @@ package relay
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
@@ -60,7 +58,7 @@ func (f *Forwarder) tryAutoCompact(ctx context.Context, clientCodec proto.Inboun
 	return newReq, true
 }
 
-// estimateReqTokens 估算输入+输出预算（kiro 入站有专用 tokenizer 时用之）。
+// estimateReqTokens 估算输入+输出预算（入站 codec 自带 tokenizer 时用之）。
 func estimateReqTokens(clientCodec proto.InboundCodec, req *ir.Request) int {
 	if te, ok := clientCodec.(interface{ EstimateRequestTokens(*ir.Request) int }); ok {
 		return te.EstimateRequestTokens(req) + req.MaxTokens
@@ -129,12 +127,8 @@ func (f *Forwarder) runCompactCall(ctx context.Context, clientCodec proto.Inboun
 
 // fetchSummary 对单个上游执行压缩调用并聚合为 summary 文本。
 // 复用 attempt 的上游预处理（native 模型改写、覆盖、流式请求），
-// 但聚合结果不写客户端。kiro 目标走 ExecuteKiro 数据面（凭据/签名
-// 在 Upstream 侧完成，返回 NDJSON IR 事件流）。
+// 但聚合结果不写客户端。
 func (f *Forwarder) fetchSummary(ctx context.Context, cand candidate, req *ir.Request) (string, replayv1.Usage, *ir.Error) {
-	if cand.protocol == "kiro" {
-		return f.fetchKiroSummary(ctx, cand, req)
-	}
 	upReq := req.Clone()
 	upReq.Model = cand.native
 	upReq.Stream = true
@@ -150,15 +144,9 @@ func (f *Forwarder) fetchSummary(ctx context.Context, cand candidate, req *ir.Re
 	defer resp.Body.Close()
 	defer cancel()
 
-	var upBody io.Reader = resp.Body
-	isSSE := strings.Contains(resp.Header.Get("Content-Type"), "event-stream")
-	if bw, ok := cand.codec.(interface{ WrapResponseBody(io.Reader) io.Reader }); ok {
-		upBody = bw.WrapResponseBody(resp.Body)
-		isSSE = true
-	}
 	var irResp *ir.Response
-	if !isSSE {
-		full, readErr := io.ReadAll(upBody)
+	if !strings.Contains(resp.Header.Get("Content-Type"), "event-stream") {
+		full, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
 			return "", replayv1.Usage{}, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: readErr.Error(), Retryable: true}
 		}
@@ -168,37 +156,12 @@ func (f *Forwarder) fetchSummary(ctx context.Context, cand candidate, req *ir.Re
 		}
 		irResp = decoded
 	} else {
-		aggregated, _, aerr := f.aggregateUpstream(ctx, cand, upReq, f.newDecoder(cand, upReq), upBody, cancel)
+		aggregated, _, aerr := f.aggregateUpstream(ctx, cand, upReq, f.newDecoder(cand, upReq), resp.Body, cancel)
 		if aerr != nil {
 			return "", replayv1.Usage{}, aerr
 		}
 		irResp = aggregated
 	}
-	return summaryFromResponse(irResp)
-}
-
-// fetchKiroSummary kiro 压缩上游：请求以 IR 规范 JSON 经 ExecuteKiro
-// 通道转发（压缩请求无工具/tool_choice，不涉及 strict 路径），NDJSON
-// IR 事件流聚合为 summary。与 attemptKiro 的 collect 形态一致，但
-// 结果不写客户端。
-func (f *Forwarder) fetchKiroSummary(ctx context.Context, cand candidate, req *ir.Request) (string, replayv1.Usage, *ir.Error) {
-	upReq := req.Clone()
-	upReq.Stream = true
-	ir.CompleteThinking(upReq) // 推理风格互补，同 attemptKiro（canonical IR 直发 replay）
-	body, err := json.Marshal(upReq)
-	if err != nil {
-		return "", replayv1.Usage{}, &ir.Error{StatusCode: http.StatusBadRequest, Type: ir.ErrTypeUpstream, Message: "encode canonical request: " + err.Error()}
-	}
-	resp, openErr := f.openKiroReplay(ctx, cand, body, requestParams("kiro", upReq))
-	if openErr != nil {
-		return "", replayv1.Usage{}, openErr
-	}
-	defer resp.Body.Close()
-	irResp, _, aerr := f.aggregateKiro(ctx, cand, upReq, resp.Body)
-	if aerr != nil {
-		return "", replayv1.Usage{}, aerr
-	}
-	f.estimateUsageOnResponse(upReq, irResp, cand.name)
 	return summaryFromResponse(irResp)
 }
 

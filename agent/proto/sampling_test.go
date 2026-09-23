@@ -9,7 +9,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -43,7 +42,7 @@ func fullSamplingRequest() *ir.Request {
 // 出站方向：能力位说有就必须真的出现在请求体里，说没有就不得出现。
 // 声明与实际反着来比两者都假更糟：诊断会报「已送达」而上游什么都没收到。
 func TestOutboundSamplingMatchesCaps(t *testing.T) {
-	// 按 JSON 键名判断而不是按值：kiro 的载荷里带随机 hex 会话 id，
+	// 按 JSON 键名判断而不是按值：载荷里可能带随机 hex 会话 id，
 	// 小整数线索值在里头恒能撞上，按值判断会得到假阳性。
 	type probe struct {
 		cap  func(proto.Capabilities) bool
@@ -57,7 +56,7 @@ func TestOutboundSamplingMatchesCaps(t *testing.T) {
 		"logprobs":   {func(c proto.Capabilities) bool { return c.LogProbs }, []string{`"top_logprobs"`}},
 		"logitbias":  {func(c proto.Capabilities) bool { return c.LogitBias }, []string{`"logit_bias"`}},
 	}
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		c, err := proto.GetOutbound(name)
 		if err != nil {
 			t.Fatalf("%s 未注册为出站 codec: %v", name, err)

@@ -18,7 +18,7 @@ func toolArgsReq(input string) *ir.Request {
 // 非法参数的诊断与槽位形态联动：对象槽位说「挪键」，字符串槽位说「原样透出」。
 // 读者要改的地方不同，混在一起报等于没说。
 func TestDiagnoseMalformedToolArgs(t *testing.T) {
-	for _, name := range []string{"anthropic", "kiro"} {
+	for _, name := range []string{"anthropic"} {
 		got := strings.Join(Diagnose(toolArgsReq(`{"city": "Par`), name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "rewrapped 1 tool call argument(s)") || !strings.Contains(got, ir.RawArgsKey) {
 			t.Errorf("%s: %q", name, got)
@@ -40,7 +40,7 @@ func TestDiagnoseMalformedToolArgs(t *testing.T) {
 // 合法参数与空参数都不是病态，诊断必须安静。
 func TestDiagnoseToolArgsSilentWhenWellFormed(t *testing.T) {
 	for _, in := range []string{`{"a":1}`, ``} {
-		for _, name := range []string{"anthropic", "kiro", "openai-chat", "openai-responses"} {
+		for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 			if notes := Diagnose(toolArgsReq(in), name, capsOf(t, name)); len(notes) != 0 {
 				t.Errorf("in=%q %s: %v", in, name, notes)
 			}

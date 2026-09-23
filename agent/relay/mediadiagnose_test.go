@@ -21,7 +21,7 @@ func mediaOnly(kind ir.MediaKind, mime string) *ir.Request {
 }
 
 // 各协议的媒体能力不同，诊断必须逐协议逐大类判，不得一概而论：
-// anthropic 能收 document 收不了音频，OpenAI 两系两者都收，kiro 一个不收。
+// anthropic 能收 document 收不了音频，OpenAI 两系两者都收，视频三家都收不了。
 func TestDiagnoseMediaPerProtocol(t *testing.T) {
 	for _, c := range []struct {
 		proto string
@@ -38,9 +38,6 @@ func TestDiagnoseMediaPerProtocol(t *testing.T) {
 		{"openai-responses", ir.MediaDocument, "application/pdf", false},
 		{"openai-responses", ir.MediaAudio, "audio/wav", false},
 		{"openai-responses", ir.MediaVideo, "video/mp4", true},
-		{"kiro", ir.MediaDocument, "application/pdf", true},
-		{"kiro", ir.MediaAudio, "audio/wav", true},
-		{"kiro", ir.MediaVideo, "video/mp4", true},
 	} {
 		t.Run(c.proto+"/"+string(c.kind), func(t *testing.T) {
 			notes := strings.Join(Diagnose(mediaOnly(c.kind, c.mime), c.proto, capsOf(t, c.proto)), "; ")
@@ -84,7 +81,7 @@ func TestDiagnoseMediaReportsEachKindSeparately(t *testing.T) {
 		ir.Block{Type: ir.BlockMedia, Media: &ir.Media{Kind: ir.MediaAudio, MediaType: "audio/wav"}},
 		ir.Block{Type: ir.BlockMedia, Media: &ir.Media{Kind: ir.MediaVideo, MediaType: "video/mp4"}},
 	)
-	notes := Diagnose(req, "kiro", capsOf(t, "kiro"))
+	notes := Diagnose(req, "openai-chat", capsWithout(t, "openai-chat", "Documents", "Audio"))
 	var n int
 	for _, s := range notes {
 		if strings.Contains(s, "placeholder text block") {
@@ -115,25 +112,27 @@ func TestDiagnoseMediaInsideToolResult(t *testing.T) {
 // 载荷为 nil 的媒体块本身就是该报的丢失，静默跳过会漏报。
 func TestDiagnoseNilMediaIsReported(t *testing.T) {
 	req := mediaBlockReq(ir.Block{Type: ir.BlockMedia})
-	notes := strings.Join(Diagnose(req, "kiro", capsOf(t, "kiro")), "; ")
+	notes := strings.Join(Diagnose(req, "openai-chat", capsWithout(t, "openai-chat", "Documents")), "; ")
 	if !strings.Contains(notes, "unrecognized type") {
 		t.Errorf("空媒体块未被报出：%q", notes)
 	}
 }
 
 // MIME 认不出的附件按文档能力放行（文档槽位是各协议里最宽松的不透明容器），
-// 只有连文档都装不下的 kiro 才报。恒报会让这条诊断退化成噪声。
+// 只有连文档都装不下的上游才报。恒报会让这条诊断退化成噪声。
 func TestDiagnoseUnknownMediaFollowsDocumentCapability(t *testing.T) {
-	for _, c := range []struct {
-		proto string
-		warn  bool
-	}{
-		{"anthropic", false}, {"openai-chat", false}, {"openai-responses", false}, {"kiro", true},
-	} {
-		t.Run(c.proto, func(t *testing.T) {
-			notes := strings.Join(Diagnose(mediaOnly(ir.MediaOther, "application/zip"), c.proto, capsOf(t, c.proto)), "; ")
-			if got := strings.Contains(notes, "unrecognized type"); got != c.warn {
-				t.Errorf("含诊断 = %v, want %v；notes=%q", got, c.warn, notes)
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
+		t.Run(name, func(t *testing.T) {
+			notes := strings.Join(Diagnose(mediaOnly(ir.MediaOther, "application/zip"), name, capsOf(t, name)), "; ")
+			if strings.Contains(notes, "unrecognized type") {
+				t.Errorf("有文档槽位却报了：%q", notes)
+			}
+		})
+		t.Run(name+"/无文档槽位", func(t *testing.T) {
+			notes := strings.Join(Diagnose(mediaOnly(ir.MediaOther, "application/zip"), name,
+				capsWithout(t, name, "Documents")), "; ")
+			if !strings.Contains(notes, "unrecognized type") {
+				t.Errorf("连文档都装不下却没报：%q", notes)
 			}
 		})
 	}
@@ -142,7 +141,7 @@ func TestDiagnoseUnknownMediaFollowsDocumentCapability(t *testing.T) {
 // 没有附件时不得报：恒报会让整条诊断链退化成噪声，读者会停止读它。
 func TestDiagnoseNoMediaNoNote(t *testing.T) {
 	req := mediaBlockReq(ir.Block{Type: ir.BlockText, Text: "hi"})
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		notes := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if strings.Contains(notes, "placeholder text block") {
 			t.Errorf("%s 无附件却报了：%q", name, notes)
@@ -154,7 +153,8 @@ func TestDiagnoseNoMediaNoNote(t *testing.T) {
 // 卷进来会让同一次丢失被报两遍。
 func TestDiagnoseImageNotCountedAsMedia(t *testing.T) {
 	req := mediaBlockReq(ir.Block{Type: ir.BlockImage, Image: &ir.Image{MediaType: "image/png", Data: "AAA="}})
-	notes := strings.Join(Diagnose(req, "kiro", capsOf(t, "kiro")), "; ")
+	// 刻意把文档与音频位关掉：图片若被误当成非图片附件，这里必然报出占位文本。
+	notes := strings.Join(Diagnose(req, "openai-chat", capsWithout(t, "openai-chat", "Documents", "Audio")), "; ")
 	if strings.Contains(notes, "placeholder text block") {
 		t.Errorf("图片被当成了非图片附件：%q", notes)
 	}

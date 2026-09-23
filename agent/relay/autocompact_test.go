@@ -1,10 +1,7 @@
 package relay
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -198,10 +195,6 @@ func (*plainReplay) Report(context.Context, replayv1.ResultReport) (replayv1.Res
 	return replayv1.ResultResponse{}, nil
 }
 
-func (*plainReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
-}
-
 // 单条消息超窗（2.5/8.4）：无旧历史可压缩，不触发压缩直接返回。
 func TestAutoCompactNoOldHistory(t *testing.T) {
 	var origCalls int32
@@ -270,85 +263,6 @@ func TestAutoCompactDispatchTooLargeFlavor(t *testing.T) {
 	}
 }
 
-// kiroCompactReplay：compactReplay 的 dispatch 路由 + ExecuteKiro 数据面
-// （NDJSON IR 事件流，与 Upstream 侧 kiro 执行器的线上形态一致）。
-type kiroCompactReplay struct {
-	compactReplay
-	executeCalls int
-	executeReq   replayv1.KiroExecuteRequest
-}
-
-func (r *kiroCompactReplay) ExecuteKiro(_ context.Context, req replayv1.KiroExecuteRequest) (*http.Response, error) {
-	r.executeCalls++
-	r.executeReq = req
-	events := []ir.Event{
-		{Type: ir.EvMessageStart, MessageID: "msg", Model: "native"},
-		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}},
-		{Type: ir.EvTextDelta, Index: 0, Text: "kiro-summary"},
-		{Type: ir.EvBlockStop, Index: 0},
-		{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn, Usage: &ir.Usage{InputTokens: 10, OutputTokens: 3}},
-		{Type: ir.EvMessageStop},
-	}
-	var body bytes.Buffer
-	for _, ev := range events {
-		_ = json.NewEncoder(&body).Encode(ev)
-	}
-	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}, Body: io.NopCloser(bytes.NewReader(body.Bytes()))}, nil
-}
-
-// kiro 压缩上游（修「kiro 不能作为压缩上游」）：原模型超限 → 压缩调用
-// 经 ExecuteKiro 数据面拿到 summary → 续命成功 + 标记头。
-func TestAutoCompactKiroCompressUpstream(t *testing.T) {
-	var origCalls int32
-	var lastOrigBody atomic.Value
-	orig := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if atomic.AddInt32(&origCalls, 1) == 1 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens.","type":"invalid_request_error"}}`))
-			return
-		}
-		body, _ := io.ReadAll(r.Body)
-		lastOrigBody.Store(string(body))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-ok","object":"chat.completion","model":"native","choices":[{"index":0,"message":{"role":"assistant","content":"final-ok"},"finish_reason":"stop"}]}`))
-	}))
-	defer orig.Close()
-
-	replay := &kiroCompactReplay{compactReplay: compactReplay{
-		origModel: "orig",
-		origLease: leaseFor("orig-1", orig.URL),
-		compLease: replayv1.TargetLease{RequestID: "req", GroupID: "g-kiro", TargetID: "kiro-1", Protocol: "kiro", NativeModel: "native"},
-	}}
-	f := NewForwarder(&config.Config{}, replay, nil)
-	w := httptest.NewRecorder()
-	f.Forward(t.Context(), w, proto.MustInbound("openai-chat"), &ir.Request{
-		Model:    "orig",
-		Messages: autoMsgs(),
-	}, "client-key")
-
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "final-ok") {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-	}
-	if got := w.Header().Get("X-ModelSurge-Compacted"); got != "true" {
-		t.Fatalf("X-ModelSurge-Compacted=%q, want true", got)
-	}
-	if replay.executeCalls != 1 {
-		t.Fatalf("executeKiro calls=%d, want 1", replay.executeCalls)
-	}
-	if !strings.Contains(string(replay.executeReq.Request), "Summarize the following conversation") {
-		t.Fatalf("kiro execute payload missing compact prompt: %s", excerpt(string(replay.executeReq.Request)))
-	}
-	// 续命请求带合成 summary 消息（kiro 压缩产物进入新历史）
-	if got, _ := lastOrigBody.Load().(string); !strings.Contains(got, "kiro-summary") {
-		t.Fatalf("redispatch body missing kiro summary: %s", excerpt(got))
-	}
-	ds := replay.dispatched()
-	if len(ds) != 3 || ds[1].Model != "comp" || ds[1].CompressOf != "orig" {
-		t.Fatalf("dispatches=%+v, want orig→comp(CompressOf)→orig", ds)
-	}
-}
-
 // windowFilterReplay：orig 首次 dispatch 返回 context_too_large（窗口过滤，
 // 信封带 compress_model），续命 redispatch 返回 lease；带 CompressOf 的
 // dispatch 分流到压缩 lease。
@@ -375,8 +289,4 @@ func (r *windowFilterReplay) Dispatch(_ context.Context, d replayv1.DispatchRequ
 
 func (*windowFilterReplay) Report(context.Context, replayv1.ResultReport) (replayv1.ResultResponse, error) {
 	return replayv1.ResultResponse{}, nil
-}
-
-func (*windowFilterReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
-	return replayv1.WebSearchResponse{}, nil
 }

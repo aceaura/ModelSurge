@@ -25,7 +25,7 @@ func r91Block() ir.Block {
 		Opaque: &ir.Opaque{WireType: r91WireType, Body: []byte(r91Body)}}
 }
 
-// agent 侧的外族出站协议。kiro 不在列——按定案已移除，不再为它新增断言。
+// agent 侧的外族出站协议。
 var r91ForeignOutbound = []string{"codex", "openai-chat", "openai-responses"}
 
 func r91Req() *ir.Request {

@@ -14,7 +14,7 @@ import (
 func TestDiagnoseAdaptiveThinkingDroppedOffAnthropic(t *testing.T) {
 	req := &ir.Request{Thinking: &ir.ThinkingConfig{
 		Enabled: true, Adaptive: true, Display: "omitted"}}
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "dropped adaptive thinking") {
 			t.Errorf("%s 应报 adaptive 丢失：%q", name, got)
@@ -30,7 +30,7 @@ func TestDiagnoseAdaptiveThinkingDroppedOffAnthropic(t *testing.T) {
 
 func TestDiagnoseAdaptiveSilentWhenAbsent(t *testing.T) {
 	req := &ir.Request{Thinking: &ir.ThinkingConfig{Enabled: true, BudgetTokens: 4096}}
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 无 adaptive/display 误报：%v", name, notes)
 		}
@@ -55,7 +55,7 @@ func TestDiagnoseEffortValueSetOnAnthropic(t *testing.T) {
 		}
 	}
 	// 值集诊断只管 anthropic 本族：其余协议 effort 直通或走自己的维度，不报。
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		if notes := Diagnose(mk("minimal"), name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 不应做 anthropic 值集诊断：%v", name, notes)
 		}

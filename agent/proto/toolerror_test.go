@@ -9,7 +9,7 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 )
 
-// 「这次工具调用失败了」在 Anthropic 是 is_error、kiro 是 status=error、
+// 「这次工具调用失败了」在 Anthropic 是 is_error、
 // Gemini 靠 response 里的 error 键。丢掉它模型会把报错文本当成正常返回值。
 
 func errToolResultReq() *ir.Request {
@@ -37,7 +37,7 @@ func errToolResultReq() *ir.Request {
 
 // 能表达失败的协议必须把标志写到线上。
 func TestToolResultErrorReachesWire(t *testing.T) {
-	for _, name := range []string{"anthropic", "kiro"} {
+	for _, name := range []string{"anthropic"} {
 		t.Run(name, func(t *testing.T) {
 			c, err := proto.GetOutbound(name)
 			if err != nil {
@@ -65,7 +65,7 @@ func TestToolResultErrorReachesWire(t *testing.T) {
 func TestToolResultSuccessNotMarkedError(t *testing.T) {
 	req := errToolResultReq()
 	req.Messages[2].Content[0].ToolResult.IsError = false
-	for _, name := range []string{"anthropic", "kiro"} {
+	for _, name := range []string{"anthropic"} {
 		t.Run(name, func(t *testing.T) {
 			c, _ := proto.GetOutbound(name)
 			body, err := c.EncodeRequest(req)

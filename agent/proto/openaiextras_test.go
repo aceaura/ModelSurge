@@ -129,10 +129,10 @@ func TestSafetyIdentifierMapsToAnthropicMetadata(t *testing.T) {
 	}
 }
 
-// 四项对 anthropic（safety_identifier 除外）与 kiro 一个字符都不进载荷。
+// 四项对 anthropic（safety_identifier 除外）一个字符都不进载荷。
 func TestOpenAIExtrasNeverLeakToOtherFamilies(t *testing.T) {
 	req := mkExtrasReq()
-	for _, name := range []string{"anthropic", "kiro"} {
+	for _, name := range []string{"anthropic"} {
 		out, err := proto.MustOutbound(name).EncodeRequest(req)
 		if err != nil {
 			t.Fatalf("%s EncodeRequest: %v", name, err)
@@ -143,9 +143,6 @@ func TestOpenAIExtrasNeverLeakToOtherFamilies(t *testing.T) {
 			if strings.Contains(body, probe) {
 				t.Errorf("%s 泄漏 %q: %s", name, probe, body)
 			}
-		}
-		if name == "kiro" && strings.Contains(body, r59SafetyClue) {
-			t.Errorf("kiro 泄漏 safety identifier 值: %s", body)
 		}
 	}
 }

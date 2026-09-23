@@ -15,7 +15,7 @@ import (
 
 func TestDiagnoseVerbosityDroppedOffOpenAI(t *testing.T) {
 	req := &ir.Request{Verbosity: "low"}
-	for _, name := range []string{"anthropic", "kiro"} {
+	for _, name := range []string{"anthropic"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "verbosity") {
 			t.Errorf("%s 丢弃 verbosity 未报告：%q", name, got)
@@ -30,7 +30,7 @@ func TestDiagnoseVerbosityDroppedOffOpenAI(t *testing.T) {
 
 func TestDiagnoseModerationDroppedOffOpenAI(t *testing.T) {
 	req := &ir.Request{Moderation: json.RawMessage(`{"model":"omni-moderation-latest"}`)}
-	for _, name := range []string{"anthropic", "kiro"} {
+	for _, name := range []string{"anthropic"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "moderation") {
 			t.Errorf("%s 丢弃 moderation 未报告：%q", name, got)
@@ -45,7 +45,7 @@ func TestDiagnoseModerationDroppedOffOpenAI(t *testing.T) {
 
 func TestDiagnosePromptCacheOptionsDroppedOffOpenAI(t *testing.T) {
 	req := &ir.Request{PromptCacheOptions: json.RawMessage(`{"ttl":"30m"}`)}
-	for _, name := range []string{"anthropic", "kiro"} {
+	for _, name := range []string{"anthropic"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "prompt cache options") {
 			t.Errorf("%s 丢弃缓存选项未报告：%q", name, got)
@@ -58,13 +58,13 @@ func TestDiagnosePromptCacheOptionsDroppedOffOpenAI(t *testing.T) {
 	}
 }
 
-// safety_identifier：kiro 无 UserID 位恒丢；anthropic 能映进 metadata.user_id，
+// safety_identifier：无 UserID 位的上游恒丢；anthropic 能映进 metadata.user_id，
 // 该槽被 user 占了才丢；OpenAI 两系原生接得住。值不回显。
 func TestDiagnoseSafetyIdentifier(t *testing.T) {
 	req := &ir.Request{SafetyIdentifier: "secret-sid-value"}
-	got := strings.Join(Diagnose(req, "kiro", capsOf(t, "kiro")), "; ")
+	got := strings.Join(Diagnose(req, "openai-chat", capsWithout(t, "openai-chat", "UserID")), "; ")
 	if !strings.Contains(got, "safety identifier") {
-		t.Errorf("kiro 丢弃 safety identifier 未报告：%q", got)
+		t.Errorf("无 UserID 位时丢弃 safety identifier 未报告：%q", got)
 	}
 	if strings.Contains(got, "secret-sid-value") {
 		t.Errorf("回显了标识值：%q", got)

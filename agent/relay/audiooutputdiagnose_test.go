@@ -15,7 +15,7 @@ func TestDiagnoseAssistantAudioReference(t *testing.T) {
 	if notes := Diagnose(req, "openai-chat", capsOf(t, "openai-chat")); len(notes) != 0 {
 		t.Errorf("Chat can replay assistant audio id: %v", notes)
 	}
-	for _, name := range []string{"anthropic", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-responses"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "dropped 1 assistant audio reference(s)") {
 			t.Errorf("%s missing audio reference note: %q", name, got)
@@ -32,14 +32,14 @@ func TestDiagnoseAssistantAudioReferenceCountAndRole(t *testing.T) {
 		{Role: ir.RoleAssistant, AudioID: "audio_2"},
 		{Role: ir.RoleUser, AudioID: "must_not_count"},
 	}}
-	got := strings.Join(Diagnose(req, "kiro", capsOf(t, "kiro")), "; ")
+	got := strings.Join(Diagnose(req, "anthropic", capsOf(t, "anthropic")), "; ")
 	if !strings.Contains(got, "dropped 2 assistant audio reference(s)") {
 		t.Errorf("assistant references not counted correctly: %q", got)
 	}
 	for i := range req.Messages {
 		req.Messages[i].AudioID = ""
 	}
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s reported absent audio references: %v", name, notes)
 		}

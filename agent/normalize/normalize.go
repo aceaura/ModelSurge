@@ -1,7 +1,7 @@
 // Package normalize 提供 IR 请求的消息规整流水线。
 // 各 codec 在 EncodeRequest 时按需选用步骤，把"任意客户端历史"
 // 规整为满足目标上游结构约束的形态。
-// 步骤设计参考 kiro-gateway converters_core.py 的 12 步流水线。
+// 步骤设计参考成熟网关的多步规整流水线。
 package normalize
 
 import (
@@ -80,7 +80,7 @@ func Request(req *ir.Request, o Options) error {
 }
 
 // SanitizeSchema 递归删除 additionalProperties 与空 required 数组。
-// 部分上游（Kiro、Gemini）对这些字段敏感。
+// 部分上游（Gemini 一类严格校验 schema 的）对这些字段敏感。
 func SanitizeSchema(schema json.RawMessage) json.RawMessage {
 	if len(schema) == 0 {
 		return schema

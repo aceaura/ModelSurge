@@ -1,5 +1,5 @@
-// truncation.go 上游截断恢复（truncation_state.py / truncation_recovery.py 翻译）。
-// Kiro 上游会截断大工具参数与超长正文。网关在响应侧探测截断并记录；
+// truncation.go 上游截断恢复。
+// 部分上游会截断大工具参数与超长正文。网关在响应侧探测截断并记录；
 // 客户端下次请求携带被截断的 tool_use_id / 回显被截断正文时，
 // 注入合成提示告知模型是上游限制而非其过错（可开关，默认开）。
 package relay

@@ -25,7 +25,7 @@ func r90Req() *ir.Request {
 
 func TestDiagnoseRedactedThinkingDroppedOffAnthropic(t *testing.T) {
 	req := r90Req()
-	for _, name := range []string{"openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"openai-chat", "openai-responses"} {
 		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
 		if !strings.Contains(got, "dropped 1 redacted thinking block(s)") {
 			t.Errorf("%s 应报 redacted_thinking 丢失：%q", name, got)
@@ -54,12 +54,12 @@ func TestDiagnoseRedactedThinkingCountAndAbsent(t *testing.T) {
 		{Type: ir.BlockRedactedThinking, RedactedData: r90Cipher},
 		{Type: ir.BlockRedactedThinking, RedactedData: r90Cipher},
 	}}}}
-	got := strings.Join(Diagnose(req, "kiro", capsOf(t, "kiro")), "; ")
+	got := strings.Join(Diagnose(req, "openai-chat", capsOf(t, "openai-chat")), "; ")
 	if !strings.Contains(got, "dropped 2 redacted thinking block(s)") {
 		t.Errorf("多块应计数：%q", got)
 	}
 	req.Messages[0].Content = nil
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
 			t.Errorf("%s 无块误报：%v", name, notes)
 		}

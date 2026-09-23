@@ -9,7 +9,6 @@ import (
 	"github.com/aceaura/ModelSurge/agent/proto"
 	_ "github.com/aceaura/ModelSurge/agent/proto/anthropic"
 	_ "github.com/aceaura/ModelSurge/agent/proto/gemini"
-	_ "github.com/aceaura/ModelSurge/agent/proto/kiro"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openaichat"
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
@@ -199,7 +198,7 @@ func TestChatRefusalNotDuplicatedIntoContent(t *testing.T) {
 // ---- 编码：无槽位的降级为文本，不得丢 ----
 
 func TestRefusalDegradesToTextWhereNoSlot(t *testing.T) {
-	// anthropic 与 kiro 都只有 stop_reason 能表达「这是拒绝」，正文只能并入文本。
+	// anthropic 只有 stop_reason 能表达「这是拒绝」，正文只能并入文本。
 	// 丢弃会让客户端看到一条空消息配 stop_reason=refusal。
 	for _, name := range []string{"anthropic", "gemini"} {
 		t.Run(name, func(t *testing.T) {
@@ -208,22 +207,6 @@ func TestRefusalDegradesToTextWhereNoSlot(t *testing.T) {
 			}
 		})
 	}
-	// kiro 只做出站，不在入站表里：它的响应编码走类型断言取到。
-	t.Run("kiro", func(t *testing.T) {
-		enc, ok := proto.MustOutbound("kiro").(interface {
-			EncodeResponse(*ir.Response) ([]byte, error)
-		})
-		if !ok {
-			t.Fatal("kiro 不再提供 EncodeResponse，拒绝降级无处验证")
-		}
-		body, err := enc.EncodeResponse(refusalResp())
-		if err != nil {
-			t.Fatalf("EncodeResponse(kiro): %v", err)
-		}
-		if !strings.Contains(string(body), refusalText) {
-			t.Errorf("降级后拒绝正文消失：\n%s", body)
-		}
-	})
 }
 
 // 降级不得加标注前缀：正文会被模型在后续轮次里读到，注入的说明文字会变成
@@ -607,7 +590,7 @@ func refusalHistoryReq() *ir.Request {
 // 上一轮的拒绝是下一轮的上下文。丢了会让模型看不到自己拒绝过，
 // 同样的追问可能直接把它绕过去。
 func TestRefusalInHistorySurvivesOutbound(t *testing.T) {
-	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "kiro"} {
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses"} {
 		t.Run(name, func(t *testing.T) {
 			wire := string(encodeReq(t, name, refusalHistoryReq()))
 			if !strings.Contains(wire, refusalText) {
@@ -650,40 +633,29 @@ func TestInboundDecodesHistoryRefusal(t *testing.T) {
 }
 
 // 拒绝块参与 token 计数：漏计会低估上下文占用，客户端据此判断还能塞多少，
-// 估少了直接超限。
+// 估少了直接超限。relay/autocompact.go 允许出站自带 tokenizer 覆盖这条估算，
+// 目前没有出站这么做，通用估算是唯一一条路径。
 func TestRefusalCountsTowardTokens(t *testing.T) {
+	est := ir.EstimateRequestTokens
 	bare := &ir.Request{Model: "m", MaxTokens: 100, Messages: []ir.Message{
 		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "do X"}}},
 		{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockText, Text: ""}}},
 		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "please"}}},
 	}}
-	for _, c := range []struct {
-		name string
-		est  func(*ir.Request) int
-	}{
-		{"generic", ir.EstimateRequestTokens},
-		// kiro 自带 tokenizer，与通用估算是两条独立代码路径，各自都会漏。
-		{"kiro", proto.MustOutbound("kiro").(interface {
-			EstimateRequestTokens(*ir.Request) int
-		}).EstimateRequestTokens},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			with, without := c.est(refusalHistoryReq()), c.est(bare)
-			if with <= without {
-				t.Errorf("拒绝正文没计入 token：with=%d bare=%d", with, without)
-			}
-			// 必须与同样文本的 text 块等价。只断言「比空的大」不够：块类型
-			// 若落进未知块的 JSON 兜底分支，整个块结构都被计入，数值偏大但
-			// 断言照样通过——那是把拒绝当成了认不出的块。
-			asText := c.est(&ir.Request{Model: "m", MaxTokens: 100, Messages: []ir.Message{
-				{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "do X"}}},
-				{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockText, Text: refusalText}}},
-				{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "please"}}},
-			}})
-			if with != asText {
-				t.Errorf("拒绝没按纯文本计费：refusal=%d text=%d", with, asText)
-			}
-		})
+	with, without := est(refusalHistoryReq()), est(bare)
+	if with <= without {
+		t.Errorf("拒绝正文没计入 token：with=%d bare=%d", with, without)
+	}
+	// 必须与同样文本的 text 块等价。只断言「比空的大」不够：块类型
+	// 若落进未知块的 JSON 兜底分支，整个块结构都被计入，数值偏大但
+	// 断言照样通过——那是把拒绝当成了认不出的块。
+	asText := est(&ir.Request{Model: "m", MaxTokens: 100, Messages: []ir.Message{
+		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "do X"}}},
+		{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockText, Text: refusalText}}},
+		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "please"}}},
+	}})
+	if with != asText {
+		t.Errorf("拒绝没按纯文本计费：refusal=%d text=%d", with, asText)
 	}
 }
 

@@ -63,7 +63,7 @@ func (e *hideThoughtsEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvThinkingDelta, ir.EvSigDelta:
 		return nil, nil
 	case ir.EvBlockStart:
-		if ev.Block != nil && ev.Block.Type == ir.BlockThinking {
+		if ev.Block != nil && isThoughtBlock(ev.Block.Type) {
 			if e.hidden == nil {
 				e.hidden = map[int]bool{}
 			}
@@ -100,6 +100,13 @@ func (e *hideThoughtsEncoder) Notes() []string {
 	return append(notes, e.inner.Notes()...)
 }
 
+// isThoughtBlock 抑制范围含 redacted_thinking：客户端要的是「别把模型的思考给我
+// 看」，涂抹块同样是思考内容，只是形态换成了一段不透明密文。留着它，客户端会
+// 收到一个自己既读不懂也无法渲染的块。
+func isThoughtBlock(t ir.BlockType) bool {
+	return t == ir.BlockThinking || t == ir.BlockRedactedThinking
+}
+
 // stripThinking 去掉响应里的思考块。就地改会污染调用方持有的聚合响应
 // （估算 usage、日志摘要都还在读它），所以浅拷一层。
 func stripThinking(resp *ir.Response) *ir.Response {
@@ -113,7 +120,7 @@ func stripThinkingCount(resp *ir.Response) (*ir.Response, int) {
 	}
 	kept := make([]ir.Block, 0, len(resp.Content))
 	for _, b := range resp.Content {
-		if b.Type == ir.BlockThinking {
+		if isThoughtBlock(b.Type) {
 			continue
 		}
 		kept = append(kept, b)

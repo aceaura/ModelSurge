@@ -41,6 +41,8 @@ type streamEncoder struct {
 	droppedContainer bool
 	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
 	droppedUploads int
+	// droppedRedacted 被跳过的 redacted_thinking 块数，同上。
+	droppedRedacted int
 	// droppedAudio 完整 Chat 音频输出没有 Responses 流式 item 形态。
 	droppedAudio bool
 	// droppedSigs 被门控的外族/合成签名数，Notes() 收尾时报出。
@@ -240,6 +242,13 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		e.skip[ev.Index] = true
 		e.droppedUploads++
 		return nil, nil
+	case ir.BlockRedactedThinking:
+		// 涂抹思考块的不透明密文没有 Responses 形态。不显式拦住会落进下面的
+		// default(text) 分支，给客户端凭空多出一个空 output_text 条目；塞进
+		// reasoning.encrypted_content 则是伪造 OpenAI 的密文槽位。
+		e.skip[ev.Index] = true
+		e.droppedRedacted++
+		return nil, nil
 	default: // text
 		b.typ = ir.BlockText
 		b.itemID = e.nextID("msg")
@@ -411,6 +420,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedUploads > 0 {
 		notes = append(notes, proto.ContainerUploadDropNote(e.droppedUploads))
 		e.droppedUploads = 0
+	}
+	if e.droppedRedacted > 0 {
+		notes = append(notes, proto.RedactedThinkingDropNote(e.droppedRedacted))
+		e.droppedRedacted = 0
 	}
 	if e.droppedAudio {
 		notes = append(notes, proto.AudioOutputDropNote())

@@ -87,7 +87,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	var notes []string
 
 	sigs, foreign, images, urlImages, errResults, refusals, badArgs := 0, 0, 0, 0, 0, 0, 0
-	uploads, audioRefs, customCalls, customResults := 0, 0, 0, 0
+	uploads, audioRefs, customCalls, customResults, redacted := 0, 0, 0, 0, 0
 	media := map[ir.MediaKind]int{}
 	for _, m := range req.Messages {
 		if m.Role == ir.RoleAssistant && m.AudioID != "" {
@@ -108,6 +108,8 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 				}
 			case ir.BlockContainerUpload:
 				uploads++
+			case ir.BlockRedactedThinking:
+				redacted++
 			case ir.BlockThinking:
 				if b.Thinking != nil && b.Thinking.Signature != "" {
 					sigs++
@@ -188,6 +190,12 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		// 凭据，不抄进注记。
 		notes = append(notes, fmt.Sprintf(
 			"dropped %d container upload block(s): the target protocol has no container file-reference slot, the model cannot see files previously uploaded to or produced by the code-execution container", uploads))
+	}
+	if redacted > 0 && protoName != "anthropic" {
+		// 历史里的涂抹思考块无处安放：密文只有 Anthropic 能解，外族既没有
+		// 承载槽位也不能据此恢复思考链。密文不进注记。
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d redacted thinking block(s): the target protocol has no opaque-reasoning slot, the encrypted thinking state cannot be replayed", redacted))
 	}
 	if audioRefs > 0 && protoName != "openai-chat" {
 		// 音频 id 是 Chat 多轮上下文中的服务端引用，外族既没有引用槽位，

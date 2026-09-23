@@ -255,3 +255,73 @@ func TestHideThoughtsThinkingOnlyStream(t *testing.T) {
 		t.Errorf("思考文本泄漏：\n%s", out)
 	}
 }
+
+// 抑制范围含涂抹块：客户端要的是「别把模型的思考给我看」，redacted_thinking
+// 同样是思考内容，只是形态换成了一段不透明密文。留着它，客户端会收到一个自己
+// 既读不懂也无法渲染的块。
+func redactedStream() []ir.Event {
+	return []ir.Event{
+		{Type: ir.EvMessageStart, MessageID: "msg", Model: "m"},
+		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockRedactedThinking, RedactedData: r90Cipher}},
+		{Type: ir.EvBlockStop, Index: 0},
+		{Type: ir.EvBlockStart, Index: 1, Block: &ir.Block{Type: ir.BlockText}},
+		{Type: ir.EvTextDelta, Index: 1, Text: "visible answer"},
+		{Type: ir.EvBlockStop, Index: 1},
+		{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn, Usage: &ir.Usage{OutputTokens: 5}},
+		{Type: ir.EvMessageStop},
+	}
+}
+
+func TestHideThoughtsStripsRedactedThinking(t *testing.T) {
+	for _, name := range []string{"anthropic", "gemini", "openai-chat", "openai-responses"} {
+		t.Run(name, func(t *testing.T) {
+			base := proto.MustInbound(name)
+			// 夹具自证只对 anthropic 有意义：外族编码器本来就整块跳过涂抹块，
+			// 「未抑制时含密文」在那里恒假。
+			if name == "anthropic" {
+				if plain := encodeStream(t, base, redactedStream()); !strings.Contains(plain, r90Cipher) {
+					t.Fatalf("夹具无效：未抑制时本应含密文\n%s", plain)
+				}
+			}
+			hidden := encodeStream(t, withHiddenThoughts(base, hideReq()), redactedStream())
+			if strings.Contains(hidden, r90Cipher) || strings.Contains(hidden, "redacted_thinking") {
+				t.Errorf("涂抹块泄漏：\n%s", hidden)
+			}
+			if !strings.Contains(hidden, "visible answer") {
+				t.Errorf("正文被误删：\n%s", hidden)
+			}
+		})
+	}
+}
+
+// 涂抹块的 start/stop 框架要一并吞掉，且正文块的框架必须配平。
+func TestHideThoughtsDropsRedactedBlockFraming(t *testing.T) {
+	out := encodeStream(t, withHiddenThoughts(proto.MustInbound("anthropic"), hideReq()), redactedStream())
+	starts := strings.Count(out, `"type":"content_block_start"`)
+	stops := strings.Count(out, `"type":"content_block_stop"`)
+	if starts != 1 || stops != 1 {
+		t.Errorf("块框架应只剩正文一对（start=%d stop=%d）：\n%s", starts, stops, out)
+	}
+}
+
+// 非流式方向同样要抑制，且不得改动调用方持有的聚合响应。
+func TestHideThoughtsStripsRedactedNonStreaming(t *testing.T) {
+	resp := &ir.Response{ID: "msg", Model: "m", StopReason: ir.StopEndTurn, Content: []ir.Block{
+		{Type: ir.BlockRedactedThinking, RedactedData: r90Cipher},
+		{Type: ir.BlockText, Text: "visible answer"},
+	}}
+	c := withHiddenThoughts(proto.MustInbound("anthropic"), hideReq())
+	body, err := c.EncodeResponse(resp)
+	if err != nil {
+		t.Fatalf("EncodeResponse: %v", err)
+	}
+	if strings.Contains(string(body), r90Cipher) || strings.Contains(string(body), "redacted_thinking") {
+		t.Errorf("非流式响应泄漏涂抹块：%s", body)
+	}
+	if !strings.Contains(string(body), "visible answer") {
+		t.Errorf("非流式正文被误删：%s", body)
+	}
+	if len(resp.Content) != 2 || resp.Content[0].Type != ir.BlockRedactedThinking {
+		t.Errorf("原响应被就地改坏：%+v", resp.Content)
+	}
+}

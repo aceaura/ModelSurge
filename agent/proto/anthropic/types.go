@@ -104,6 +104,9 @@ type block struct {
 	IsError   bool            `json:"is_error,omitempty"`
 	Thinking  string          `json:"thinking,omitempty"`
 	Signature string          `json:"signature,omitempty"`
+	// Data redacted_thinking 块的唯一载荷：被安全系统涂抹的思考内容密文。
+	// 与 Signature 不是一回事，也不互相替代。
+	Data string `json:"data,omitempty"`
 	// Citations text 块的来源标注（托管搜索开启时下发）。
 	Citations []citation    `json:"citations,omitempty"`
 	CacheCtl  *cacheControl `json:"cache_control,omitempty"`

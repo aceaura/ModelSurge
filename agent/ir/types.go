@@ -32,10 +32,17 @@ const (
 	// BlockText 会让同协议往返把拒绝降级成普通回答，客户端无法区分「模型拒绝了」
 	// 和「模型这么答的」。只靠 stop_reason=refusal 也不够：正文若丢，客户端看到
 	// 的是一条空消息配一个拒绝标记，像成功的空回复。
-	BlockRefusal             BlockType = "refusal"
-	BlockToolUse             BlockType = "tool_use"
-	BlockToolResult          BlockType = "tool_result"
-	BlockThinking            BlockType = "thinking"
+	BlockRefusal    BlockType = "refusal"
+	BlockToolUse    BlockType = "tool_use"
+	BlockToolResult BlockType = "tool_result"
+	BlockThinking   BlockType = "thinking"
+	// BlockRedactedThinking 被安全系统涂抹掉的思考块（anthropic
+	// redacted_thinking）。载荷只有一段不透明密文 Data，没有明文也没有签名。
+	// 与 BlockThinking 分开是因为两者的回传契约相反：thinking 块要过签名校验，
+	// 外族签名一律降级；redacted_thinking 没有签名可言，Anthropic 要求原样回传，
+	// 任何改写都会让下一轮请求被拒。合进 BlockThinking 会让 degradeThinking 把
+	// 它降级成空文本块，加密续话状态当场销毁。
+	BlockRedactedThinking    BlockType = "redacted_thinking"
 	BlockServerToolUse       BlockType = "server_tool_use"
 	BlockWebSearchToolResult BlockType = "web_search_tool_result"
 	// BlockContainerUpload 容器文件引用块（anthropic container_upload）：
@@ -48,13 +55,17 @@ const (
 
 // Block 消息内容块。按 Type 取用对应字段，其余字段为零值。
 type Block struct {
-	Type                BlockType
-	Text                string               // BlockText / BlockRefusal
-	Image               *Image               // BlockImage
-	Media               *Media               // BlockMedia
-	ToolUse             *ToolUse             // BlockToolUse
-	ToolResult          *ToolResult          // BlockToolResult
-	Thinking            *Thinking            // BlockThinking
+	Type       BlockType
+	Text       string      // BlockText / BlockRefusal
+	Image      *Image      // BlockImage
+	Media      *Media      // BlockMedia
+	ToolUse    *ToolUse    // BlockToolUse
+	ToolResult *ToolResult // BlockToolResult
+	Thinking   *Thinking   // BlockThinking
+	// RedactedData redacted_thinking 块的不透明密文。原样收、原样发：它由
+	// Anthropic 加密与解密，任何改写（含降级成文本）都会让下一轮请求被拒。
+	// 密文可能很长且属会话内容，不进日志与诊断注记。
+	RedactedData        string               // BlockRedactedThinking
 	ServerToolUse       *ServerToolUse       // BlockServerToolUse
 	WebSearchToolResult *WebSearchToolResult // BlockWebSearchToolResult
 	ContainerUpload     *ContainerUploadRef  // BlockContainerUpload

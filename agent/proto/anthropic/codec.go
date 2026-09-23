@@ -269,6 +269,12 @@ func decodeBlock(b block) ir.Block {
 	case "thinking":
 		out.Type = ir.BlockThinking
 		out.Thinking = &ir.Thinking{Text: b.Thinking, Signature: b.Signature, SignatureFrom: ir.SigFrom(Name, b.Signature)}
+	case "redacted_thinking":
+		// 不落进 default：默认分支按 text 处理，而 redacted_thinking 没有 text
+		// 字段，降级过去等于把密文换成一个空文本块——客户端下一轮无从回传，
+		// Anthropic 的续话校验直接拒整个请求。
+		out.Type = ir.BlockRedactedThinking
+		out.RedactedData = b.Data
 	case "server_tool_use":
 		out.Type = ir.BlockServerToolUse
 		out.ServerToolUse = &ir.ServerToolUse{ID: b.ID, Name: b.Name, Input: b.Input}
@@ -593,6 +599,9 @@ func encodeBlock(b ir.Block) block {
 				out.Signature = b.Thinking.Signature
 			}
 		}
+	case ir.BlockRedactedThinking:
+		out.Type = "redacted_thinking"
+		out.Data = b.RedactedData
 	case ir.BlockServerToolUse:
 		out.Type = "server_tool_use"
 		if b.ServerToolUse != nil {

@@ -318,6 +318,9 @@ func toUnified(msgs []ir.Message, systemBlocks []ir.Block) ([]unifiedMsg, string
 				// 反而因 web_search 未在客户端工具声明中触发全量工具剥离。
 			case ir.BlockContainerUpload:
 				// 容器文件引用不回传：Kiro 载荷没有 file_id 槽位，relay 诊断已报出。
+			case ir.BlockRedactedThinking:
+				// 涂抹思考块不回传：密文只有 Anthropic 能解，塞进 Kiro 载荷既无
+				// 槽位也无意义，relay 诊断已报出。
 			}
 		}
 		u.text = strings.Join(textParts, "\n")

@@ -23,6 +23,8 @@ type streamEncoder struct {
 	droppedContainer bool
 	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
 	droppedUploads int
+	// droppedRedacted 被跳过的 redacted_thinking 块数，同上。
+	droppedRedacted int
 	// droppedAudio 完整音频输出来自非流式响应；Chat chunk 无官方 audio 增量槽位。
 	droppedAudio bool
 	toolIdx      map[int]int // block index -> dense tool index
@@ -99,9 +101,12 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return nil, nil
 		}
 		if ev.Block != nil && ev.Block.Type != ir.BlockText && ev.Block.Type != ir.BlockThinking {
-			e.skipIdx[ev.Index] = true // server_tool_use / web_search_tool_result / container_upload
-			if ev.Block.Type == ir.BlockContainerUpload {
+			e.skipIdx[ev.Index] = true // server_tool_use / web_search_tool_result / container_upload / redacted_thinking
+			switch ev.Block.Type {
+			case ir.BlockContainerUpload:
 				e.droppedUploads++
+			case ir.BlockRedactedThinking:
+				e.droppedRedacted++
 			}
 		}
 		return nil, nil // text/thinking 块开始无需输出
@@ -206,6 +211,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedUploads > 0 {
 		notes = append(notes, proto.ContainerUploadDropNote(e.droppedUploads))
 		e.droppedUploads = 0
+	}
+	if e.droppedRedacted > 0 {
+		notes = append(notes, proto.RedactedThinkingDropNote(e.droppedRedacted))
+		e.droppedRedacted = 0
 	}
 	if e.droppedAudio {
 		notes = append(notes, proto.AudioOutputDropNote())

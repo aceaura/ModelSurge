@@ -368,7 +368,7 @@ func TierEchoDropNote(tier string) string {
 // 扫描结果即实编结果。
 func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArgs bool) []string {
 	var sigs, badArgs, customCalls int
-	uploads := 0
+	uploads, redacted := 0, 0
 	for _, b := range resp.Content {
 		switch b.Type {
 		case ir.BlockThinking:
@@ -376,6 +376,8 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 				(sigSlotless || !b.Thinking.SignatureGenuineFor(protoName)) {
 				sigs++
 			}
+		case ir.BlockRedactedThinking:
+			redacted++
 		case ir.BlockToolUse:
 			if b.ToolUse != nil {
 				if b.ToolUse.Kind == ir.ToolCustom {
@@ -425,6 +427,9 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	if uploads > 0 && protoName != "anthropic" {
 		notes = append(notes, ContainerUploadDropNote(uploads))
 	}
+	if redacted > 0 && protoName != "anthropic" {
+		notes = append(notes, RedactedThinkingDropNote(redacted))
+	}
 	if resp.Audio != nil && protoName != "openai-chat" {
 		notes = append(notes, AudioOutputDropNote())
 	}
@@ -444,6 +449,13 @@ func ContainerDropNote() string {
 func ContainerUploadDropNote(n int) string {
 	return fmt.Sprintf(
 		"dropped %d container upload block(s): this protocol has no container file-reference slot, the client cannot see files uploaded to or produced by the code-execution container", n)
+}
+
+// RedactedThinkingDropNote 涂抹思考块丢失注记：外族没有承载不透明密文的槽位
+// （非流式扫描与流式编码器同一措辞）。密文本身不进注记。
+func RedactedThinkingDropNote(n int) string {
+	return fmt.Sprintf(
+		"dropped %d redacted thinking block(s): this protocol has no opaque-reasoning slot, the client cannot replay the encrypted thinking state, so a follow-up turn sent to an Anthropic upstream may be rejected", n)
 }
 
 // AudioOutputDropNote 模型音频输出丢失注记。完整音频只存在于 Chat 非流式

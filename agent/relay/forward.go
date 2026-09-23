@@ -444,6 +444,9 @@ func (f *Forwarder) openUpstream(ctx context.Context, cand candidate, upReq *ir.
 	for k, v := range headers {
 		httpReq.Header.Set(k, v)
 	}
+	// 客户端的 anthropic-beta 转交上游。放在账号头之后：要与账号级自定义头合并
+	// 去重，而不是被它整条顶掉。
+	applyClientWireHeaders(ctx, httpReq.Header, cand.protocol)
 
 	resp, doErr := f.client.Do(httpReq)
 	if doErr != nil {

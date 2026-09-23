@@ -139,7 +139,7 @@ func (s *Server) handleChat(codecName string, mut ...func(*ir.Request)) http.Han
 		for _, m := range mut {
 			m(req)
 		}
-		s.fwd.Forward(r.Context(), w, codec, req, requestAPIKey(r))
+		s.fwd.Forward(relay.WithClientHeaders(r.Context(), r.Header), w, codec, req, requestAPIKey(r))
 	}
 }
 
@@ -169,7 +169,7 @@ func (s *Server) handleGemini(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Model = model
 	req.Stream = action == "streamGenerateContent"
-	s.fwd.Forward(r.Context(), w, codec, req, requestAPIKey(r))
+	s.fwd.Forward(relay.WithClientHeaders(r.Context(), r.Header), w, codec, req, requestAPIKey(r))
 }
 
 // handleCountTokens Anthropic count_tokens 入口：请求体与 /v1/messages 同形。

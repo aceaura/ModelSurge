@@ -42,6 +42,7 @@ func (f *Forwarder) attemptKiro(ctx context.Context, w http.ResponseWriter, clie
 	}
 	defer resp.Body.Close()
 	writeLossyNotes(w, cand.name, notes)
+	forwardUpstreamHeaders(w, resp)
 	if req.Stream {
 		return f.streamKiroToClient(ctx, w, clientCodec, cand, req, resp.Body, onUsage)
 	}
@@ -123,6 +124,7 @@ func (f *Forwarder) streamKiroToClient(ctx context.Context, w http.ResponseWrite
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // 关掉反向代理的响应缓冲，否则 SSE 被攒成一次性输出
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
 	encoder := proto.NewClientStreamEncoder(clientCodec, req)
@@ -317,6 +319,9 @@ func (f *Forwarder) attemptKiroStrict(ctx context.Context, w http.ResponseWriter
 		upstreamSummary.log()
 		clientSummary := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), req.Stream, requestLogFrom(ctx).started)
 		clientSummary.fill(response)
+		// 头须在 writeResponse 落第一个字节之前设好；严格分支可能重试一轮，
+		// 换到成功那次上游的值（forwardUpstreamHeaders 是替换语义）。
+		forwardUpstreamHeaders(w, resp)
 		writeLossyNotes(w, cand.name, notes)
 		writeResponse(w, clientCodec, req, response, req.Stream, aggNotes, clientSummary)
 		clientSummary.log()

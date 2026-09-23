@@ -145,7 +145,17 @@ type kiroExecuteReplay struct {
 	lease        replayv1.TargetLease
 	executeCalls atomic.Int64
 	body         io.ReadCloser
+	header       http.Header
 	executeReq   replayv1.KiroExecuteRequest
+}
+
+// kiroHeader ndjson 内容类型 + 测试额外指定的头（验证上游响应头回传用）。
+func (r *kiroExecuteReplay) kiroHeader() http.Header {
+	h := http.Header{"Content-Type": []string{"application/x-ndjson"}}
+	for k, vs := range r.header {
+		h[k] = append([]string(nil), vs...)
+	}
+	return h
 }
 
 func (r *kiroExecuteReplay) Dispatch(context.Context, replayv1.DispatchRequest) (replayv1.TargetLease, error) {
@@ -158,7 +168,7 @@ func (r *kiroExecuteReplay) ExecuteKiro(_ context.Context, req replayv1.KiroExec
 	r.executeCalls.Add(1)
 	r.executeReq = req
 	if r.body != nil {
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}, Body: r.body}, nil
+		return &http.Response{StatusCode: http.StatusOK, Header: r.kiroHeader(), Body: r.body}, nil
 	}
 	events := []ir.Event{
 		{Type: ir.EvMessageStart, MessageID: "msg", Model: "public"},
@@ -172,7 +182,7 @@ func (r *kiroExecuteReplay) ExecuteKiro(_ context.Context, req replayv1.KiroExec
 	for _, event := range events {
 		_ = json.NewEncoder(&body).Encode(event)
 	}
-	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}, Body: io.NopCloser(bytes.NewReader(body.Bytes()))}, nil
+	return &http.Response{StatusCode: http.StatusOK, Header: r.kiroHeader(), Body: io.NopCloser(bytes.NewReader(body.Bytes()))}, nil
 }
 func (*kiroExecuteReplay) WebSearch(context.Context, replayv1.WebSearchRequest) (replayv1.WebSearchResponse, error) {
 	return replayv1.WebSearchResponse{}, nil

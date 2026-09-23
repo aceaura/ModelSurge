@@ -522,6 +522,9 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	// 结果也不同），Diagnose 看的是客户端原请求，两者只能在此处汇合。
 	notes = append(notes, thinkNotes...)
 	writeLossyNotes(w, cand.name, notes)
+	// 上游限流头与 request id 回传。放在这里而不是各写出分支里：此处 resp 还在手、
+	// 客户端一个字节都没写，且下游三条路（SSE 流、聚合转流、兜底 JSON）共用。
+	forwardUpstreamHeaders(w, resp)
 
 	// body 形态适配（可选 codec 缝）：kiro 二进制 eventstream -> SSE；
 	// 适配过的 body 一律走流式路径。
@@ -658,6 +661,9 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// 反向代理默认缓冲响应体，SSE 会被攒到流结束一次性吐出，客户端看到的就成了
+	// 「流式变非流式」。这个头是 nginx 一族认的关闭缓冲开关。
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(200)
 	flush, _ := w.(http.Flusher)
 
@@ -931,6 +937,7 @@ func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, req *i
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("X-Accel-Buffering", "no") // 与真流式出口同一套 SSE 头
 	w.WriteHeader(200)
 	enc := proto.NewClientStreamEncoder(clientCodec, req)
 	for _, ev := range EventsFromResponse(resp) {

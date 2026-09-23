@@ -173,7 +173,14 @@ type Citation struct {
 	// 互不相同（文档类靠 document_index 与页号/块下标/file_id 定位，托管搜索
 	// 靠 url + encrypted_index），逐字段重建必造出上游不认的形状。
 	// 属会话内容，不进日志与诊断注记。
-	Raw json.RawMessage
+	//
+	// omitempty 是承重的，不是省字节：Request.Clone() 走 JSON 往返，空
+	// RawMessage 没有 omitempty 会被序列化成字面量 null 再读回成 4 字节，
+	// 「原样带回」那条分支就会把 null 当成上游原文塞进 citations 数组，
+	// 发给 anthropic 上游的是 "citations":[null]——整轮被拒，引用也没了。
+	// 跨协议投影来的引用本来就没有 Raw，正是这条路径的常态。
+	// 同源的坑见 ResponseFormat.IsSchema。
+	Raw json.RawMessage `json:",omitempty"`
 }
 
 // HasRange 报告该引用是否带可用的正文范围。

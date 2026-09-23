@@ -201,3 +201,37 @@ func TestAggregatorCitationNoOpenBlock(t *testing.T) {
 		t.Fatalf("凭引用开出了块：%+v", resp.Content)
 	}
 }
+
+func cloneCitation(t *testing.T, c Citation) Citation {
+	t.Helper()
+	r := (&Request{Messages: []Message{{Role: RoleAssistant, Content: []Block{
+		{Type: BlockText, Text: "晴", Citations: []Citation{c}},
+	}}}}).Clone()
+	return r.Messages[0].Content[0].Citations[0]
+}
+
+// Clone 走 JSON 往返，而空 RawMessage 没有 omitempty 时会被序列化成字面量
+// null、再读回成 4 字节。那样 anthropic 的「带 Raw 就原样带回」分支会把 null
+// 当成上游原文塞进 citations 数组，出站请求变成 "citations":[null]——上游整轮
+// 被拒，引用本身也没了。跨协议投影来的引用（Chat 的 url_citation 等）本来就
+// 没有 Raw，正是这条路径的常态。
+func TestCloneDoesNotFabricateNullCitationRaw(t *testing.T) {
+	got := cloneCitation(t, Citation{URL: "https://w", CitedText: "晴"})
+	if len(got.Raw) != 0 {
+		t.Fatalf("Clone 把空 Raw 变成了 %q", got.Raw)
+	}
+	if got.URL != "https://w" || got.CitedText != "晴" {
+		t.Errorf("投影字段被 Clone 改坏了：%+v", got)
+	}
+}
+
+// 反向也要钉住：真有 Raw 时 Clone 必须逐字节带回，否则 omitempty 修好了空值
+// 却把不透明往返打穿了。
+func TestCloneKeepsCitationRawByteExact(t *testing.T) {
+	const raw = `{"type":"char_location","cited_text":"晴","document_index":0,"file_id":"file_abc"}`
+	got := cloneCitation(t, Citation{CitedText: "晴", WireType: "char_location",
+		Raw: json.RawMessage(raw)})
+	if string(got.Raw) != raw {
+		t.Fatalf("Raw 没逐字节带回：\n got %s\nwant %s", got.Raw, raw)
+	}
+}

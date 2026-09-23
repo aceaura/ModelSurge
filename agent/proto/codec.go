@@ -368,7 +368,7 @@ func TierEchoDropNote(tier string) string {
 // 扫描结果即实编结果。
 func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArgs bool) []string {
 	var sigs, badArgs, customCalls int
-	uploads, redacted := 0, 0
+	uploads, redacted, opaque := 0, 0, 0
 	for _, b := range resp.Content {
 		switch b.Type {
 		case ir.BlockThinking:
@@ -378,6 +378,8 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 			}
 		case ir.BlockRedactedThinking:
 			redacted++
+		case ir.BlockOpaque:
+			opaque++
 		case ir.BlockToolUse:
 			if b.ToolUse != nil {
 				if b.ToolUse.Kind == ir.ToolCustom {
@@ -430,6 +432,9 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	if redacted > 0 && protoName != "anthropic" {
 		notes = append(notes, RedactedThinkingDropNote(redacted))
 	}
+	if opaque > 0 && protoName != "anthropic" {
+		notes = append(notes, OpaqueDropNote(opaque))
+	}
 	if resp.Audio != nil && protoName != "openai-chat" {
 		notes = append(notes, AudioOutputDropNote())
 	}
@@ -456,6 +461,14 @@ func ContainerUploadDropNote(n int) string {
 func RedactedThinkingDropNote(n int) string {
 	return fmt.Sprintf(
 		"dropped %d redacted thinking block(s): this protocol has no opaque-reasoning slot, the client cannot replay the encrypted thinking state, so a follow-up turn sent to an Anthropic upstream may be rejected", n)
+}
+
+// OpaqueDropNote 不透明块丢失注记：块型只在源协议里有定义（Anthropic 的
+// web_fetch / code_execution / tool_search 等服务端工具结果、search_result），
+// 目标协议没有对应槽位，整块不下发。块体属会话内容，不进注记。
+func OpaqueDropNote(n int) string {
+	return fmt.Sprintf(
+		"dropped %d opaque content block(s): this protocol has no slot for the source protocol's server-side tool payload, the client cannot see the fetched page, command output or search result the model produced", n)
 }
 
 // AudioOutputDropNote 模型音频输出丢失注记。完整音频只存在于 Chat 非流式

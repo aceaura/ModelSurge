@@ -33,6 +33,8 @@ type streamEncoder struct {
 	droppedUploads int
 	// droppedRedacted 被跳过的 redacted_thinking 块数，同上。
 	droppedRedacted int
+	// droppedOpaque 被跳过的不透明块数（源协议专属的服务端工具载荷），同上。
+	droppedOpaque int
 	// droppedAudio 完整 Chat 音频输出没有 Gemini 流式响应槽位。
 	droppedAudio        bool
 	usage               ir.Usage
@@ -139,6 +141,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			// 涂抹思考块的不透明密文无 Gemini part 形态（thought part 承载的是
 			// 明文 + thoughtSignature，塞密文进去等于伪造签名）：跳过但计数。
 			e.droppedRedacted++
+		}
+		if ev.Block != nil && ev.Block.Type == ir.BlockOpaque {
+			// 源协议专属的服务端工具载荷无 Gemini part 形态：跳过但计数。
+			e.droppedOpaque++
 		}
 		return nil, nil
 	case ir.EvToolInput:
@@ -266,6 +272,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedRedacted > 0 {
 		notes = append(notes, proto.RedactedThinkingDropNote(e.droppedRedacted))
 		e.droppedRedacted = 0
+	}
+	if e.droppedOpaque > 0 {
+		notes = append(notes, proto.OpaqueDropNote(e.droppedOpaque))
+		e.droppedOpaque = 0
 	}
 	if e.droppedAudio {
 		notes = append(notes, proto.AudioOutputDropNote())

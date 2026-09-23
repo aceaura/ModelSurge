@@ -138,7 +138,7 @@ func TestEncodeCitationsDropsUnresolvable(t *testing.T) {
 
 // 无 URL 的引用解码时丢弃：客户端无处可跳。
 func TestDecodeCitationsDropsEmptyURL(t *testing.T) {
-	if cs := decodeCitations([]citation{{Type: "web_search_result_location", CitedText: "x"}}); cs != nil {
+	if cs := citationsToIR([]citation{{Type: "web_search_result_location", CitedText: "x"}}); cs != nil {
 		t.Fatalf("空 URL 却解出了引用：%+v", cs)
 	}
 }

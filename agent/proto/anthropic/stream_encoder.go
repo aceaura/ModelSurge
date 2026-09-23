@@ -239,6 +239,8 @@ func (e *streamEncoder) blockStartFrame(index int, b *ir.Block) []byte {
 	var cb block
 	if b != nil {
 		cb = encodeBlock(*b)
+		// 清字段只作用于逐字段序列化。不透明块由 block.MarshalJSON 整块原样吐出，
+		// 这里清掉的字段根本不参与它的输出，故无需为它单开分支。
 		cb.Text = ""
 		if cb.Type == "thinking" {
 			cb.Thinking = ""
@@ -250,7 +252,7 @@ func (e *streamEncoder) blockStartFrame(index int, b *ir.Block) []byte {
 	} else {
 		cb = block{Type: "text"}
 	}
-	return sseFrame("content_block_start", marshal(streamEvent{Type: "content_block_start", Index: index, ContentBlock: &cb}))
+	return sseFrame("content_block_start", marshal(streamEvent{Type: "content_block_start", Index: index, ContentBlock: marshal(cb)}))
 }
 
 func (e *streamEncoder) deltaFrame(index int, d delta) []byte {
@@ -308,7 +310,7 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		Type:         "message",
 		Role:         "assistant",
 		Model:        resp.Model,
-		Content:      encodeBlocks(resp.Content),
+		Content:      marshal(encodeBlocks(resp.Content)),
 		StopReason:   UnmapStopReason(resp.StopReason),
 		StopSequence: resp.StopSequence,
 		Usage:        *encodeUsagePtr(&resp.Usage),

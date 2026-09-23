@@ -51,6 +51,15 @@ const (
 	// 只有一个 file_id 和「进容器」的语义，塞进 Media.FileID 会让外族
 	// 把它当普通附件投递，上游按内容解码后 400。
 	BlockContainerUpload BlockType = "container_upload"
+	// BlockOpaque 载荷无法用 IR 表达的块：原样保留 wire 判别值与整个块体。
+	// 「未知块降级成文本」并不安全——Anthropic 有一整族服务端工具结果块
+	// （web_fetch / code_execution / bash_code_execution /
+	// text_editor_code_execution / tool_search）根本没有 text 字段，降级过去
+	// 等于把抓取的网页正文、stdout、文件内容换成一个空文本块，而兄弟
+	// server_tool_use 块还留在原地，发给上游的 tool_use/tool_result 配平
+	// 当场断裂。原样透传让同族往返无损，外族整块丢弃并报损耗，两种结果都
+	// 比伪造一个空文本块诚实。
+	BlockOpaque BlockType = "opaque"
 )
 
 // Block 消息内容块。按 Type 取用对应字段，其余字段为零值。
@@ -69,6 +78,7 @@ type Block struct {
 	ServerToolUse       *ServerToolUse       // BlockServerToolUse
 	WebSearchToolResult *WebSearchToolResult // BlockWebSearchToolResult
 	ContainerUpload     *ContainerUploadRef  // BlockContainerUpload
+	Opaque              *Opaque              // BlockOpaque
 	// Citations 本块正文引用的来源。挂在块上而非消息上，是因为三家协议都把它
 	// 绑到单个文本块：Anthropic 的 text.citations、Chat 的 message.annotations、
 	// Gemini 的 groundingSupports（按 part 定位）。偏移量也只有在单块正文内才
@@ -110,6 +120,16 @@ type Skill struct {
 // 只有 file_id：文件本体在 Files API 侧，块只是指针。
 type ContainerUploadRef struct {
 	FileID string
+}
+
+// Opaque 不透明块的载荷：wire 判别值 + 上游给的完整块 JSON。
+// Body 保留整块而非挑字段，是因为这些块的形状由上游定义且随版本增长
+// （web_fetch_tool_result 有 caller，search_result 有 source/title/citations），
+// 逐个建模永远慢一步，而原样带回是「同族往返无损」的唯一可靠做法。
+// Body 属会话内容，不进日志与诊断注记。
+type Opaque struct {
+	WireType string
+	Body     json.RawMessage
 }
 
 // Citation 正文中一段文字的来源标注。

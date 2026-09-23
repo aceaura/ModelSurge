@@ -88,10 +88,13 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		}
 		return []ir.Event{ev}, nil
 	case "content_block_start":
-		if se.ContentBlock == nil {
+		if len(se.ContentBlock) == 0 {
 			return nil, nil
 		}
-		b := decodeBlock(*se.ContentBlock)
+		b, ok := decodeRawBlock(se.ContentBlock)
+		if !ok {
+			return nil, nil
+		}
 		// 流式 tool_use 的 input 从 {} 开始，参数经 input_json_delta 续传
 		if b.Type == ir.BlockToolUse && b.ToolUse != nil {
 			b.ToolUse.Input = nil
@@ -112,7 +115,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			return []ir.Event{{Type: ir.EvSigDelta, Index: se.Index, Text: se.Delta.Signature,
 				SignatureFrom: ir.SigFrom(Name, se.Delta.Signature)}}, nil
 		case "citations_delta":
-			cs := decodeCitations([]citation{*orEmptyCitation(se.Delta.Citation)})
+			cs := citationsToIR([]citation{*orEmptyCitation(se.Delta.Citation)})
 			if len(cs) == 0 {
 				return nil, nil
 			}

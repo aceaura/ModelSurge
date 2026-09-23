@@ -1,6 +1,10 @@
 package anthropic
 
-import "github.com/aceaura/ModelSurge/agent/ir"
+import (
+	"encoding/json"
+
+	"github.com/aceaura/ModelSurge/agent/ir"
+)
 
 func orEmptyCitation(c *citation) *citation {
 	if c == nil {
@@ -9,7 +13,21 @@ func orEmptyCitation(c *citation) *citation {
 	return c
 }
 
-func decodeCitations(cs []citation) []ir.Citation {
+// decodeCitations 解析 text 块的 citations 数组。非数组形态一律返回 nil：
+// Anthropic 在 document / search_result 块上复用同一个键名承载
+// {"enabled":bool} 配置对象，那不是引用。
+func decodeCitations(raw json.RawMessage) []ir.Citation {
+	if len(raw) == 0 || raw[0] != '[' {
+		return nil
+	}
+	var cs []citation
+	if err := json.Unmarshal(raw, &cs); err != nil {
+		return nil
+	}
+	return citationsToIR(cs)
+}
+
+func citationsToIR(cs []citation) []ir.Citation {
 	if len(cs) == 0 {
 		return nil
 	}

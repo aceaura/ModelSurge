@@ -107,9 +107,26 @@ type block struct {
 	// Data redacted_thinking 块的唯一载荷：被安全系统涂抹的思考内容密文。
 	// 与 Signature 不是一回事，也不互相替代。
 	Data string `json:"data,omitempty"`
-	// Citations text 块的来源标注（托管搜索开启时下发）。
-	Citations []citation    `json:"citations,omitempty"`
-	CacheCtl  *cacheControl `json:"cache_control,omitempty"`
+	// Citations text 块的来源标注（托管搜索开启时下发）。用 RawMessage 而不是
+	// []citation：Anthropic 在 document / search_result 块上复用同一个键名承载
+	// {"enabled":bool} 配置对象。声明成数组时那种块会让整条 content 的
+	// json.Unmarshal 直接失败，同消息里的其他块（包括用户真正的问题）一起蒸发。
+	Citations json.RawMessage `json:"citations,omitempty"`
+	CacheCtl  *cacheControl   `json:"cache_control,omitempty"`
+	// OpaqueRaw 不透明块的原样块体。标 json:"-" 是为了不参与逐字段序列化：
+	// MarshalJSON 见到它就把整块原样吐出去。
+	OpaqueRaw json.RawMessage `json:"-"`
+}
+
+// MarshalJSON 不透明块整块原样写出，其余按字段序列化。
+// 逐字段重建会丢掉 block 没建模的键（web_fetch_tool_result 的 caller、
+// search_result 的 citations 配置等），而这些块的回传契约要求原样带回。
+func (b block) MarshalJSON() ([]byte, error) {
+	if len(b.OpaqueRaw) > 0 {
+		return b.OpaqueRaw, nil
+	}
+	type plain block
+	return json.Marshal(plain(b))
 }
 
 // citation text 块的 citations 元素（web_search_result_location 形态）。
@@ -180,13 +197,15 @@ type toolChoice struct {
 
 // streamEvent 统一解析所有 SSE 事件的 data 载荷，按 Type 分派。
 type streamEvent struct {
-	Type         string        `json:"type"`
-	Index        int           `json:"index,omitempty"`
-	Message      *eventMessage `json:"message,omitempty"`       // message_start
-	ContentBlock *block        `json:"content_block,omitempty"` // content_block_start
-	Delta        *delta        `json:"delta,omitempty"`         // content_block_delta / message_delta
-	Usage        *usage        `json:"usage,omitempty"`         // message_delta
-	Error        *errorBody    `json:"error,omitempty"`         // error
+	Type    string        `json:"type"`
+	Index   int           `json:"index,omitempty"`
+	Message *eventMessage `json:"message,omitempty"` // message_start
+	// ContentBlock 存 raw 而不是 *block：块体里出现 block 没建模的字段形态时，
+	// 整个 SSE 事件的 json.Unmarshal 会失败并把流打断；逐块解析才能只降级那一个块。
+	ContentBlock json.RawMessage `json:"content_block,omitempty"` // content_block_start
+	Delta        *delta          `json:"delta,omitempty"`         // content_block_delta / message_delta
+	Usage        *usage          `json:"usage,omitempty"`         // message_delta
+	Error        *errorBody      `json:"error,omitempty"`         // error
 }
 
 type eventMessage struct {
@@ -235,15 +254,17 @@ type errorBody struct {
 // ---- 非流式响应 DTO ----
 
 type response struct {
-	ID           string  `json:"id"`
-	Type         string  `json:"type"`
-	Role         string  `json:"role"`
-	Model        string  `json:"model"`
-	Content      []block `json:"content"`
-	StopReason   string  `json:"stop_reason"`
-	StopSequence string  `json:"stop_sequence,omitempty"`
-	Usage        usage   `json:"usage"`
-	ServiceTier  string  `json:"service_tier,omitempty"`
+	ID    string `json:"id"`
+	Type  string `json:"type"`
+	Role  string `json:"role"`
+	Model string `json:"model"`
+	// Content 与 message.Content 同形：解码时逐块拆 raw（一个块的字段冲突
+	// 不能牵连整条消息），编码时由 encodeBlocks 的结果 marshal 回来。
+	Content      json.RawMessage `json:"content"`
+	StopReason   string          `json:"stop_reason"`
+	StopSequence string          `json:"stop_sequence,omitempty"`
+	Usage        usage           `json:"usage"`
+	ServiceTier  string          `json:"service_tier,omitempty"`
 	// Container 代码执行容器回显（按需出场，缺键与 null 同义）。
 	Container *container `json:"container,omitempty"`
 }

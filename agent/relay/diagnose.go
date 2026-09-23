@@ -87,7 +87,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	var notes []string
 
 	sigs, foreign, images, urlImages, errResults, refusals, badArgs := 0, 0, 0, 0, 0, 0, 0
-	uploads, audioRefs, customCalls, customResults, redacted := 0, 0, 0, 0, 0
+	uploads, audioRefs, customCalls, customResults, redacted, opaque := 0, 0, 0, 0, 0, 0
 	media := map[ir.MediaKind]int{}
 	for _, m := range req.Messages {
 		if m.Role == ir.RoleAssistant && m.AudioID != "" {
@@ -110,6 +110,8 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 				uploads++
 			case ir.BlockRedactedThinking:
 				redacted++
+			case ir.BlockOpaque:
+				opaque++
 			case ir.BlockThinking:
 				if b.Thinking != nil && b.Thinking.Signature != "" {
 					sigs++
@@ -196,6 +198,13 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		// 承载槽位也不能据此恢复思考链。密文不进注记。
 		notes = append(notes, fmt.Sprintf(
 			"dropped %d redacted thinking block(s): the target protocol has no opaque-reasoning slot, the encrypted thinking state cannot be replayed", redacted))
+	}
+	if opaque > 0 && protoName != "anthropic" {
+		// 历史里的不透明块（Anthropic 服务端工具结果、search_result 等）无处
+		// 安放：块型只在源协议里有定义，目标协议没有承载它载荷的槽位。
+		// 块体属会话内容，不进注记。
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d opaque content block(s): the block type only exists in the source protocol, the target has no slot for its server-side tool payload, so the model cannot see the fetched page, command output or search result from earlier turns", opaque))
 	}
 	if audioRefs > 0 && protoName != "openai-chat" {
 		// 音频 id 是 Chat 多轮上下文中的服务端引用，外族既没有引用槽位，

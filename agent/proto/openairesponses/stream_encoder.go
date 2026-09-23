@@ -43,6 +43,8 @@ type streamEncoder struct {
 	droppedUploads int
 	// droppedRedacted 被跳过的 redacted_thinking 块数，同上。
 	droppedRedacted int
+	// droppedOpaque 被跳过的不透明块数（源协议专属的服务端工具载荷），同上。
+	droppedOpaque int
 	// droppedAudio 完整 Chat 音频输出没有 Responses 流式 item 形态。
 	droppedAudio bool
 	// droppedSigs 被门控的外族/合成签名数，Notes() 收尾时报出。
@@ -249,6 +251,12 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		e.skip[ev.Index] = true
 		e.droppedRedacted++
 		return nil, nil
+	case ir.BlockOpaque:
+		// 源协议专属的服务端工具载荷没有 Responses 形态。同样必须显式拦住，
+		// 否则会落进 default(text) 分支凭空多出一个空 output_text 条目。
+		e.skip[ev.Index] = true
+		e.droppedOpaque++
+		return nil, nil
 	default: // text
 		b.typ = ir.BlockText
 		b.itemID = e.nextID("msg")
@@ -424,6 +432,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedRedacted > 0 {
 		notes = append(notes, proto.RedactedThinkingDropNote(e.droppedRedacted))
 		e.droppedRedacted = 0
+	}
+	if e.droppedOpaque > 0 {
+		notes = append(notes, proto.OpaqueDropNote(e.droppedOpaque))
+		e.droppedOpaque = 0
 	}
 	if e.droppedAudio {
 		notes = append(notes, proto.AudioOutputDropNote())

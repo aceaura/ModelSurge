@@ -300,21 +300,11 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 				args := b.ToolUse.ObjectInput()
 				c.Parts = append(c.Parts, part{FunctionCall: &functionCall{Name: b.ToolUse.Name, Args: args, ID: b.ToolUse.ID}})
 			}
-		case ir.BlockImage:
-			if b.Image != nil && b.Image.Data != "" {
-				c.Parts = append(c.Parts, part{InlineData: &blob{MimeType: b.Image.MediaType, Data: b.Image.Data}})
-			}
-		case ir.BlockMedia:
-			// inlineData 能装任意 MIME，媒体块原样带回；只有远端 URI 形态走
-			// fileData（Gemini 不接受内联 URL）。
-			if b.Media != nil {
-				switch {
-				case b.Media.Data != "":
-					c.Parts = append(c.Parts, part{InlineData: &blob{MimeType: b.Media.MediaType, Data: b.Media.Data}})
-				case b.Media.URL != "":
-					c.Parts = append(c.Parts, part{FileData: &fileData{MimeType: b.Media.MediaType, FileURI: b.Media.URL}})
-				}
-			}
+		case ir.BlockImage, ir.BlockMedia:
+			// inlineData 能装任意 MIME，图片与媒体块原样带回；只有远端 URI 形态
+			// 走 fileData（Gemini 不接受内联 URL）。与流式编码器共用 mediaParts，
+			// 保证同一份响应按 stream=true/false 编码出的附件形态一致。
+			c.Parts = append(c.Parts, mediaParts(&b)...)
 		}
 	}
 	ensureThoughtSignature(&c)
@@ -328,8 +318,36 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 }
 
 // ResponseNotes 非流式编码损耗扫描：外族签名丢弃 + 对象槽位的畸形参数挪键。
+// 附件本体走 inlineData / fileData 投得出去（只有文件名带不回：本仓的 gemini
+// blob 结构没有 displayName 字段，Gemini 官方是否有该字段未经权威来源核对，
+// 故不擅自补），所以不算「助手回合无附件形态」；但纯引用形态的附件装不下，
+// 单独报出。
 func (codec) ResponseNotes(resp *ir.Response) []string {
-	return proto.ScanResponseLosses(resp, Name, false, true)
+	notes := proto.ScanResponseLosses(resp, Name, false, true, false)
+	if images, files := undeliverableMedia(resp.Content); images > 0 || files > 0 {
+		notes = append(notes, proto.MediaOutputDropNote(images, files))
+	}
+	return notes
+}
+
+// undeliverableMedia 数出 mediaParts 装不下的附件块：既没有 base64 本体也没有
+// 远端 URI（例如 Anthropic 的 file_id 文档引用）。与流式编码器同一判定。
+func undeliverableMedia(blocks []ir.Block) (images, files int) {
+	for i := range blocks {
+		b := &blocks[i]
+		if b.Type != ir.BlockImage && b.Type != ir.BlockMedia {
+			continue
+		}
+		if len(mediaParts(b)) > 0 {
+			continue
+		}
+		if b.Type == ir.BlockImage {
+			images++
+		} else {
+			files++
+		}
+	}
+	return images, files
 }
 
 // mediaBlock 按 MIME 分流 inlineData / fileData。Gemini 的这两个字段能装
@@ -342,6 +360,36 @@ func mediaBlock(mime, data, uri string) ir.Block {
 	return ir.Block{Type: ir.BlockMedia, Media: &ir.Media{
 		Kind: ir.MediaKindOf(mime), MediaType: mime, Data: data, URL: uri,
 	}}
+}
+
+// mediaParts 附件块（image / media）-> inlineData 或 fileData part。
+// 有 base64 本体走 inlineData，否则有远端 URI 走 fileData。两者都没有（例如只有
+// Anthropic 的 file_id 文档引用）时返回 nil：本族这两个槽位都装不下一个纯引用，
+// 由调用方计数并报损耗，不伪造空 inlineData。
+// 非流式编码与流式编码共用，保证两种模式的附件形态一致。
+func mediaParts(b *ir.Block) []part {
+	var mime, data, uri string
+	switch b.Type {
+	case ir.BlockImage:
+		if b.Image == nil {
+			return nil
+		}
+		mime, data, uri = b.Image.MediaType, b.Image.Data, b.Image.URL
+	case ir.BlockMedia:
+		if b.Media == nil {
+			return nil
+		}
+		mime, data, uri = b.Media.MediaType, b.Media.Data, b.Media.URL
+	default:
+		return nil
+	}
+	switch {
+	case data != "":
+		return []part{{InlineData: &blob{MimeType: mime, Data: data}}}
+	case uri != "":
+		return []part{{FileData: &fileData{MimeType: mime, FileURI: uri}}}
+	}
+	return nil
 }
 
 // ---- 错误渲染 ----

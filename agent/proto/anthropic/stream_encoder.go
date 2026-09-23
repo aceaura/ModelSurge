@@ -324,6 +324,7 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 }
 
 // ResponseNotes 非流式编码损耗扫描：外族签名丢弃 + 对象槽位的畸形参数挪键。
+// 本族是附件的原生形态（image / document 块），模型产出的附件不丢。
 func (codec) ResponseNotes(resp *ir.Response) []string {
-	return proto.ScanResponseLosses(resp, Name, false, true)
+	return proto.ScanResponseLosses(resp, Name, false, true, false)
 }

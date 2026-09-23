@@ -39,13 +39,18 @@ type streamEncoder struct {
 	droppedCites int
 	// droppedAudio 完整音频输出来自非流式响应；Chat chunk 无官方 audio 增量槽位。
 	droppedAudio bool
-	toolIdx      map[int]int // block index -> dense tool index
-	toolArgs     map[int][]byte
-	toolKind     map[int]ir.ToolKind
-	badToolArgs  int
-	customTools  int
-	skipIdx      map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
-	refusalIdx   map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
+	// droppedImages / droppedFiles 被跳过的模型产出附件块数（image / media）：
+	// delta.message 只有 content / refusal / tool_calls / 思考几个槽位，
+	// 附件没有对应形态，整块跳过。
+	droppedImages int
+	droppedFiles  int
+	toolIdx       map[int]int // block index -> dense tool index
+	toolArgs      map[int][]byte
+	toolKind      map[int]ir.ToolKind
+	badToolArgs   int
+	customTools   int
+	skipIdx       map[int]bool // server_tool_use 等无形态块（input delta 丢弃）
+	refusalIdx    map[int]bool // 拒绝块序号：其 text delta 走 delta.refusal
 	// text 各块已下发的正文，供 annotations 反推 cited_text 与字符索引。
 	text     map[int]string
 	nextTool int
@@ -113,7 +118,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return nil, nil
 		}
 		if ev.Block != nil && ev.Block.Type != ir.BlockText && ev.Block.Type != ir.BlockThinking {
-			e.skipIdx[ev.Index] = true // server_tool_use / web_search_tool_result / container_upload / redacted_thinking / opaque
+			e.skipIdx[ev.Index] = true // server_tool_use / web_search_tool_result / container_upload / redacted_thinking / opaque / image / media
 			switch ev.Block.Type {
 			case ir.BlockContainerUpload:
 				e.droppedUploads++
@@ -125,6 +130,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 				e.droppedServerCalls++
 			case ir.BlockWebSearchToolResult:
 				e.droppedServerResults++
+			case ir.BlockImage:
+				e.droppedImages++
+			case ir.BlockMedia:
+				e.droppedFiles++
 			}
 		}
 		return nil, nil // text/thinking 块开始无需输出
@@ -250,6 +259,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedAudio {
 		notes = append(notes, proto.AudioOutputDropNote())
 		e.droppedAudio = false
+	}
+	if e.droppedImages > 0 || e.droppedFiles > 0 {
+		notes = append(notes, proto.MediaOutputDropNote(e.droppedImages, e.droppedFiles))
+		e.droppedImages, e.droppedFiles = 0, 0
 	}
 	if e.badToolArgs > 0 {
 		notes = append(notes, ir.RawArgsPassNote(e.badToolArgs))
@@ -476,7 +489,8 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 }
 
 // ResponseNotes 非流式编码损耗扫描：Chat 无签名槽位（签名全丢），
-// arguments 是字符串槽位（透传无损）。
+// arguments 是字符串槽位（透传无损）；本仓把助手消息编成文字/拒绝/工具调用，
+// 模型产出的图片与文档没有对应形态，整块消失。
 func (codec) ResponseNotes(resp *ir.Response) []string {
-	return proto.ScanResponseLosses(resp, Name, true, false)
+	return proto.ScanResponseLosses(resp, Name, true, false, true)
 }

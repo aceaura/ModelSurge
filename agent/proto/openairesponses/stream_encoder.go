@@ -60,6 +60,13 @@ type streamEncoder struct {
 	droppedCites int
 	// droppedAudio 完整 Chat 音频输出没有 Responses 流式 item 形态。
 	droppedAudio bool
+	// droppedImages / droppedFiles 被跳过的模型产出附件块数（image / media）。
+	// 本族编码器给助手回合输出的 part 只有 output_text / refusal，没有附件形态。
+	// 不显式拦住会落进 default(text) 分支，凭空多出一个 content 为
+	// [{"type":"output_text"}] 的空 message item：客户端读到一条没有内容的助手
+	// 消息，它还占掉一个 output_index，把后续真块的序号一起推后。
+	droppedImages int
+	droppedFiles  int
 	// droppedSigs 被门控的外族/合成签名数，Notes() 收尾时报出。
 	droppedSigs int
 	badToolArgs int
@@ -285,6 +292,16 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		e.skip[ev.Index] = true
 		e.droppedOpaque++
 		return nil, nil
+	case ir.BlockImage:
+		// 模型产出的图片没有本族输出形态：整块跳过但计数，Notes() 报出。
+		e.skip[ev.Index] = true
+		e.droppedImages++
+		return nil, nil
+	case ir.BlockMedia:
+		// 文档/音频/视频附件同理：跳过但计数。
+		e.skip[ev.Index] = true
+		e.droppedFiles++
+		return nil, nil
 	default: // text
 		b.typ = ir.BlockText
 		b.itemID = e.nextID("msg")
@@ -478,6 +495,10 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.AudioOutputDropNote())
 		e.droppedAudio = false
 	}
+	if e.droppedImages > 0 || e.droppedFiles > 0 {
+		notes = append(notes, proto.MediaOutputDropNote(e.droppedImages, e.droppedFiles))
+		e.droppedImages, e.droppedFiles = 0, 0
+	}
 	if e.badToolArgs > 0 {
 		notes = append(notes, ir.RawArgsPassNote(e.badToolArgs))
 		e.badToolArgs = 0
@@ -602,7 +623,8 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// ResponseNotes 非流式编码损耗扫描：外族签名丢弃；arguments 字符串槽位无损。
+// ResponseNotes 非流式编码损耗扫描：外族签名丢弃；arguments 字符串槽位无损；
+// 助手回合的 output items 里没有附件形态，模型产出的图片与文档整块消失。
 func (codec) ResponseNotes(resp *ir.Response) []string {
-	return proto.ScanResponseLosses(resp, Name, false, false)
+	return proto.ScanResponseLosses(resp, Name, false, false, true)
 }

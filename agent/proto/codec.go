@@ -360,13 +360,16 @@ func TierEchoDropNote(tier string) string {
 // sigSlotless=协议没有签名槽位（chat，签名全丢）；否则只丢外族签名。
 // objArgs=工具参数是对象槽位（anthropic/gemini），非法参数会被挪进
 // ir.RawArgsKey；字符串槽位保留原文，但仍报告客户端无法安全执行。
+// mediaSlotless=编码器在助手回合里没有任何附件形态（openai-chat /
+// openai-responses），模型产出的图片与文档整块消失。
 // 与各 codec 的编码分支用同一判定（SignatureGenuineFor / NormalizeToolInput），
 // 扫描结果即实编结果。
-func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArgs bool) []string {
+func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArgs, mediaSlotless bool) []string {
 	var sigs, badArgs, customCalls int
 	uploads, redacted, opaque := 0, 0, 0
 	serverCalls, serverResults := 0, 0
 	docCtx, docCites := 0, 0
+	images, files := 0, 0
 	for _, b := range resp.Content {
 		switch b.Type {
 		case ir.BlockThinking:
@@ -374,11 +377,14 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 				(sigSlotless || !b.Thinking.SignatureGenuineFor(protoName)) {
 				sigs++
 			}
+		case ir.BlockImage:
+			images++
 		case ir.BlockMedia:
 			// 响应侧的文档块只在同族里带得回 context / citations 配置：外族的
 			// 附件槽位只装文件本身。本条只数配置，不判文档本体能否投递——
 			// 三族对本体的处置各不相同（gemini 走 inlineData 投得出去，OpenAI
-			// 两系投不出去），那是各自编码器的事。
+			// 两系投不出去），后者由 mediaSlotless 单独计数报出。
+			files++
 			c, s := DocConfigOf(b.Media)
 			docCtx += c
 			docCites += s
@@ -450,6 +456,10 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	}
 	if (docCtx > 0 || docCites > 0) && protoName != "anthropic" {
 		notes = append(notes, DocumentConfigDropNote(docCtx, docCites))
+	}
+	// 模型产出的附件本体：助手回合没有附件形态的编码器整块丢掉，客户端只看到文字。
+	if (images > 0 || files > 0) && mediaSlotless {
+		notes = append(notes, MediaOutputDropNote(images, files))
 	}
 	if resp.Audio != nil && protoName != "openai-chat" {
 		notes = append(notes, AudioOutputDropNote())
@@ -587,6 +597,28 @@ func DocConfigOf(m *ir.Media) (ctx, cites int) {
 // message.audio；Chat SSE 与所有外族响应都没有等价槽位。
 func AudioOutputDropNote() string {
 	return "dropped model audio output: this response format has no complete-audio slot, the client cannot play the generated audio or recover its transcript and replay id"
+}
+
+// MediaOutputDropNote 模型产出附件丢失注记：图片与非图片附件分开计数，合成一个
+// 数字会让排障时分不清丢的是哪一类——两者在源协议里是不同块型，处置路径也不同。
+// 两类调用方共用：助手回合没有任何附件形态的编码器（openai-chat /
+// openai-responses），以及附件本身没有本族装得下载体的编码器（gemini 收到只有
+// file_id 引用、既无 base64 本体也无 URL 的文档）。
+// 措辞刻意不断言「目标协议没有附件槽位」：本仓没有 OpenAI 两系的权威 SDK 可核对
+// 助手回合的 part 值集，只陈述本仓的转换带不过去。
+// 文件名与 base64 本体属会话内容，不进注记。
+func MediaOutputDropNote(images, files int) string {
+	var subject string
+	switch {
+	case images > 0 && files > 0:
+		subject = fmt.Sprintf("%d image(s) and %d non-image attachment(s)", images, files)
+	case images > 0:
+		subject = fmt.Sprintf("%d image(s)", images)
+	default:
+		subject = fmt.Sprintf("%d non-image attachment(s)", files)
+	}
+	return "dropped " + subject +
+		" from the model output: this protocol's conversion has no way to carry them in an assistant turn, so the receiving side sees only the text the model produced"
 }
 
 func CacheCreationDetailsDropNote() string {

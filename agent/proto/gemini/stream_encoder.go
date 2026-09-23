@@ -46,7 +46,12 @@ type streamEncoder struct {
 	// 而本族的标注槽位以 URL 为来源身份），同上。
 	droppedCites int
 	// droppedAudio 完整 Chat 音频输出没有 Gemini 流式响应槽位。
-	droppedAudio        bool
+	droppedAudio bool
+	// droppedImages / droppedFiles 模型产出的附件里投不出去的部分：既没有 base64
+	// 本体也没有 URL（只有本仓不认识的 file_id 引用），inlineData / fileData 两个
+	// 槽位都装不下。附件本体投得出去时不计数——它当场就编成 part 下发了。
+	droppedImages       int
+	droppedFiles        int
 	usage               ir.Usage
 	hasUsage            bool
 	droppedCacheDetails bool
@@ -143,6 +148,22 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			if ev.Block.ToolUse.Kind == ir.ToolCustom {
 				e.customTools++
 			}
+		}
+		if ev.Block != nil && (ev.Block.Type == ir.BlockImage || ev.Block.Type == ir.BlockMedia) {
+			// 附件整块到达（没有增量形态），当场下发一个 chunk。槽位与非流式
+			// 编码器完全一致（mediaParts 共用）：此前流式一律静默丢掉，同一份
+			// 响应按 stream=true/false 请求会得到不同内容。
+			parts := mediaParts(ev.Block)
+			if len(parts) == 0 {
+				if ev.Block.Type == ir.BlockImage {
+					e.droppedImages++
+				} else {
+					e.droppedFiles++
+				}
+				return nil, nil
+			}
+			e.partCount += len(parts) // 附件 part 也占部件序号，否则引用索引漂移
+			return e.chunk(parts, ""), nil
 		}
 		if ev.Block != nil && ev.Block.Type == ir.BlockContainerUpload {
 			// 容器文件引用无 Gemini part 形态：跳过但计数，Notes() 报出。
@@ -311,6 +332,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedAudio {
 		notes = append(notes, proto.AudioOutputDropNote())
 		e.droppedAudio = false
+	}
+	if e.droppedImages > 0 || e.droppedFiles > 0 {
+		notes = append(notes, proto.MediaOutputDropNote(e.droppedImages, e.droppedFiles))
+		e.droppedImages, e.droppedFiles = 0, 0
 	}
 	if e.droppedCacheDetails {
 		notes = append(notes, proto.CacheCreationDetailsDropNote())

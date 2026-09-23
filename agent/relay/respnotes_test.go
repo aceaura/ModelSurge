@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -336,5 +337,30 @@ func TestMainCollectPathCarriesAggregatorNotes(t *testing.T) {
 
 	if h := w.Header().Get("X-ModelSurge-Notes"); !strings.Contains(h, "rewrapped 1 malformed tool call argument(s)") {
 		t.Fatalf("主路聚合挪键注记未进响应头：%q", h)
+	}
+}
+
+// 文档类引用的损耗也要走完同一条投递通道：非流式进头，流式落注释帧。
+// 引用的原文（含 file_id）属会话内容，不得进注记，也不得进外族客户端的响应体。
+func TestWriteResponseDocumentCitationNotes(t *testing.T) {
+	resp := &ir.Response{ID: "m1", Model: "m", StopReason: ir.StopEndTurn,
+		Content: []ir.Block{{Type: ir.BlockText, Text: "北京今天晴", Citations: []ir.Citation{
+			{WireType: "char_location", CitedText: "晴", Start: 4, End: 5,
+				Raw: json.RawMessage(`{"type":"char_location","cited_text":"晴","document_index":0,` +
+					`"start_char_index":4,"end_char_index":5,"file_id":"file_abc"}`)},
+		}}}}
+	w := httptest.NewRecorder()
+	writeResponse(w, proto.MustInbound("openai-chat"), nil, resp, false, nil)
+	if h := w.Header().Get("X-ModelSurge-Notes"); !strings.Contains(h, "dropped 1 document citation(s)") {
+		t.Errorf("文档类引用损耗未进头：%q", h)
+	}
+	if strings.Contains(w.Body.String(), "file_abc") {
+		t.Errorf("file_id 泄漏进外族客户端响应体：%s", w.Body.String())
+	}
+
+	ws := httptest.NewRecorder()
+	writeResponse(ws, proto.MustInbound("openai-chat"), nil, resp, true, nil)
+	if !strings.Contains(ws.Body.String(), ": modelsurge-note: dropped 1 document citation(s)") {
+		t.Errorf("流式注释帧缺失：%s", ws.Body.String())
 	}
 }

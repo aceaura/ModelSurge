@@ -68,3 +68,33 @@ func TestDiagnoseNoCitationNoNote(t *testing.T) {
 		t.Errorf("无引用却报了丢失：%q", got)
 	}
 }
+
+// 文档类引用是「有槽位但槽位装不下」：caps.Citations 是个整族布尔量，四个出站
+// 全为真，靠它看不见这种逐条损耗。Anthropic 的 char_location / page_location /
+// content_block_location 只有 document_index 与页/块/字符下标，而外族的标注槽位
+// 以 URL 为来源身份——投给外族上游时这几条会被抹掉，必须单独数出来报。
+func TestDiagnoseNonPortableCitations(t *testing.T) {
+	req := &ir.Request{Messages: []ir.Message{
+		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "天气"}}},
+		{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockText, Text: "北京今天晴",
+			Citations: []ir.Citation{
+				{URL: "https://w", Start: 0, End: 2},
+				{WireType: "char_location", CitedText: "晴", Start: 4, End: 5},
+				{WireType: "page_location", CitedText: "晴"},
+			}}}},
+	}}
+	for _, name := range []string{"codex", "openai-chat", "openai-responses"} {
+		t.Run(name, func(t *testing.T) {
+			got := citationNote(Diagnose(req, name, capsOf(t, name)))
+			if !strings.Contains(got, "dropped 2 document citation(s)") {
+				t.Errorf("应报 2 条文档类引用丢失：%q", got)
+			}
+		})
+	}
+	// anthropic 五种形态都装得下，不报。
+	t.Run("anthropic", func(t *testing.T) {
+		if got := citationNote(Diagnose(req, "anthropic", capsOf(t, "anthropic"))); got != "" {
+			t.Errorf("anthropic 误报：%q", got)
+		}
+	})
+}

@@ -53,9 +53,10 @@ func decodeAnnotations(as []annotation) []ir.Citation {
 	out := make([]ir.Citation, 0, len(as))
 	for _, a := range as {
 		// 只认 url_citation：别的种类（file_citation 等）载荷在同名子对象里，
-		// url_citation 为空即非本类；空 URL 由 DedupeCitations 统一丢弃。
+		// url_citation 为空即非本类。Chat 的标注以 URL 为来源身份，没有 URL
+		// 的那条连自己协议里都无从渲染，收下只会往下游传一条空壳。
 		c := a.URLCitation
-		if c == nil {
+		if c == nil || c.URL == "" {
 			continue
 		}
 		out = append(out, ir.Citation{
@@ -69,12 +70,17 @@ func decodeAnnotations(as []annotation) []ir.Citation {
 // encodeAnnotations IR -> Chat。索引是官方的主要定位手段，反推不出范围时仍然
 // 写出该条（URL 与标题本身就有价值），只是范围留零——与 Anthropic 不同，
 // Chat 不把 cited_text 当必填，带零范围发出去不会被拒。
+// 没有 URL 的引用跳过：url_citation 以 URL 为来源身份，写一条空 url 的标注
+// 会让客户端渲染出一个跳不动的引用。丢弃条数由调用方计入损耗注记。
 func encodeAnnotations(text string, cs []ir.Citation) []annotation {
 	if len(cs) == 0 {
 		return nil
 	}
 	out := make([]annotation, 0, len(cs))
 	for _, c := range cs {
+		if !c.Portable() {
+			continue
+		}
 		uc := &urlCitation{URL: c.URL, Title: c.Title, CitedText: ir.ResolveCitedText(text, c)}
 		if start, end, ok := ir.ResolveRange(text, c); ok {
 			uc.StartIndex, uc.EndIndex = start, end

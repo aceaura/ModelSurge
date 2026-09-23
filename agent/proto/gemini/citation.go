@@ -21,7 +21,9 @@ func encodeGrounding(blocks []ir.Block, partIndexOf map[int]int) *groundingMetad
 			continue
 		}
 		for _, c := range b.Citations {
-			if c.URL == "" {
+			// 没有 URL 就进不了来源清单：groundingChunk 以 web.uri 为来源身份，
+			// Anthropic 的文档类引用只有 document_index。丢弃条数计入损耗注记。
+			if !c.Portable() {
 				continue
 			}
 			ci, seen := chunkOf[c.URL]
@@ -74,7 +76,7 @@ func encodeGroundingStreamed(t *encText, citations []ir.Citation) *groundingMeta
 	var supports []groundingSupport
 	chunkOf := map[string]int{}
 	for _, c := range citations {
-		if c.URL == "" {
+		if !c.Portable() {
 			continue
 		}
 		ci, seen := chunkOf[c.URL]

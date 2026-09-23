@@ -107,9 +107,9 @@ type block struct {
 	// Data redacted_thinking 块的唯一载荷：被安全系统涂抹的思考内容密文。
 	// 与 Signature 不是一回事，也不互相替代。
 	Data string `json:"data,omitempty"`
-	// Citations text 块的来源标注（托管搜索开启时下发）。用 RawMessage 而不是
-	// []citation：Anthropic 在 document / search_result 块上复用同一个键名承载
-	// {"enabled":bool} 配置对象。声明成数组时那种块会让整条 content 的
+	// Citations text 块的来源标注（托管搜索与文档引用都会下发）。用 RawMessage
+	// 而不是 []citationIn：Anthropic 在 document / search_result 块上复用同一个
+	// 键名承载 {"enabled":bool} 配置对象。声明成数组时那种块会让整条 content 的
 	// json.Unmarshal 直接失败，同消息里的其他块（包括用户真正的问题）一起蒸发。
 	Citations json.RawMessage `json:"citations,omitempty"`
 	CacheCtl  *cacheControl   `json:"cache_control,omitempty"`
@@ -129,18 +129,34 @@ func (b block) MarshalJSON() ([]byte, error) {
 	return json.Marshal(plain(b))
 }
 
-// citation text 块的 citations 元素（web_search_result_location 形态）。
-// CitedText 与 [start, end) 索引都可能只给一半，另一半由 IR 侧反推。
-type citation struct {
+// citationIn text 块 citations 数组元素的解码形状：官方 union 五种形态的字段并集。
+// 只用来把可跨协议的字段投影进 IR；同族往返的保真靠 ir.Citation.Raw，不靠它。
+type citationIn struct {
 	Type           string `json:"type"`
 	URL            string `json:"url"`
 	Title          string `json:"title,omitempty"`
 	CitedText      string `json:"cited_text,omitempty"`
 	EncryptedIndex string `json:"encrypted_index,omitempty"`
-	// 不可 omitempty：start_char_index=0 是合法值（引用从正文首字起），
-	// 去掉会让客户端把起点当成缺省而落到错误位置。
 	StartCharIndex int `json:"start_char_index"`
 	EndCharIndex   int `json:"end_char_index"`
+	// Source search_result_location 的来源 URL——该形态没有 url 键。
+	Source string `json:"source,omitempty"`
+	// DocumentTitle char/page/content_block 三种形态的文档标题——它们没有 title 键。
+	DocumentTitle string `json:"document_title,omitempty"`
+}
+
+// citationOut 编码形状，严格照 web_search_result_location 的官方 schema：
+// type / url / title / cited_text / encrypted_index。
+//
+// 刻意没有 start_char_index / end_char_index：那两个键属 char_location，
+// 官方这一形态根本没有它们。按判别式校验的上游会把多出来的键当非法输入拒掉，
+// 而客户端定位靠的是 cited_text，索引本来就用不上。
+type citationOut struct {
+	Type           string `json:"type"`
+	URL            string `json:"url,omitempty"`
+	Title          string `json:"title,omitempty"`
+	CitedText      string `json:"cited_text"`
+	EncryptedIndex string `json:"encrypted_index,omitempty"`
 }
 
 // webSearchResultBlock web_search_tool_result.content 的子块形态。
@@ -227,8 +243,10 @@ type delta struct {
 	StopReason  string `json:"stop_reason,omitempty"` // message_delta
 	// StopSequence stop_reason 为 stop_sequence 时命中的那条序列原文。
 	StopSequence string `json:"stop_sequence,omitempty"` // message_delta
-	// Citation citations_delta 携带的单条引用。官方一帧一条，故不是数组。
-	Citation *citation `json:"citation,omitempty"`
+	// Citation citations_delta 携带的单条引用原文。官方一帧一条，故不是数组。
+	// 用 RawMessage 收：五种形态字段互不相同，逐字段建模会在解码这一步就把
+	// 文档类引用的定位字段丢掉，编码回去只能凭空重建。
+	Citation json.RawMessage `json:"citation,omitempty"`
 	// Container message_delta 上晚到的容器回显（官方 Delta.container）。
 	Container *container `json:"container,omitempty"`
 }

@@ -43,32 +43,32 @@ func ResolveRange(text string, c Citation) (start, end int, ok bool) {
 	return start, start + utf8.RuneCountInString(c.CitedText), true
 }
 
-// DedupeCitations 按 (url, start, end) 去重并保序。
+// DedupeCitations 去重并保序。
 // 流式路径上同一条引用会随多个 chunk 重复下发（Gemini 的 groundingChunks 是
 // 跨 chunk 累积的），不去重会让客户端把一个来源渲染成很多条。
+//
+// 不做「空 URL 就丢」：Anthropic 的文档类引用（char_location 等）本来就没有
+// URL，靠 document_index 与页/块/字符下标定位，丢掉等于把出处静默抹光。
+// 能不能跨协议表达由 Portable 判，丢弃是各族编码器的职责，不是去重的职责。
+// 带 Raw 的按原文比：文档类引用的 URL 与范围都可能全空，只靠投影字段区分
+// 会把「同一段文字引自两个不同文档」误判成重复。
 func DedupeCitations(cs []Citation) []Citation {
 	if len(cs) == 0 {
 		return nil
 	}
 	type key struct {
-		url        string
+		raw, url   string
 		start, end int
 	}
 	seen := make(map[key]struct{}, len(cs))
 	out := make([]Citation, 0, len(cs))
 	for _, c := range cs {
-		if c.URL == "" {
-			continue
-		}
-		k := key{c.URL, c.Start, c.End}
+		k := key{string(c.Raw), c.URL, c.Start, c.End}
 		if _, dup := seen[k]; dup {
 			continue
 		}
 		seen[k] = struct{}{}
 		out = append(out, c)
-	}
-	if len(out) == 0 {
-		return nil
 	}
 	return out
 }
@@ -79,6 +79,23 @@ func CountCitations(r *Request) int {
 	for _, m := range r.Messages {
 		for _, b := range m.Content {
 			n += len(b.Citations)
+		}
+	}
+	return n
+}
+
+// CountNonPortableCitations 统计请求里目标协议装不下的引用条数（用于有损诊断）。
+// 与 CountCitations 分开：后者只在目标协议根本没有标注槽位时才非零，
+// 而文档类引用是「有槽位但槽位以 URL 为身份」，四个族里三个都装不下。
+func CountNonPortableCitations(r *Request) int {
+	n := 0
+	for _, m := range r.Messages {
+		for _, b := range m.Content {
+			for _, c := range b.Citations {
+				if !c.Portable() {
+					n++
+				}
+			}
 		}
 	}
 	return n

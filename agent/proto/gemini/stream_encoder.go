@@ -35,6 +35,9 @@ type streamEncoder struct {
 	droppedRedacted int
 	// droppedOpaque 被跳过的不透明块数（源协议专属的服务端工具载荷），同上。
 	droppedOpaque int
+	// droppedCites 带不出本族的引用条数（Anthropic 的文档类引用没有 URL，
+	// 而本族的标注槽位以 URL 为来源身份），同上。
+	droppedCites int
 	// droppedAudio 完整 Chat 音频输出没有 Gemini 流式响应槽位。
 	droppedAudio        bool
 	usage               ir.Usage
@@ -98,6 +101,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvCitation:
 		// 单独一个 chunk 承载 groundingMetadata（Gemini 原生也是在正文 chunk
 		// 之后的独立 chunk 里下发）。parts 留空：重发正文会让客户端看到重复文字。
+		e.droppedCites += proto.CountNonPortableCitations(ev.Citations)
 		gm := encodeGroundingStreamed(e.texts[ev.Index], ev.Citations)
 		if gm == nil {
 			return nil, nil
@@ -276,6 +280,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedOpaque > 0 {
 		notes = append(notes, proto.OpaqueDropNote(e.droppedOpaque))
 		e.droppedOpaque = 0
+	}
+	if e.droppedCites > 0 {
+		notes = append(notes, proto.CitationDropNote(e.droppedCites))
+		e.droppedCites = 0
 	}
 	if e.droppedAudio {
 		notes = append(notes, proto.AudioOutputDropNote())

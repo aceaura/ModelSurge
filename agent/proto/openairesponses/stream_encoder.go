@@ -45,6 +45,9 @@ type streamEncoder struct {
 	droppedRedacted int
 	// droppedOpaque 被跳过的不透明块数（源协议专属的服务端工具载荷），同上。
 	droppedOpaque int
+	// droppedCites 带不出本族的引用条数（Anthropic 的文档类引用没有 URL，
+	// 而本族的标注槽位以 URL 为来源身份），同上。
+	droppedCites int
 	// droppedAudio 完整 Chat 音频输出没有 Responses 流式 item 形态。
 	droppedAudio bool
 	// droppedSigs 被门控的外族/合成签名数，Notes() 收尾时报出。
@@ -122,6 +125,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if b == nil {
 			return nil, nil
 		}
+		e.droppedCites += proto.CountNonPortableCitations(ev.Citations)
 		as := encodeAnnotations(b.text, ev.Citations)
 		if len(as) == 0 {
 			return nil, nil
@@ -436,6 +440,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedOpaque > 0 {
 		notes = append(notes, proto.OpaqueDropNote(e.droppedOpaque))
 		e.droppedOpaque = 0
+	}
+	if e.droppedCites > 0 {
+		notes = append(notes, proto.CitationDropNote(e.droppedCites))
+		e.droppedCites = 0
 	}
 	if e.droppedAudio {
 		notes = append(notes, proto.AudioOutputDropNote())

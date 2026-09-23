@@ -132,13 +132,6 @@ type Opaque struct {
 	Body     json.RawMessage
 }
 
-// Citation 正文中一段文字的来源标注。
-//
-// Start/End 是本块 Text 内的 rune 下标（半开区间），零值表示上游没给范围。
-// 用 rune 而非 byte：Anthropic 与 OpenAI 的索引口径都是字符数，按字节算会让
-// 中文引用整体错位。CitedText 是被引用的原文片段；两者互为冗余但都要保留，
-// 因为各协议只给其中一种，缺的那种在编码时按另一种反推（参照 new-api
-// claude_messages/citations.go 与 oai_chat/citations.go 的双向互推）。
 // AudioOutParam Chat 音频输出配置。Format 是 wav/aac/mp3/flac/opus/pcm16；
 // Voice 是内置音色名或自定义音色 id（对象形态已归一）。
 type AudioOutParam struct {
@@ -155,6 +148,13 @@ type AudioOutput struct {
 	Transcript string
 }
 
+// Citation 正文中一段文字的来源标注。
+//
+// Start/End 是本块 Text 内的 rune 下标（半开区间），零值表示上游没给范围。
+// 用 rune 而非 byte：Anthropic 与 OpenAI 的索引口径都是字符数，按字节算会让
+// 中文引用整体错位。CitedText 是被引用的原文片段；两者互为冗余但都要保留，
+// 因为各协议只给其中一种，缺的那种在编码时按另一种反推（参照 new-api
+// claude_messages/citations.go 与 oai_chat/citations.go 的双向互推）。
 type Citation struct {
 	URL       string
 	Title     string
@@ -164,10 +164,26 @@ type Citation struct {
 	// EncryptedIndex Anthropic 托管搜索回传时用的不透明游标。跨协议无对应槽位，
 	// 但同协议往返必须原样带回，否则上游拒绝续话。
 	EncryptedIndex string
+	// WireType 来源协议自报的引用种类（Anthropic 的 char_location /
+	// page_location / content_block_location / search_result_location /
+	// web_search_result_location）。空 = 来源协议的标注只有一种形态
+	// （Chat/Responses 的 url_citation、Gemini 的 groundingChunk）。
+	WireType string
+	// Raw 引用的原始块体。同族往返一律原样带回：官方 union 五种形态的字段
+	// 互不相同（文档类靠 document_index 与页号/块下标/file_id 定位，托管搜索
+	// 靠 url + encrypted_index），逐字段重建必造出上游不认的形状。
+	// 属会话内容，不进日志与诊断注记。
+	Raw json.RawMessage
 }
 
 // HasRange 报告该引用是否带可用的正文范围。
 func (c Citation) HasRange() bool { return c.End > c.Start }
+
+// Portable 报告该引用能否落到外族协议的标注槽位上。Chat/Responses 的
+// url_citation 与 Gemini 的 groundingChunk 都以 URL 作为来源身份；Anthropic 的
+// 文档类引用只有 document_index 与页/块/字符下标，没有 URL，外族无从表达，
+// 只能干净丢弃并报损耗（同族往返走 Raw，不受影响）。
+func (c Citation) Portable() bool { return c.URL != "" }
 
 // ServerToolUse 服务端托管工具调用（如网关代执行 web_search）。
 // 外形同 ToolUse；结果以 ToolUseID 关联到 BlockWebSearchToolResult。

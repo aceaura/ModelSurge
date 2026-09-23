@@ -115,7 +115,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			return []ir.Event{{Type: ir.EvSigDelta, Index: se.Index, Text: se.Delta.Signature,
 				SignatureFrom: ir.SigFrom(Name, se.Delta.Signature)}}, nil
 		case "citations_delta":
-			cs := citationsToIR([]citation{*orEmptyCitation(se.Delta.Citation)})
+			cs := citationsToIR([]json.RawMessage{se.Delta.Citation})
 			if len(cs) == 0 {
 				return nil, nil
 			}

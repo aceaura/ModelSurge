@@ -16,8 +16,9 @@ type streamEncoder struct {
 	open     map[int]ir.BlockType
 	toolArgs map[int][]byte
 	toolKind map[int]ir.ToolKind
-	// text 各块已下发的正文。citations_delta 的 cited_text 与字符索引只能在
-	// 正文上反推，而引用总在正文之后到达，所以必须逐块累积。
+	// text 各块已下发的正文。跨协议投影来的引用没有 Raw，编成
+	// web_search_result_location 时 cited_text 只能在正文上按范围反推，
+	// 而引用总在正文之后到达，所以必须逐块累积。
 	text map[int]string
 	// droppedSigs 被门控掉的外族/合成签名数，Notes() 收尾时报出。
 	droppedSigs int
@@ -84,9 +85,8 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return nil, nil
 		}
 		var frames [][]byte
-		for _, c := range encodeCitations(e.text[ev.Index], ev.Citations) {
-			cc := c
-			frames = append(frames, e.deltaFrame(ev.Index, delta{Type: "citations_delta", Citation: &cc}))
+		for _, raw := range encodeCitations(e.text[ev.Index], ev.Citations) {
+			frames = append(frames, e.deltaFrame(ev.Index, delta{Type: "citations_delta", Citation: raw}))
 		}
 		return frames, nil
 	case ir.EvThinkingDelta:

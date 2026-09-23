@@ -237,6 +237,13 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 			notes = append(notes, fmt.Sprintf(
 				"dropped %d citation(s): upstream protocol has no slot for source annotations", n))
 		}
+	} else if protoName != "anthropic" {
+		// 有槽位，但槽位以 URL 为来源身份：Anthropic 的文档类引用只有
+		// document_index 与页/块/字符下标，装不进去。caps.Citations 是个
+		// 整族布尔量，看不见这种「逐条装不下」的损耗，必须单独数。
+		if n := ir.CountNonPortableCitations(req); n > 0 {
+			notes = append(notes, proto.CitationDropNote(n))
+		}
 	}
 	if req.TopK != nil && !caps.TopK {
 		notes = append(notes, "dropped top_k: upstream protocol has no equivalent field")

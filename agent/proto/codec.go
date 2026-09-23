@@ -437,7 +437,37 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	if resp.Usage.CacheCreationDetailsKnown && protoName != "anthropic" {
 		notes = append(notes, CacheCreationDetailsDropNote())
 	}
+	if n := countNonPortable(resp.Content); n > 0 && protoName != "anthropic" {
+		notes = append(notes, CitationDropNote(n))
+	}
 	return notes
+}
+
+// countNonPortable 统计一批块里目标协议装不下的引用条数。
+func countNonPortable(blocks []ir.Block) int {
+	n := 0
+	for _, b := range blocks {
+		n += CountNonPortableCitations(b.Citations)
+	}
+	return n
+}
+
+// CountNonPortableCitations 统计一批引用里带不出本族的条数（用于有损诊断）。
+func CountNonPortableCitations(cs []ir.Citation) int {
+	n := 0
+	for _, c := range cs {
+		if !c.Portable() {
+			n++
+		}
+	}
+	return n
+}
+
+// CitationDropNote 文档类引用丢失注记：非流式扫描、流式编码器与请求侧诊断
+// 共用同一措辞。引用的正文与文档标题属会话内容，不进注记。
+func CitationDropNote(n int) string {
+	return fmt.Sprintf(
+		"dropped %d document citation(s): this protocol identifies an annotation source by URL, and these citations point at a document index with page/block/character offsets instead, so the client cannot see which passage was cited", n)
 }
 
 // ContainerDropNote 容器回显丢失注记：外族无 container 槽位时共用。

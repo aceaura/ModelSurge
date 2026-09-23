@@ -282,6 +282,9 @@ func appendAssistantBlock(req *ir.Request, b ir.Block) {
 	req.Messages = append(req.Messages, ir.Message{Role: ir.RoleAssistant, Content: []ir.Block{b}})
 }
 
+// decodeParts 解析 message content（string 或 []part）为 IR 块。
+// 数组逐元素解析：一次性解 []contentPart 时，任一元素的形状冲突都会让整条
+// content 的 Unmarshal 失败，同消息里用户真正在问的那句话跟着一起蒸发。
 func decodeParts(raw json.RawMessage) []ir.Block {
 	if len(raw) == 0 {
 		return nil
@@ -293,12 +296,16 @@ func decodeParts(raw json.RawMessage) []ir.Block {
 		}
 		return []ir.Block{{Type: ir.BlockText, Text: s}}
 	}
-	var parts []contentPart
-	if err := json.Unmarshal(raw, &parts); err != nil {
+	var raws []json.RawMessage
+	if err := json.Unmarshal(raw, &raws); err != nil {
 		return nil
 	}
-	out := make([]ir.Block, 0, len(parts))
-	for _, p := range parts {
+	out := make([]ir.Block, 0, len(raws))
+	for _, rp := range raws {
+		var p contentPart
+		if err := json.Unmarshal(rp, &p); err != nil {
+			continue // 单个元素形状冲突：只丢它自己，兄弟块照常解出
+		}
 		switch p.Type {
 		case "input_text", "output_text", "text":
 			out = append(out, ir.Block{Type: ir.BlockText, Text: p.Text, Citations: decodeAnnotations(p.Annotations)})
@@ -318,6 +325,15 @@ func decodeParts(raw json.RawMessage) []ir.Block {
 					Data: p.InputAudio.Data, Format: p.InputAudio.Format,
 				}})
 			}
+		case "":
+			// 连 type 都读不出来的元素不是 content part：留着会在出站时变成
+			// {"type":""} 让上游 400（同 anthropic decodeRawBlock 的口径）。
+		default:
+			// 未知 part（input_video、厂商私有的输入形态）原样留成不透明块。
+			// 静默丢掉会让模型以为用户没给这段输入，客户端还拿不到任何注记可循；
+			// 逐字段猜则必丢内容。同族原样带回无损，外族整块跳过并报损耗。
+			out = append(out, ir.Block{Type: ir.BlockOpaque,
+				Opaque: &ir.Opaque{WireType: p.Type, Body: rp, From: Name}})
 		}
 	}
 	return out
@@ -547,6 +563,14 @@ func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 					Annotations: encodeAnnotations(b.Text, b.Citations)})
 			case ir.BlockRefusal:
 				parts = append(parts, contentPart{Type: "refusal", Refusal: b.Text})
+			case ir.BlockOpaque:
+				// 本族客户端发来的未知 part 原样回吐：丢掉就等于把用户这段输入从
+				// 历史里抹掉，模型看不到它，客户端也拿不到任何注记。外族来源的整块
+				// 跳过（损耗由 relay.Diagnose 报出）——逐字写进本族的 part 数组就是
+				// 一个本族上游不认识的 part 型，会被按 part 型校验直接 400。
+				if proto.OpaqueVerbatimFor(b.Opaque, Name) {
+					parts = append(parts, contentPart{Raw: b.Opaque.Body})
+				}
 			case ir.BlockThinking:
 				if b.Thinking == nil {
 					continue
@@ -602,6 +626,11 @@ func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 				}
 			case ir.BlockMedia:
 				parts = append(parts, encodeMediaPart(b.Media))
+			case ir.BlockOpaque:
+				// 处置同助手回合：本族原样回吐，外族整块跳过。
+				if proto.OpaqueVerbatimFor(b.Opaque, Name) {
+					parts = append(parts, contentPart{Raw: b.Opaque.Body})
+				}
 			case ir.BlockToolResult:
 				flush()
 				if b.ToolResult != nil {

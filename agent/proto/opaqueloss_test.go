@@ -28,7 +28,7 @@ const r91Secret = "fetched page body"
 
 func r91Block() ir.Block {
 	return ir.Block{Type: ir.BlockOpaque,
-		Opaque: &ir.Opaque{WireType: r91WireType, Body: []byte(r91Body)}}
+		Opaque: &ir.Opaque{WireType: r91WireType, Body: []byte(r91Body), From: "anthropic"}}
 }
 
 // 入站外族：anthropic 之外的三家客户端协议。

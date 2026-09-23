@@ -247,7 +247,7 @@ func decodeRawBlock(raw json.RawMessage) (ir.Block, bool) {
 			return ir.Block{}, false
 		}
 		return ir.Block{Type: ir.BlockOpaque,
-			Opaque: &ir.Opaque{WireType: wt, Body: raw}}, true
+			Opaque: &ir.Opaque{WireType: wt, Body: raw, From: Name}}, true
 	}
 	if b.Type == "" {
 		return ir.Block{}, false
@@ -290,7 +290,7 @@ func decodeBlock(b block, raw json.RawMessage) ir.Block {
 		// 归不透明块后同族原样带回无损，外族整块丢弃并报损耗，两者都比伪造诚实。
 		if b.Source != nil && b.Source.Type == "content" {
 			out.Type = ir.BlockOpaque
-			out.Opaque = &ir.Opaque{WireType: b.Type, Body: raw}
+			out.Opaque = &ir.Opaque{WireType: b.Type, Body: raw, From: Name}
 			return out
 		}
 		out.Type = ir.BlockMedia
@@ -327,7 +327,7 @@ func decodeBlock(b block, raw json.RawMessage) ir.Block {
 		// 而兄弟 server_tool_use 块还留在原地——发给上游的
 		// tool_use/tool_result 配平当场断裂，下一轮可能被整轮拒掉。
 		out.Type = ir.BlockOpaque
-		out.Opaque = &ir.Opaque{WireType: b.Type, Body: raw}
+		out.Opaque = &ir.Opaque{WireType: b.Type, Body: raw, From: Name}
 	}
 	return out
 }
@@ -462,7 +462,15 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.MaxTokens = defaultMaxTokens
 	}
 	for _, m := range r.Messages {
-		out.Messages = append(out.Messages, message{Role: string(m.Role), Content: marshal(encodeBlocks(m.Content))})
+		blocks := encodeBlocks(m.Content)
+		if len(blocks) == 0 {
+			// 整条消息的块全被编码器丢掉了（唯一的内容是外族来源的不透明块）：
+			// Anthropic 要求 content 非空，空数组直接 400 拒整轮。规整流水线补不上
+			// 这个占位——它跑在编码之前，那会儿这条消息看起来还是有内容的。
+			// 丢了什么由 relay.Diagnose 报出，占位文本本身不假装是用户的内容。
+			blocks = []block{{Type: "text", Text: normalize.Placeholder}}
+		}
+		out.Messages = append(out.Messages, message{Role: string(m.Role), Content: marshal(blocks)})
 	}
 	if len(r.System) > 0 {
 		out.System = marshal(encodeBlocks(r.System))
@@ -567,9 +575,20 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 func encodeBlocks(bs []ir.Block) []block {
 	out := make([]block, 0, len(bs))
 	for _, b := range bs {
+		if !encodableBlock(b) {
+			continue
+		}
 		out = append(out, encodeBlock(b))
 	}
 	return out
+}
+
+// encodableBlock 报告该块能否写进 Anthropic 的线上。唯一被拦下的是外族来源的不
+// 透明块（OpenAI 两系客户端发来的未知 content part）：逐字写回是一个 Anthropic
+// 不认识的块型，上游按块型校验直接 400 拒整轮，那是比丢内容更糟的结果；降级成
+// 文本又是把别家的 part 载荷涂进正文。整块跳过，损耗由 relay.Diagnose 报出。
+func encodableBlock(b ir.Block) bool {
+	return b.Type != ir.BlockOpaque || proto.OpaqueVerbatimFor(b.Opaque, Name)
 }
 
 // encodeMedia 把媒体块写成 document，装不下的大类降级为占位文本。

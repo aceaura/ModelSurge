@@ -142,7 +142,7 @@ func TestRequireToolPairingParallelNoPlaceholder(t *testing.T) {
 			continue
 		}
 		for _, c := range b.ToolResult.Content {
-			if c.Type == ir.BlockText && c.Text == placeholder {
+			if c.Type == ir.BlockText && c.Text == Placeholder {
 				t.Fatal("placeholder inserted for existing parallel result")
 			}
 		}

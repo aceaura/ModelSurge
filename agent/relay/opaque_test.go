@@ -22,7 +22,7 @@ const r91Secret = "fetched page body"
 
 func r91Block() ir.Block {
 	return ir.Block{Type: ir.BlockOpaque,
-		Opaque: &ir.Opaque{WireType: r91WireType, Body: []byte(r91Body)}}
+		Opaque: &ir.Opaque{WireType: r91WireType, Body: []byte(r91Body), From: "anthropic"}}
 }
 
 // agent 侧的外族出站协议。
@@ -180,5 +180,47 @@ func TestStripThinkingKeepsOpaqueBlock(t *testing.T) {
 	// 原响应不得被就地改坏。
 	if len(resp.Content) != 3 {
 		t.Errorf("原响应被就地改坏：块数 = %d", len(resp.Content))
+	}
+}
+
+// R97：不透明块的来源族不再只有 anthropic——OpenAI 两系客户端发来的未知 content
+// part 也归不透明块。于是「anthropic 之外才报损耗」这个旧口径反过来漏报：chat
+// 客户端的未知 part 投给 anthropic 上游时整块被跳过，却一声不吭。
+func TestDiagnoseReportsForeignOpaqueOnAnthropic(t *testing.T) {
+	req := &ir.Request{Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{
+		{Type: ir.BlockText, Text: "watch this"},
+		{Type: ir.BlockOpaque, Opaque: &ir.Opaque{
+			WireType: "video_url", Body: []byte(`{"type":"video_url","video_url":{"url":"https://e.com/v.mp4"}}`),
+			From: "openai-chat"}},
+	}}}}
+	got := strings.Join(Diagnose(req, "anthropic", capsOf(t, "anthropic")), "; ")
+	if !strings.Contains(got, "dropped 1 opaque content block(s)") {
+		t.Errorf("anthropic 上游应报外族不透明块丢失：%q", got)
+	}
+	if strings.Contains(got, "e.com") {
+		t.Errorf("注记抄出块体：%q", got)
+	}
+}
+
+// codex 与 openai-responses 是同一套线格式（codexCodec 内嵌 responses 的 codec）。
+// 按 codec 名逐字比来源族会把这条同形通道误判成跨族，报一次根本没发生的损耗——
+// 客户端会据此以为自己的输入被网关吃掉了。
+func TestDiagnoseCodexChannelAcceptsResponsesOpaque(t *testing.T) {
+	req := &ir.Request{Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{
+		{Type: ir.BlockText, Text: "watch this"},
+		{Type: ir.BlockOpaque, Opaque: &ir.Opaque{
+			WireType: "input_video", Body: []byte(`{"type":"input_video","video_url":"https://e.com/v.mp4"}`),
+			From: "openai-responses"}},
+	}}}}
+	for _, name := range []string{"codex", "openai-responses"} {
+		if notes := Diagnose(req, name, capsOf(t, name)); len(notes) != 0 {
+			t.Errorf("%s 是同形通道，误报跨族损耗：%v", name, notes)
+		}
+	}
+	for _, name := range []string{"anthropic", "openai-chat"} {
+		got := strings.Join(Diagnose(req, name, capsOf(t, name)), "; ")
+		if !strings.Contains(got, "dropped 1 opaque content block(s)") {
+			t.Errorf("%s 应报不透明块丢失：%q", name, got)
+		}
 	}
 }

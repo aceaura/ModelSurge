@@ -12,7 +12,10 @@ import (
 	"github.com/aceaura/ModelSurge/agent/ir"
 )
 
-const placeholder = "(empty)"
+// Placeholder 空内容消息的占位文本。Anthropic 要求每条消息 content 非空，规整
+// 流水线与各 codec 的编码兜底共用同一个字面量：流水线跑在编码之前，看不到编码器
+// 随后整块丢掉的内容（外族来源的不透明块）。
+const Placeholder = "(empty)"
 
 // Options 控制启用哪些规整步骤。零值表示全部启用（最严格）。
 type Options struct {
@@ -237,7 +240,7 @@ func requireToolPairing(req *ir.Request) {
 			if !have[id] {
 				missing = append(missing, ir.Block{Type: ir.BlockToolResult, ToolResult: &ir.ToolResult{
 					ToolUseID: id,
-					Content:   []ir.Block{{Type: ir.BlockText, Text: placeholder}},
+					Content:   []ir.Block{{Type: ir.BlockText, Text: Placeholder}},
 				}})
 			}
 		}
@@ -280,7 +283,7 @@ func ensureAlternating(req *ir.Request) {
 			if m.Role == ir.RoleUser {
 				other = ir.RoleAssistant
 			}
-			out = append(out, ir.Message{Role: other, Content: []ir.Block{{Type: ir.BlockText, Text: placeholder}}})
+			out = append(out, ir.Message{Role: other, Content: []ir.Block{{Type: ir.BlockText, Text: Placeholder}}})
 		}
 		out = append(out, m)
 	}
@@ -294,7 +297,7 @@ func ensureFirstUser(req *ir.Request) {
 	}
 	req.Messages = append([]ir.Message{{
 		Role:    ir.RoleUser,
-		Content: []ir.Block{{Type: ir.BlockText, Text: placeholder}},
+		Content: []ir.Block{{Type: ir.BlockText, Text: Placeholder}},
 	}}, req.Messages...)
 }
 
@@ -310,7 +313,7 @@ func fillEmptyContent(req *ir.Request) {
 			}
 		}
 		if !hasContent {
-			m.Content = append(m.Content, ir.Block{Type: ir.BlockText, Text: placeholder})
+			m.Content = append(m.Content, ir.Block{Type: ir.BlockText, Text: Placeholder})
 		}
 	}
 }

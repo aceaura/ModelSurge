@@ -273,6 +273,8 @@ func decodeMessage(req *ir.Request, m message) {
 }
 
 // contentBlocks 解析 content（string 或 []part）为 IR 块。
+// 数组逐元素解析：一次性解 []part 时，任一元素的形状冲突都会让整条 content 的
+// Unmarshal 失败，同消息里用户真正在问的那句话跟着一起蒸发，调用方只拿到 nil。
 func contentBlocks(raw json.RawMessage) []ir.Block {
 	if len(raw) == 0 {
 		return nil
@@ -284,12 +286,16 @@ func contentBlocks(raw json.RawMessage) []ir.Block {
 		}
 		return []ir.Block{{Type: ir.BlockText, Text: s}}
 	}
-	var parts []part
-	if err := json.Unmarshal(raw, &parts); err != nil {
+	var raws []json.RawMessage
+	if err := json.Unmarshal(raw, &raws); err != nil {
 		return nil
 	}
-	out := make([]ir.Block, 0, len(parts))
-	for _, p := range parts {
+	out := make([]ir.Block, 0, len(raws))
+	for _, rp := range raws {
+		var p part
+		if err := json.Unmarshal(rp, &p); err != nil {
+			continue // 单个元素形状冲突：只丢它自己，兄弟块照常解出
+		}
 		switch p.Type {
 		case "text":
 			out = append(out, ir.Block{Type: ir.BlockText, Text: p.Text})
@@ -309,6 +315,15 @@ func contentBlocks(raw json.RawMessage) []ir.Block {
 			if p.File != nil {
 				out = append(out, ir.Block{Type: ir.BlockMedia, Media: decodeFilePart(p.File)})
 			}
+		case "":
+			// 连 type 都读不出来的元素不是 content part：留着会在出站时变成
+			// {"type":""} 让上游 400（同 anthropic decodeRawBlock 的口径）。
+		default:
+			// 未知 part（video_url、厂商私有的输入形态）原样留成不透明块。
+			// 静默丢掉会让模型以为用户没给这段输入，客户端还拿不到任何注记可循；
+			// 逐字段猜则必丢内容。同族原样带回无损，外族整块跳过并报损耗。
+			out = append(out, ir.Block{Type: ir.BlockOpaque,
+				Opaque: &ir.Opaque{WireType: p.Type, Body: rp, From: Name}})
 		}
 	}
 	return out
@@ -594,6 +609,16 @@ func encodeMessages(m ir.Message) []message {
 				}
 			case ir.BlockMedia:
 				parts = append(parts, encodeMediaPart(b.Media))
+			case ir.BlockOpaque:
+				// 本族客户端发来的未知 part 原样回吐：丢掉就等于把用户这段输入从
+				// 历史里抹掉，模型看不到它，客户端也拿不到任何注记。外族来源的整块
+				// 跳过（损耗由 relay.Diagnose 报出）——逐字写进本族的 part 数组就是
+				// 一个本族上游不认识的 part 型，会被按 part 型校验直接 400。
+				// 助手回合不在此列：本族的 assistant content 出站是纯字符串形态，
+				// 装不下 part 数组。
+				if proto.OpaqueVerbatimFor(b.Opaque, Name) {
+					parts = append(parts, part{Raw: b.Opaque.Body})
+				}
 			case ir.BlockToolResult:
 				flush()
 				if b.ToolResult != nil {

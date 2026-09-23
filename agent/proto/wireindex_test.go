@@ -83,7 +83,7 @@ func TestOutputIndexStaysDenseAcrossMidStreamSkips(t *testing.T) {
 			ContainerUpload: &ir.ContainerUploadRef{FileID: "file_1"}}},
 		{Type: ir.EvBlockStop, Index: 3},
 		{Type: ir.EvBlockStart, Index: 4, Block: &ir.Block{Type: ir.BlockOpaque,
-			Opaque: &ir.Opaque{WireType: "web_fetch_tool_result", Body: json.RawMessage(`{"u":"x"}`)}}},
+			Opaque: &ir.Opaque{WireType: "web_fetch_tool_result", Body: json.RawMessage(`{"u":"x"}`), From: "anthropic"}}},
 		{Type: ir.EvBlockStop, Index: 4},
 		{Type: ir.EvBlockStart, Index: 5, Block: &ir.Block{Type: ir.BlockWebSearchToolResult,
 			WebSearchToolResult: &ir.WebSearchToolResult{ToolUseID: "srvtoolu_1"}}},
@@ -114,7 +114,7 @@ func TestToolCallOutputIndexSurvivesSkips(t *testing.T) {
 	events := []ir.Event{
 		{Type: ir.EvMessageStart, MessageID: "msg", Model: "m"},
 		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockOpaque,
-			Opaque: &ir.Opaque{WireType: "web_fetch_tool_result", Body: json.RawMessage(`{"u":"x"}`)}}},
+			Opaque: &ir.Opaque{WireType: "web_fetch_tool_result", Body: json.RawMessage(`{"u":"x"}`), From: "anthropic"}}},
 		{Type: ir.EvBlockStop, Index: 0},
 		{Type: ir.EvBlockStart, Index: 1, Block: &ir.Block{Type: ir.BlockToolUse,
 			ToolUse: &ir.ToolUse{ID: "t1", Name: "lookup", Kind: ir.ToolFunction}}},

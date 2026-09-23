@@ -130,6 +130,13 @@ type ContainerUploadRef struct {
 type Opaque struct {
 	WireType string
 	Body     json.RawMessage
+	// From 解码出这个块的协议族（wire 形状族，见 proto.WireFamily），语义同
+	// Thinking.SignatureFrom：不透明块的判别值只在它自己的协议里有定义，只有
+	// 那一族能原样接回去。缺了来源标记就没法区分「本族未知块」与「别家未知
+	// 块」，而两者处置相反——前者逐字回吐，后者逐字发出去就是一个目标上游
+	// 不认识的块型/part 型，被按块型校验直接 400 拒整轮。空值表示来源不明，
+	// 按外族处理（宁丢不伪造）。
+	From string
 }
 
 // AudioOutParam Chat 音频输出配置。Format 是 wav/aac/mp3/flac/opus/pcm16；

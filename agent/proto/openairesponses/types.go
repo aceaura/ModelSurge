@@ -127,6 +127,18 @@ type contentPart struct {
 	Refusal string `json:"refusal,omitempty"`
 	// Annotations output_text 部分的来源标注（托管搜索开启时下发）。
 	Annotations []annotation `json:"annotations,omitempty"`
+	// Raw 本族未知 part 的原样线体。标 json:"-" 是为了不参与逐字段序列化：
+	// MarshalJSON 优先整块吐出它（同 anthropic block.OpaqueRaw 的做法），
+	// 逐字段重建会丢掉这个 part 没建模的键。
+	Raw json.RawMessage `json:"-"`
+}
+
+func (p contentPart) MarshalJSON() ([]byte, error) {
+	if len(p.Raw) > 0 {
+		return p.Raw, nil
+	}
+	type plain contentPart
+	return json.Marshal(plain(p))
 }
 
 // annotation output_text.annotations 元素。Responses 的形态是平铺的

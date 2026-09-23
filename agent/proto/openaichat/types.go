@@ -114,6 +114,18 @@ type part struct {
 	ImageURL   *imageURL   `json:"image_url,omitempty"`
 	InputAudio *inputAudio `json:"input_audio,omitempty"`
 	File       *filePart   `json:"file,omitempty"`
+	// Raw 本族未知 part 的原样线体。标 json:"-" 是为了不参与逐字段序列化：
+	// MarshalJSON 优先整块吐出它（同 anthropic block.OpaqueRaw 的做法），
+	// 逐字段重建会丢掉这个 part 没建模的键。
+	Raw json.RawMessage `json:"-"`
+}
+
+func (p part) MarshalJSON() ([]byte, error) {
+	if len(p.Raw) > 0 {
+		return p.Raw, nil
+	}
+	type plain part
+	return json.Marshal(plain(p))
 }
 
 // inputAudio Chat 的音频输入部分。只有 base64 一种形态，MIME 由 format 推出。

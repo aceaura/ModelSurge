@@ -391,7 +391,10 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 		case ir.BlockRedactedThinking:
 			redacted++
 		case ir.BlockOpaque:
-			opaque++
+			// 只有产出它的那一族能原样带回，判定与各 codec 的编码分支同源。
+			if !OpaqueVerbatimFor(b.Opaque, protoName) {
+				opaque++
+			}
 		case ir.BlockServerToolUse:
 			serverCalls++
 		case ir.BlockWebSearchToolResult:
@@ -448,7 +451,7 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	if redacted > 0 && protoName != "anthropic" {
 		notes = append(notes, RedactedThinkingDropNote(redacted))
 	}
-	if opaque > 0 && protoName != "anthropic" {
+	if opaque > 0 {
 		notes = append(notes, OpaqueDropNote(opaque))
 	}
 	if (serverCalls > 0 || serverResults > 0) && protoName != "anthropic" {
@@ -519,12 +522,35 @@ func RedactedThinkingDropNote(n int) string {
 		"dropped %d redacted thinking block(s): this protocol has no opaque-reasoning slot, the client cannot replay the encrypted thinking state, so a follow-up turn sent to an Anthropic upstream may be rejected", n)
 }
 
-// OpaqueDropNote 不透明块丢失注记：块型只在源协议里有定义（Anthropic 的
-// web_fetch / code_execution / tool_search 等服务端工具结果、search_result），
-// 目标协议没有对应槽位，整块不下发。块体属会话内容，不进注记。
+// WireFamily 把 codec 名归一成 wire 形状族。codex 与 openai-responses 是同一套
+// Responses 线格式（codexCodec 直接内嵌 responses 的 codec，只有身份面不同），
+// 按 codec 名逐字比会把这条同形通道误判成跨族，把本来能原样带回的块丢掉。
+func WireFamily(protoName string) string {
+	if protoName == "codex" {
+		return "openai-responses"
+	}
+	return protoName
+}
+
+// OpaqueVerbatimFor 报告不透明块能否在 protoName 的线上原样回吐：只有解码出它的
+// 那一族能。外族逐字发过去就是一个目标上游不认识的块型 / part 型，被按块型校验
+// 直接 400 拒整轮——那是比丢内容更糟的结果。降级成文本同样不行：块体是别家的
+// 载荷，拼进正文会污染回答。所以外族的处置只有「整块跳过 + 报损耗」一种。
+// 请求侧诊断与响应侧扫描共用这一判定，与各 codec 的实编行为同源。
+func OpaqueVerbatimFor(o *ir.Opaque, protoName string) bool {
+	return o != nil && len(o.Body) > 0 && o.From == WireFamily(protoName)
+}
+
+// OpaqueDropNote 不透明块丢失注记：块的判别值只在产出它的那一族里有定义
+// （Anthropic 的 web_fetch / code_execution / tool_search 等服务端工具结果与
+// search_result，OpenAI 两系客户端发来的未知 content part），另一族没有对应槽位，
+// 整块不下发。块体属会话内容，不进注记。
+//
+// 措辞刻意不写「客户端」：这条注记同时用于响应侧（受众是客户端）与请求侧诊断
+// （受众是上游模型），用「接收端」才对两个方向都成立。
 func OpaqueDropNote(n int) string {
 	return fmt.Sprintf(
-		"dropped %d opaque content block(s): this protocol has no slot for the source protocol's server-side tool payload, the client cannot see the fetched page, command output or search result the model produced", n)
+		"dropped %d opaque content block(s): the block type is only defined in the protocol that produced it, this protocol's conversion has no way to carry it, so the receiving side never sees the payload inside", n)
 }
 
 // ServerToolDropNote 服务端托管工具块丢失注记。server_tool_use 与

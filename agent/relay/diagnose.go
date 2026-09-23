@@ -113,7 +113,12 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 			case ir.BlockRedactedThinking:
 				redacted++
 			case ir.BlockOpaque:
-				opaque++
+				// 只有解码出它的那一族能原样带回（判定与 codec 的编码分支同源）。
+				// codex 与 openai-responses 同形，靠 WireFamily 归一，不然这条同形
+				// 通道会被误判成跨族而报一次根本没发生的损耗。
+				if !proto.OpaqueVerbatimFor(b.Opaque, protoName) {
+					opaque++
+				}
 			case ir.BlockServerToolUse:
 				serverCalls++
 			case ir.BlockWebSearchToolResult:
@@ -216,13 +221,15 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		notes = append(notes, fmt.Sprintf(
 			"dropped %d redacted thinking block(s): the target protocol has no opaque-reasoning slot, the encrypted thinking state cannot be replayed", redacted))
 	}
-	if opaque > 0 && protoName != "anthropic" {
-		// 历史里的不透明块（Anthropic 的 web_fetch / code_execution / tool_search
-		// 结果、search_result 等 IR 里没有块型的形态）无处安放：块型只在源协议里
-		// 有定义，目标协议没有承载它载荷的槽位。块体属会话内容，不进注记。
+	if opaque > 0 {
+		// 历史里的不透明块无处安放：块型只在产出它的那一族里有定义（Anthropic 的
+		// web_fetch / code_execution / tool_search 结果、search_result，OpenAI 两系
+		// 客户端发来的未知 content part），目标协议没有承载它载荷的槽位。逐字发过去
+		// 就是一个目标上游不认识的块型，会被按块型校验直接 400 拒整轮，所以只能整块
+		// 跳过。块体属会话内容，不进注记。
 		// 有块型的 server_tool_use / web_search_tool_result 不走这里，见下条。
 		notes = append(notes, fmt.Sprintf(
-			"dropped %d opaque content block(s): the block type only exists in the source protocol, the target has no slot for its server-side tool payload, so the model cannot see the fetched page, command output or search result from earlier turns", opaque))
+			"dropped %d opaque content block(s): the block type is only defined in the protocol that produced it, the target has no slot for its payload, so the model cannot see the content the client put in that block in earlier turns", opaque))
 	}
 	if (serverCalls > 0 || serverResults > 0) && protoName != "anthropic" {
 		// 历史里的托管工具块：两种块型成对出现（调用 + 结果），一起丢反而不会

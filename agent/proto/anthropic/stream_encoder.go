@@ -22,6 +22,10 @@ type streamEncoder struct {
 	text map[int]string
 	// droppedSigs 被门控掉的外族/合成签名数，Notes() 收尾时报出。
 	droppedSigs int
+	// droppedOpaque 被门控掉的外族来源不透明块数。本族块原样随 content_block_start
+	// 全量下发，不计数；外族块整块跳过，跳过就要报——静默丢掉正是这条注记机制
+	// 要消灭的东西。
+	droppedOpaque int
 	// droppedTier 没能下发的档位回显原值：越集、或到得太晚（message_delta
 	// 没有 service_tier 槽位，chat 系上游的晚到回显送不出去）。
 	droppedTier      string
@@ -63,6 +67,13 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			Message: em,
 		}))}, nil
 	case ir.EvBlockStart:
+		if ev.Block != nil && !encodableBlock(*ev.Block) {
+			// 外族来源的不透明块：不开块，只计数。逐字下发就是一个客户端不认识
+			// 的块型，而它没有增量形态，不开块 ⇒ 同下标的 EvBlockStop 找不到已
+			// 打开的块，不会留下一个空壳 content_block。损耗经 Notes() 报出。
+			e.droppedOpaque++
+			return nil, nil
+		}
 		e.open[ev.Index] = blockTypeOf(ev.Block)
 		if e.open[ev.Index] == ir.BlockToolUse {
 			e.toolArgs[ev.Index] = nil
@@ -180,6 +191,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedSigs > 0 {
 		notes = append(notes, proto.SigDropNote(e.droppedSigs, false))
 		e.droppedSigs = 0
+	}
+	if e.droppedOpaque > 0 {
+		notes = append(notes, proto.OpaqueDropNote(e.droppedOpaque))
+		e.droppedOpaque = 0
 	}
 	if e.droppedTier != "" {
 		notes = append(notes, proto.TierEchoDropNote(e.droppedTier))

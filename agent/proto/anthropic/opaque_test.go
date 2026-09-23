@@ -36,7 +36,7 @@ var r91ServerToolResults = []struct{ name, body string }{
 
 func r91Opaque(wireType, body string) ir.Block {
 	return ir.Block{Type: ir.BlockOpaque,
-		Opaque: &ir.Opaque{WireType: wireType, Body: []byte(body)}}
+		Opaque: &ir.Opaque{WireType: wireType, Body: []byte(body), From: Name}}
 }
 
 // ---- 响应侧：未知块原样往返，不降级成空文本 ----

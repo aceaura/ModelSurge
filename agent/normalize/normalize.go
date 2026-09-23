@@ -163,7 +163,13 @@ func renderToolUse(tu *ir.ToolUse) string {
 	if tu == nil {
 		return ""
 	}
-	return fmt.Sprintf("[Tool: %s (%s)]\n%s", tu.Name, tu.ID, string(tu.Input))
+	args := string(tu.Input)
+	if args == "" {
+		// 无参调用的规范形态是 {}（与 ir.ToolUse.ObjectInput 同口径）。留一个
+		// 悬空换行等于把半截结构塞进提示词，模型看到的是「参数被截断了」。
+		args = "{}"
+	}
+	return fmt.Sprintf("[Tool: %s (%s)]\n%s", tu.Name, tu.ID, args)
 }
 
 func renderToolResult(tr *ir.ToolResult) string {

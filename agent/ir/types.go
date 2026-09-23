@@ -129,7 +129,7 @@ type ContainerUploadRef struct {
 // Body 属会话内容，不进日志与诊断注记。
 type Opaque struct {
 	WireType string
-	Body     json.RawMessage
+	Body     json.RawMessage `json:",omitempty"`
 	// From 解码出这个块的协议族（wire 形状族，见 proto.WireFamily），语义同
 	// Thinking.SignatureFrom：不透明块的判别值只在它自己的协议里有定义，只有
 	// 那一族能原样接回去。缺了来源标记就没法区分「本族未知块」与「别家未知
@@ -204,7 +204,7 @@ func (c Citation) Portable() bool { return c.URL != "" }
 type ServerToolUse struct {
 	ID    string
 	Name  string
-	Input json.RawMessage
+	Input json.RawMessage `json:",omitempty"`
 }
 
 // WebSearchToolResult web_search 服务端工具的结果块（Anthropic 形态）。
@@ -310,7 +310,7 @@ type ToolUse struct {
 	ID        string
 	Name      string
 	Kind      ToolKind
-	Input     json.RawMessage
+	Input     json.RawMessage `json:",omitempty"`
 	InputText string
 }
 
@@ -397,12 +397,12 @@ func (m Message) Text() string {
 type Tool struct {
 	Name        string
 	Description string
-	InputSchema json.RawMessage
+	InputSchema json.RawMessage `json:",omitempty"`
 	Hosted      string
 	Kind        ToolKind
 	// Format 是 Responses custom tool 的文本/grammar 格式对象；外族只能降级成
 	// 一个必填 input 字符串参数的 function tool。
-	Format json.RawMessage
+	Format json.RawMessage `json:",omitempty"`
 	// CacheCtl/CacheTTL 工具定义上的缓存断点（Anthropic tools[].cache_control）。
 	// 其余协议的工具定义没有这一维。
 	CacheCtl string
@@ -418,7 +418,7 @@ type Tool struct {
 	// EagerInputStreaming 细粒度流式入参（null=按 beta 头默认，三态指针）。
 	EagerInputStreaming *bool
 	// InputExamples 入参示例（不透明对象数组，原文透传）。
-	InputExamples []json.RawMessage
+	InputExamples []json.RawMessage `json:",omitempty"`
 	// AllowedCallers 允许的程序化调用方（direct / code_execution_*）。
 	AllowedCallers []string
 }
@@ -489,7 +489,7 @@ type ResponseFormat struct {
 	// Name schema 名称（OpenAI json_schema.name），无对应形态的协议会丢掉。
 	Name string
 	// Schema JSON Schema 原文；为空表示只要求「输出合法 JSON」。
-	Schema json.RawMessage
+	Schema json.RawMessage `json:",omitempty"`
 	// Strict OpenAI 的 json_schema.strict：要求严格符合 schema。
 	// 只有 OpenAI 两系有这一维，Gemini 的 responseSchema 恒为严格语义。
 	Strict bool
@@ -646,7 +646,7 @@ type Request struct {
 type PromptRef struct {
 	ID        string
 	Version   string
-	Variables json.RawMessage
+	Variables json.RawMessage `json:",omitempty"`
 }
 
 // SafetySetting 一条内容安全档位（Gemini safetySettings 的等价物）。
@@ -656,6 +656,14 @@ type SafetySetting struct {
 }
 
 // Clone 深拷贝请求，用于重试隔离（参考 new-api 的 DeepCopy 惯例）。
+//
+// 走 JSON 往返有一条硬约束：nil 的 json.RawMessage 会被序列化成字面 null，
+// 解回来是 4 字节的非空 "null"，于是「客户端没发这个字段」在出站被读成
+// 「客户端发了个 null」——每个 EncodeRequest 的第一句都是 Clone，伪造值直接
+// 上 wire（工具参数变 arguments:"null"、工具定义变 input_schema:null 被上游
+// 400 拒整轮）。所以本类型可达图里的每个 json.RawMessage 字段都必须带
+// json:",omitempty"；rawmessage_test.go 用反射把这条钉死，新增字段漏标签会
+// 当场红。
 func (r *Request) Clone() *Request {
 	b, err := json.Marshal(r)
 	if err != nil {

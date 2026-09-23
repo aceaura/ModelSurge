@@ -365,6 +365,7 @@ func TierEchoDropNote(tier string) string {
 func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArgs bool) []string {
 	var sigs, badArgs, customCalls int
 	uploads, redacted, opaque := 0, 0, 0
+	serverCalls, serverResults := 0, 0
 	for _, b := range resp.Content {
 		switch b.Type {
 		case ir.BlockThinking:
@@ -376,6 +377,10 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 			redacted++
 		case ir.BlockOpaque:
 			opaque++
+		case ir.BlockServerToolUse:
+			serverCalls++
+		case ir.BlockWebSearchToolResult:
+			serverResults++
 		case ir.BlockToolUse:
 			if b.ToolUse != nil {
 				if b.ToolUse.Kind == ir.ToolCustom {
@@ -430,6 +435,9 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	}
 	if opaque > 0 && protoName != "anthropic" {
 		notes = append(notes, OpaqueDropNote(opaque))
+	}
+	if (serverCalls > 0 || serverResults > 0) && protoName != "anthropic" {
+		notes = append(notes, ServerToolDropNote(serverCalls, serverResults))
 	}
 	if resp.Audio != nil && protoName != "openai-chat" {
 		notes = append(notes, AudioOutputDropNote())
@@ -495,6 +503,31 @@ func RedactedThinkingDropNote(n int) string {
 func OpaqueDropNote(n int) string {
 	return fmt.Sprintf(
 		"dropped %d opaque content block(s): this protocol has no slot for the source protocol's server-side tool payload, the client cannot see the fetched page, command output or search result the model produced", n)
+}
+
+// ServerToolDropNote 服务端托管工具块丢失注记。server_tool_use 与
+// web_search_tool_result 是**有 IR 块型**的（不同于落进 BlockOpaque 的未知块），
+// 三个外族编码器都没有为它们输出任何对应形态：整块消失且原先不计数，客户端
+// 既看不到网关代执行了哪次托管搜索，也拿不到搜回来的页面。calls / results 分别
+// 是两种块型的条数，只渲染非零的那部分。搜索结果的标题、URL 与摘要属会话内容，
+// 不进注记。
+//
+// 措辞刻意不断言「目标协议没有槽位」：Responses 官方确有 web_search_call 输出项，
+// 只是本仓的转换没有实现映射。说的是转换做了什么，不是协议没有什么。
+// 也刻意不写「客户端」：这条注记同时用于响应侧（受众是客户端）与请求侧诊断
+// （受众是上游模型），用「接收端」才对两个方向都成立。
+func ServerToolDropNote(calls, results int) string {
+	var subject string
+	switch {
+	case calls > 0 && results > 0:
+		subject = fmt.Sprintf("%d server-side tool call(s) and %d web search result block(s)", calls, results)
+	case calls > 0:
+		subject = fmt.Sprintf("%d server-side tool call(s)", calls)
+	default:
+		subject = fmt.Sprintf("%d web search result block(s)", results)
+	}
+	return "dropped " + subject +
+		": this protocol's conversion emits no counterpart for Anthropic's hosted-tool blocks, so the receiving side sees neither which hosted search ran nor which pages it returned, and cannot replay either in a later turn"
 }
 
 // AudioOutputDropNote 模型音频输出丢失注记。完整音频只存在于 Chat 非流式

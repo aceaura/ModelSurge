@@ -88,6 +88,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 
 	sigs, foreign, images, urlImages, errResults, refusals, badArgs := 0, 0, 0, 0, 0, 0, 0
 	uploads, audioRefs, customCalls, customResults, redacted, opaque := 0, 0, 0, 0, 0, 0
+	serverCalls, serverResults := 0, 0
 	media := map[ir.MediaKind]int{}
 	for _, m := range req.Messages {
 		if m.Role == ir.RoleAssistant && m.AudioID != "" {
@@ -112,6 +113,10 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 				redacted++
 			case ir.BlockOpaque:
 				opaque++
+			case ir.BlockServerToolUse:
+				serverCalls++
+			case ir.BlockWebSearchToolResult:
+				serverResults++
 			case ir.BlockThinking:
 				if b.Thinking != nil && b.Thinking.Signature != "" {
 					sigs++
@@ -200,11 +205,19 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 			"dropped %d redacted thinking block(s): the target protocol has no opaque-reasoning slot, the encrypted thinking state cannot be replayed", redacted))
 	}
 	if opaque > 0 && protoName != "anthropic" {
-		// 历史里的不透明块（Anthropic 服务端工具结果、search_result 等）无处
-		// 安放：块型只在源协议里有定义，目标协议没有承载它载荷的槽位。
-		// 块体属会话内容，不进注记。
+		// 历史里的不透明块（Anthropic 的 web_fetch / code_execution / tool_search
+		// 结果、search_result 等 IR 里没有块型的形态）无处安放：块型只在源协议里
+		// 有定义，目标协议没有承载它载荷的槽位。块体属会话内容，不进注记。
+		// 有块型的 server_tool_use / web_search_tool_result 不走这里，见下条。
 		notes = append(notes, fmt.Sprintf(
 			"dropped %d opaque content block(s): the block type only exists in the source protocol, the target has no slot for its server-side tool payload, so the model cannot see the fetched page, command output or search result from earlier turns", opaque))
+	}
+	if (serverCalls > 0 || serverResults > 0) && protoName != "anthropic" {
+		// 历史里的托管工具块：两种块型成对出现（调用 + 结果），一起丢反而不会
+		// 撕毁 tool_use/tool_result 配平，上游不会拒——但模型看不到自己上一轮
+		// 让网关搜了什么、搜回了哪些页面，只能重新搜一遍。搜索结果的标题/URL/
+		// 摘要属会话内容，不进注记。
+		notes = append(notes, proto.ServerToolDropNote(serverCalls, serverResults))
 	}
 	if audioRefs > 0 && protoName != "openai-chat" {
 		// 音频 id 是 Chat 多轮上下文中的服务端引用，外族既没有引用槽位，

@@ -33,8 +33,15 @@ type streamEncoder struct {
 	droppedUploads int
 	// droppedRedacted 被跳过的 redacted_thinking 块数，同上。
 	droppedRedacted int
-	// droppedOpaque 被跳过的不透明块数（源协议专属的服务端工具载荷），同上。
+	// droppedOpaque 被跳过的不透明块数（源协议专属、IR 里没有块型的未知载荷，
+	// 如 web_fetch / code_execution 结果），同上。注意 server_tool_use 与
+	// web_search_tool_result 是**有块型**的，不走这里，单独计数。
 	droppedOpaque int
+	// droppedServerCalls / droppedServerResults 被跳过的托管工具块数：本族
+	// 编码器没有为 Anthropic 的 server_tool_use / web_search_tool_result 输出
+	// 任何 part 形态，同上。
+	droppedServerCalls   int
+	droppedServerResults int
 	// droppedCites 带不出本族的引用条数（Anthropic 的文档类引用没有 URL，
 	// 而本族的标注槽位以 URL 为来源身份），同上。
 	droppedCites int
@@ -149,6 +156,18 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Block != nil && ev.Block.Type == ir.BlockOpaque {
 			// 源协议专属的服务端工具载荷无 Gemini part 形态：跳过但计数。
 			e.droppedOpaque++
+		}
+		if ev.Block != nil {
+			switch ev.Block.Type {
+			case ir.BlockServerToolUse:
+				// 托管工具调用无 Gemini part 形态：groundingMetadata 承载的是本族
+				// 检索的来源，塞 Anthropic 的托管搜索记录等于伪造本族凭据。
+				// 跳过但计数，Notes() 报出。
+				e.droppedServerCalls++
+			case ir.BlockWebSearchToolResult:
+				// 搜回来的页面同理：跳过但计数。
+				e.droppedServerResults++
+			}
 		}
 		return nil, nil
 	case ir.EvToolInput:
@@ -280,6 +299,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedOpaque > 0 {
 		notes = append(notes, proto.OpaqueDropNote(e.droppedOpaque))
 		e.droppedOpaque = 0
+	}
+	if e.droppedServerCalls > 0 || e.droppedServerResults > 0 {
+		notes = append(notes, proto.ServerToolDropNote(e.droppedServerCalls, e.droppedServerResults))
+		e.droppedServerCalls, e.droppedServerResults = 0, 0
 	}
 	if e.droppedCites > 0 {
 		notes = append(notes, proto.CitationDropNote(e.droppedCites))

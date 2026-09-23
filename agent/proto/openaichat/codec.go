@@ -26,6 +26,8 @@ func (codec) Caps() proto.Capabilities {
 		ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
 		// TopK 留假：Chat 协议原生没有这一维，不是能力缺失而是字段不存在。
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
+		// image_url.detail 是本协议原生的一维。
+		ImageDetail: true,
 		// 调参维度最全的一家：penalties / seed / n / logprobs / logit_bias 全有。
 		Penalties: true, Seed: true, Candidates: true, LogProbs: true, LogitBias: true,
 		// file 是不透明容器（文档与其他都能塞），input_audio 是音频专属槽位；
@@ -301,7 +303,9 @@ func contentBlocks(raw json.RawMessage) []ir.Block {
 			out = append(out, ir.Block{Type: ir.BlockText, Text: p.Text})
 		case "image_url":
 			if p.ImageURL != nil {
-				out = append(out, ir.Block{Type: ir.BlockImage, Image: parseImageURL(p.ImageURL.URL)})
+				img := parseImageURL(p.ImageURL.URL)
+				img.Detail = p.ImageURL.Detail
+				out = append(out, ir.Block{Type: ir.BlockImage, Image: img})
 			}
 		case "input_audio":
 			if p.InputAudio != nil {
@@ -383,6 +387,22 @@ func parseImageURL(u string) *ir.Image {
 		}
 	}
 	return img
+}
+
+// encodeImagePart 图片块 -> image_url 部分。ok 为假表示这张图没有可投递的
+// 载荷（base64 / URL / file_id 三者全空），调用方必须整个部件跳过：照编会
+// 写出 {"url":""}，上游按 URL 形态校验直接 400，而报错只指向「图片无效」，
+// 读者看不出是哪一段输入害的。Chat 的图片槽位也不认 file_id，所以只带
+// file_id 的 Responses 图片投到这里同样落在这一支，损耗由 relay.Diagnose 报出。
+func encodeImagePart(img *ir.Image) (part, bool) {
+	if !img.HasPayload() {
+		return part{}, false
+	}
+	url := img.URL
+	if url == "" {
+		url = "data:" + img.MediaType + ";base64," + img.Data
+	}
+	return part{Type: "image_url", ImageURL: &imageURL{URL: url, Detail: img.Detail}}, true
 }
 
 func decodeToolChoice(v any) *ir.ToolChoice {
@@ -600,12 +620,8 @@ func encodeMessages(m ir.Message) []message {
 			case ir.BlockText:
 				parts = append(parts, part{Type: "text", Text: b.Text})
 			case ir.BlockImage:
-				if b.Image != nil {
-					url := b.Image.URL
-					if url == "" && b.Image.Data != "" {
-						url = "data:" + b.Image.MediaType + ";base64," + b.Image.Data
-					}
-					parts = append(parts, part{Type: "image_url", ImageURL: &imageURL{URL: url}})
+				if p, ok := encodeImagePart(b.Image); ok {
+					parts = append(parts, p)
 				}
 			case ir.BlockMedia:
 				parts = append(parts, encodeMediaPart(b.Media))
@@ -632,12 +648,10 @@ func encodeMessages(m ir.Message) []message {
 					var imgParts []part
 					for _, c := range b.ToolResult.Content {
 						switch {
-						case c.Type == ir.BlockImage && c.Image != nil:
-							url := c.Image.URL
-							if url == "" && c.Image.Data != "" {
-								url = "data:" + c.Image.MediaType + ";base64," + c.Image.Data
+						case c.Type == ir.BlockImage:
+							if p, ok := encodeImagePart(c.Image); ok {
+								imgParts = append(imgParts, p)
 							}
-							imgParts = append(imgParts, part{Type: "image_url", ImageURL: &imageURL{URL: url}})
 						case c.Type == ir.BlockMedia:
 							imgParts = append(imgParts, encodeMediaPart(c.Media))
 						}
@@ -650,7 +664,13 @@ func encodeMessages(m ir.Message) []message {
 		}
 		flush()
 		if len(out) == 0 {
-			out = append(out, message{Role: "user", Content: json.RawMessage(`""`)})
+			// 这条消息的部件被编码器全丢了（外族来源的不透明块，或一张没有可投递
+			// 载荷的图片）。此前落的是空字符串 content：上游看来等于「用户什么都
+			// 没说」，客户端也无从分辨这是占位还是正文，与 anthropic 侧的约定占位
+			// 不同口径。规整流水线补不上——它跑在编码之前，那会儿这条消息看起来
+			// 还是有内容的。丢了什么由 relay.Diagnose 报出。
+			out = append(out, message{Role: "user",
+				Content: json.RawMessage(marshalString(normalize.Placeholder))})
 		}
 		return out
 	}

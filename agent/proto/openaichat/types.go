@@ -154,6 +154,28 @@ type filePart struct {
 
 type imageURL struct {
 	URL string `json:"url"`
+	// Detail low / high / auto。缺省不写键：那是「客户端没指定」，与显式
+	// 发 "auto" 不是一回事，替它补一个值等于改写请求。
+	Detail string `json:"detail,omitempty"`
+}
+
+// UnmarshalJSON 同时接受对象形态 {"url":…,"detail":…} 与裸字符串形态
+// "https://…"。
+//
+// 字符串形态不是臆造的兼容分支：new-api 把 image_url 声明成 any 再按
+// string / map 两路取值，sub2api 的 responses 桥同样 switch 两种类型——
+// 历史客户端与部分厂商桥接确实这么发。此前这里只认对象，遇到字符串会让
+// 整个 part 的 json.Unmarshal 失败被 continue 丢掉；若它是消息里唯一的
+// 部件，normalize 随后把整条消息改写成 "(empty)"：用户的图片连同所在消息
+// 一起消失，上游只看到一句占位文本，客户端还拿不到任何注记可循。
+func (u *imageURL) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		u.URL = s
+		return nil
+	}
+	type plain imageURL
+	return json.Unmarshal(b, (*plain)(u))
 }
 
 // annotation message.annotations 元素。官方把细节包在同名子对象里，

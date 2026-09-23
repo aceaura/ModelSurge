@@ -226,6 +226,28 @@ type Image struct {
 	MediaType string // 如 "image/png"
 	Data      string // base64
 	URL       string
+	// Detail 分辨率档位（OpenAI 两系的 low / high / auto）。空表示客户端没发，
+	// 出站必须保持缺省让上游套自己的默认值：填 "auto" 是把「未指定」改写成
+	// 「明确要求 auto」，new-api 那种默认成 "high" 的做法更糟——凭空按全分辨率
+	// 切图，输入 token 消耗直接抬上去。Anthropic 没有对应槽位，投过去会丢，
+	// 由 relay.Diagnose 报告。
+	Detail string
+	// FileID 上游文件服务里的图片标识（Responses 的 input_image 除 image_url
+	// 外还收这一种载体）。本层不代取文件内容，只在同族往返时原样带回；投给
+	// 不认它的目标协议时会丢，由 relay.Diagnose 报告。
+	FileID string
+}
+
+// HasPayload 是否有可投递的图片载荷。
+//
+// 三个载体全空的 Image 编不成任何协议的合法图片部件：anthropic 会写出一个
+// 缺 media_type 与 data 的 base64 source（官方 Base64ImageSourceParam 两者
+// 都是 Required），OpenAI 两系写出 url:"" 或干脆没有 image_url 键。照编上去
+// 是上游必 400 的形状，而且报错点在图片上、读者看不出是哪一段输入害的。
+// 常见来源是 Responses 的 input_image 只给了 file_id，或客户端用了本层没建模
+// 的键名。
+func (i *Image) HasPayload() bool {
+	return i != nil && (i.Data != "" || i.URL != "")
 }
 
 // MediaKind 非图片附件的大类。按大类而非按 MIME 全串分流，是因为目标协议的

@@ -90,7 +90,43 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	uploads, audioRefs, customCalls, customResults, redacted, opaque := 0, 0, 0, 0, 0, 0
 	serverCalls, serverResults := 0, 0
 	docCtx, docCites := 0, 0
+	noPayload, details, fileRefs := 0, 0, 0
 	media := map[ir.MediaKind]int{}
+	// countImage 归类一张图片。顶层与工具结果内嵌的都走这里：两侧编码器同样会
+	// 跳过无载荷的图片、同样会在目标没有档位槽位时丢掉 detail，漏掉内嵌那层会让
+	// 「工具返回了一张图」这类丢失完全不可见。
+	countImage := func(img *ir.Image) {
+		images++
+		if img == nil {
+			noPayload++
+			return
+		}
+		// 能力判定只在这一处发生：每个计数器都是「相对目标协议确实丢了」的口径，
+		// 出注记时只看计数、不再问一次能力位。两处都问会让其中一处变成死代码——
+		// 任一侧被改坏行为都不变，损耗也就无从见证。
+		if img.Detail != "" && !caps.ImageDetail {
+			details++
+		}
+		// 「没有载荷」同样是相对目标协议而言的：只给 file_id 的图片在 Responses
+		// 一族是完整可投递的，投给其余三家才无从表达。四个分支互斥——同一张图报
+		// 两次会让读者以为是两张。
+		switch {
+		case img.HasPayload():
+			// 图片本体送达；顺带带了个目标不认的 file_id 不值得单报，本体已经在
+			// 了，那个引用只是冗余载体。只有形态装不下（上游收 base64 不收远程
+			// URL）才计数——与整协议无图片能力分开报，是因为读者的下一步动作
+			// 不同：这里换成 base64 内联即可。
+			if img.Data == "" && !caps.ImageURLs {
+				urlImages++
+			}
+		case img.FileID != "" && caps.ImageFileRef:
+			// 只凭文件引用即可投递，本目标装得下。
+		case img.FileID != "":
+			fileRefs++
+		default:
+			noPayload++
+		}
+	}
 	for _, m := range req.Messages {
 		if m.Role == ir.RoleAssistant && m.AudioID != "" {
 			audioRefs++
@@ -133,10 +169,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 					}
 				}
 			case ir.BlockImage:
-				images++
-				if b.Image != nil && b.Image.Data == "" && b.Image.URL != "" {
-					urlImages++
-				}
+				countImage(b.Image)
 			case ir.BlockMedia:
 				countMedia(b.Media, media)
 				c, s := proto.DocConfigOf(b.Media)
@@ -163,6 +196,9 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 						docCtx += dc
 						docCites += ds
 					}
+					if c.Type == ir.BlockImage {
+						countImage(c.Image)
+					}
 				}
 			}
 		}
@@ -174,10 +210,31 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	}
 	if images > 0 && !caps.Images {
 		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream protocol has no image input", images))
-	} else if urlImages > 0 && !caps.ImageURLs {
-		// 只有形态装不下：上游收 base64 不收远程 URL。与整协议无图片能力
-		// 分开报，是因为读者的下一步动作不同——这里换成 base64 内联即可。
-		notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream accepts inline base64 only, not remote URLs", urlImages))
+	} else {
+		if urlImages > 0 {
+			notes = append(notes, fmt.Sprintf("dropped %d image(s): upstream accepts inline base64 only, not remote URLs", urlImages))
+		}
+		if noPayload > 0 {
+			// 与能力位无关：图片部件没有任何可投递的载荷，照编上去是一个缺必填键
+			// 的形状（Anthropic 的 base64 source 缺 media_type/data，OpenAI 两系
+			// 写出 url:"" 或整个 image_url 键都没有），三个出站族的上游都会 400
+			// 拒整轮。整块跳过后至少报错点落在诊断里而不是上游的拒信上。
+			notes = append(notes, fmt.Sprintf(
+				"dropped %d image(s): the part carries no payload the target protocol can express (no base64, no URL, no usable file reference); an empty image part would be rejected upstream", noPayload))
+		}
+		if details > 0 {
+			// 档位决定上游怎么切图、进而决定输入 token 计费（low 固定 85 token，
+			// high 按原图分块）。丢掉之后上游一律按自己的默认档处理，客户端指定的
+			// 成本控制静默失效，账单上看得出、请求里看不出。
+			notes = append(notes, fmt.Sprintf(
+				"dropped the resolution tier on %d image(s): the target protocol has no detail slot, the upstream will tile them at its own default level instead", details))
+		}
+		if fileRefs > 0 {
+			// 图片字节从未内联进请求体，本层也不代取上游文件服务，所以这一维装不下
+			// 就是彻底没了——与 URL 那条「换成 base64 即可」不同，读者无从补救。
+			notes = append(notes, fmt.Sprintf(
+				"dropped the file reference on %d image(s): the target protocol's image slot cannot point at a file-service id, and the image bytes were never inlined in the request, so they cannot be recovered here", fileRefs))
+		}
 	}
 	notes = append(notes, mediaNotes(media, caps)...)
 	if (docCtx > 0 || docCites > 0) && protoName != "anthropic" {

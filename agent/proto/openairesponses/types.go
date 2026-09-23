@@ -113,10 +113,14 @@ type inputItem struct {
 }
 
 type contentPart struct {
-	Type     string `json:"type"` // input_text / input_image / input_file / input_audio / output_text
-	Text     string `json:"text,omitempty"`
-	ImageURL string `json:"image_url,omitempty"`
+	Type     string    `json:"type"` // input_text / input_image / input_file / input_audio / output_text
+	Text     string    `json:"text,omitempty"`
+	ImageURL *imageRef `json:"image_url,omitempty"`
+	// Detail input_image 的分辨率档位（low / high / auto）。官方把它放在 part
+	// 顶层、与 image_url 平级，不是嵌在 image_url 里——Chat 形态才嵌。
+	Detail string `json:"detail,omitempty"`
 	// input_file：三者取一。file_data 是 data URI，file_url 是远程地址。
+	// file_id 同时是 input_image 的第二种载体。
 	FileData string `json:"file_data,omitempty"`
 	FileURL  string `json:"file_url,omitempty"`
 	FileID   string `json:"file_id,omitempty"`
@@ -140,6 +144,38 @@ func (p contentPart) MarshalJSON() ([]byte, error) {
 	type plain contentPart
 	return json.Marshal(plain(p))
 }
+
+// imageRef input_image 的图片载荷。
+//
+// 本族的规范形状是裸字符串（data URI 或远程 URL），但 Chat 形态的对象
+// {"url":…,"detail":…} 也会到这里来：sub2api 的 responses 桥对这两路都做了
+// 分支，实测客户端确实混发。此前这里声明成 string，遇到对象整个 part 的
+// json.Unmarshal 失败被丢掉；若它是消息里唯一的部件，normalize 随后把整条
+// 消息改写成 "(empty)"——图片连同所在消息一起消失，客户端拿不到任何注记。
+// 出站一律写回裸字符串：本族上游只认这一种。
+type imageRef struct {
+	URL    string
+	Detail string
+}
+
+func (r *imageRef) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		r.URL = s
+		return nil
+	}
+	var o struct {
+		URL    string `json:"url"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(b, &o); err != nil {
+		return err
+	}
+	r.URL, r.Detail = o.URL, o.Detail
+	return nil
+}
+
+func (r imageRef) MarshalJSON() ([]byte, error) { return json.Marshal(r.URL) }
 
 // annotation output_text.annotations 元素。Responses 的形态是平铺的
 // （不像 Chat 包在 url_citation 子对象里），索引口径同为字符下标。

@@ -252,6 +252,10 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 	want := map[string]proto.Capabilities{
 		// 媒体三位刻意不一致：anthropic 有 document 但没有音频入口，OpenAI 两系
 		// 音频文档都有。三者全真或全假都是漏洞。
+		// 图片的档位与文件引用两位同样刻意不一致：detail 是 OpenAI 两系原生的一维
+		// （Anthropic 的 image source 只有 base64 / url / text），file_id 只有
+		// Responses 一族有。两位全真会让「客户端指定的分辨率档位被丢掉」这类损耗
+		// 完全不可见。
 		"anthropic": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 			ImageURLs: true, Sampling: true, TopK: true, ParallelToolCalls: true, ToolResultError: true,
 			// output_config.format 只有 json_schema 形态：结构化输出有槽位但纯 JSON 模式没有
@@ -261,14 +265,15 @@ func TestOutboundCapabilityMatrix(t *testing.T) {
 		// 调参五位刻意不一致：Chat 全有，Responses 只有对数概率且没有独立开关
 		// （LogProbsViaTopN），anthropic 一个都没有。全真或全假都是漏洞。
 		"openai-chat": {ThinkingSignature: false, Images: true, HostedTools: false, ThinkingForcedToolChoice: false,
-			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
+			ImageURLs: true, ImageDetail: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
 			StructuredOutput: true,
 			Documents:        true, Audio: true, Video: false, Refusal: true, Citations: true,
 			Penalties: true, Seed: true, Candidates: true, LogProbs: true, LogitBias: true, UserID: true,
 			ServiceTier: true, PromptCacheKey: true, OpenAIExtras: true, ToolStrict: true},
 		// 参数槽位刻意不一致：anthropic 是 JSON 对象槽，OpenAI 两系是字符串槽。
 		"openai-responses": {ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
-			ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
+			ImageURLs: true, ImageDetail: true, ImageFileRef: true,
+			Sampling: true, TopK: false, ParallelToolCalls: true, ToolResultError: false,
 			StructuredOutput: true,
 			Documents:        true, Audio: true, Video: false, Refusal: true, Citations: true,
 			LogProbs: true, LogProbsViaTopN: true, UserID: true, ResponseChain: true, ResponsesExtras: true,

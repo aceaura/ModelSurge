@@ -25,6 +25,20 @@ type Capabilities struct {
 	// 两位恒真，那条 URL 分支与 Images 分支一样是留给未来出站 codec 的缝。
 	ImageURLs bool
 
+	// ImageDetail 图片分辨率档位（OpenAI 两系的 detail: low / high / auto）。
+	// 这一维直接决定上游怎么切图、进而决定输入 token 计费：low 固定 85 token，
+	// high 按原图分块，量级差一个数量级。Anthropic 的图片 source 只有
+	// base64 / url / text 三种，没有档位概念——投过去只能丢，客户端指定的
+	// 成本控制随之失效且无从察觉，故单独立一位报损耗。
+	ImageDetail bool
+
+	// ImageFileRef 图片槽位可只凭上游文件服务的 id 投递（Responses 的
+	// input_image.file_id）。图片字节从未内联进请求体，本层也不代取，所以这
+	// 一维装不下就等于这张图彻底没了——与 ImageURLs 那种「换成 base64 即可」
+	// 不同，读者无从补救，故单独立一位。当前只有 Responses 一族（含同形的
+	// codex）有这一维。
+	ImageFileRef bool
+
 	// Sampling 采样参数（temperature / top_p / stop_sequences / max_tokens）
 	// 能随请求送达上游。为假时客户端调的参数全部无效。
 	Sampling bool

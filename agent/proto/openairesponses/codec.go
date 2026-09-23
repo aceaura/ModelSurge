@@ -27,6 +27,8 @@ func (codec) Caps() proto.Capabilities {
 		ThinkingSignature: true, Images: true, HostedTools: true, ThinkingForcedToolChoice: true,
 		// TopK 留假：Responses 协议原生没有这一维。
 		ImageURLs: true, Sampling: true, TopK: false, ParallelToolCalls: true,
+		// input_image 的 detail 与 file_id 都是本协议原生的一维（codex 同形共用）。
+		ImageDetail: true, ImageFileRef: true,
 		// 调参维度只有对数概率一项，且没有独立开关：top_logprobs 兼任。
 		// penalties / seed / n / logit_bias 在这一族的请求体里不存在。
 		LogProbs: true, LogProbsViaTopN: true,
@@ -315,7 +317,19 @@ func decodeParts(raw json.RawMessage) []ir.Block {
 			// 同款结论）。
 			out = append(out, ir.Block{Type: ir.BlockRefusal, Text: p.Refusal})
 		case "input_image":
-			out = append(out, ir.Block{Type: ir.BlockImage, Image: parseImageURL(p.ImageURL)})
+			var url, nested string
+			if p.ImageURL != nil {
+				url, nested = p.ImageURL.URL, p.ImageURL.Detail
+			}
+			img := parseImageURL(url)
+			img.FileID = p.FileID
+			// detail 的规范位置是 part 顶层；Chat 形态把它嵌在 image_url 对象里。
+			// 两处都给了以顶层为准——那是本族自己的键位。
+			img.Detail = p.Detail
+			if img.Detail == "" {
+				img.Detail = nested
+			}
+			out = append(out, ir.Block{Type: ir.BlockImage, Image: img})
 		case "input_file":
 			out = append(out, ir.Block{Type: ir.BlockMedia, Media: decodeInputFile(p)})
 		case "input_audio":
@@ -365,6 +379,31 @@ func parseImageURL(u string) *ir.Image {
 		}
 	}
 	return img
+}
+
+// encodeImagePart 图片块 -> input_image 部分。
+//
+// ok 为假表示三种载体（base64 / URL / file_id）一个都没有，本族的图片槽位
+// 无从表达：照编会写出一个连 image_url 键都没有的 {"type":"input_image"}，
+// 上游按必填字段校验直接 400，而报错只说图片无效，读者看不出是哪一段输入。
+// 常见来源是客户端用了本层没建模的键名。损耗由 relay.Diagnose 报告。
+func encodeImagePart(img *ir.Image) (contentPart, bool) {
+	if img == nil {
+		return contentPart{}, false
+	}
+	switch {
+	case img.URL != "":
+		return contentPart{Type: "input_image", ImageURL: &imageRef{URL: img.URL},
+			Detail: img.Detail, FileID: img.FileID}, true
+	case img.Data != "":
+		return contentPart{Type: "input_image",
+			ImageURL: &imageRef{URL: "data:" + img.MediaType + ";base64," + img.Data},
+			Detail:   img.Detail, FileID: img.FileID}, true
+	case img.FileID != "":
+		// file_id 是本族图片槽位的第二种合法载体，同族往返原样带回。
+		return contentPart{Type: "input_image", Detail: img.Detail, FileID: img.FileID}, true
+	}
+	return contentPart{}, false
 }
 
 func decodeSummary(raw json.RawMessage) string {
@@ -605,6 +644,7 @@ func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 		}
 		flush()
 	case ir.RoleUser:
+		start := len(out)
 		var parts []contentPart
 		flush := func() {
 			if len(parts) > 0 {
@@ -617,12 +657,8 @@ func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 			case ir.BlockText:
 				parts = append(parts, contentPart{Type: "input_text", Text: b.Text})
 			case ir.BlockImage:
-				if b.Image != nil {
-					url := b.Image.URL
-					if url == "" && b.Image.Data != "" {
-						url = "data:" + b.Image.MediaType + ";base64," + b.Image.Data
-					}
-					parts = append(parts, contentPart{Type: "input_image", ImageURL: url})
+				if p, ok := encodeImagePart(b.Image); ok {
+					parts = append(parts, p)
 				}
 			case ir.BlockMedia:
 				parts = append(parts, encodeMediaPart(b.Media))
@@ -647,6 +683,17 @@ func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 			}
 		}
 		flush()
+		if len(out) == start {
+			// 这条消息的部件被编码器全丢了（外族来源的不透明块，或一张没有可投递
+			// 载荷的图片），于是整条从 input 里消失。这比留一个空 content 更糟：
+			// 若它是唯一的一条，input 会连键都没有，而上游把 input 当必填字段，
+			// 400 拒整轮；即便还有别的消息，轮次结构也被悄悄改写（客户端发了 N 条，
+			// 上游只收到 N-1 条），后续 tool_call 的配对随之错位。与 anthropic 侧
+			// 同口径落约定占位——规整流水线补不上，它跑在编码之前，那会儿这条消息
+			// 看起来还是有内容的。丢了什么由 relay.Diagnose 报出。
+			out = append(out, inputItem{Type: "message", Role: "user",
+				Content: marshal([]contentPart{{Type: "input_text", Text: normalize.Placeholder}})})
+		}
 	}
 	return out
 }
@@ -662,12 +709,8 @@ func splitToolResultContent(blocks []ir.Block) (string, []contentPart) {
 		case ir.BlockText:
 			sb.WriteString(b.Text)
 		case ir.BlockImage:
-			if b.Image != nil {
-				url := b.Image.URL
-				if url == "" && b.Image.Data != "" {
-					url = "data:" + b.Image.MediaType + ";base64," + b.Image.Data
-				}
-				media = append(media, contentPart{Type: "input_image", ImageURL: url})
+			if p, ok := encodeImagePart(b.Image); ok {
+				media = append(media, p)
 			}
 		case ir.BlockMedia:
 			media = append(media, encodeMediaPart(b.Media))

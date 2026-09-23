@@ -583,11 +583,23 @@ func encodeBlocks(bs []ir.Block) []block {
 	return out
 }
 
-// encodableBlock 报告该块能否写进 Anthropic 的线上。唯一被拦下的是外族来源的不
-// 透明块（OpenAI 两系客户端发来的未知 content part）：逐字写回是一个 Anthropic
-// 不认识的块型，上游按块型校验直接 400 拒整轮，那是比丢内容更糟的结果；降级成
-// 文本又是把别家的 part 载荷涂进正文。整块跳过，损耗由 relay.Diagnose 报出。
+// encodableBlock 报告该块能否写进 Anthropic 的线上。两类被拦下。
+//
+// 一是外族来源的不透明块（OpenAI 两系客户端发来的未知 content part）：逐字写回是
+// 一个 Anthropic 不认识的块型，上游按块型校验直接 400 拒整轮，那是比丢内容更糟的
+// 结果；降级成文本又是把别家的 part 载荷涂进正文。
+//
+// 二是没有载荷的图片块：官方 image source 只有 base64（media_type 与 data 都是
+// Required）与 url 两种，两者皆空时编出来是
+// {"type":"image","source":{"type":"base64"}}——一个连必填键都没有的形状，同样
+// 400 拒整轮。常见来源是 Responses 客户端只给了 file_id，而 Anthropic 没有
+// 「引用上游文件服务里的图片」这一维。
+//
+// 整块跳过，损耗由 relay.Diagnose 报出。
 func encodableBlock(b ir.Block) bool {
+	if b.Type == ir.BlockImage {
+		return b.Image.HasPayload()
+	}
 	return b.Type != ir.BlockOpaque || proto.OpaqueVerbatimFor(b.Opaque, Name)
 }
 

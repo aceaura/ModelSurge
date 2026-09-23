@@ -22,6 +22,9 @@ type streamEncoder struct {
 	// wire IR 块序号 -> wire output_index。IR 序号是解码器的内部编号，可能稀疏
 	// 也可能沿用别族的编号习惯；直接写进 output_index 会让客户端按它索引
 	// response.output[] 时越界。这里按开块顺序重新稠密编号。
+	// 只有真正 register 进 blocks/order 的块才占序号：被 skip 的块（服务端工具、
+	// container_upload、涂抹思考、不透明块）不占，否则它们烧掉的序号会让后续块
+	// 的 output_index 越过 response.completed 全量 output 的末尾。
 	wire    map[int]int
 	nextOut int
 	// skip 服务端工具块（server_tool_use / web_search_tool_result）的 index。
@@ -210,11 +213,14 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 
 func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 	b := &encBlock{typ: blockTypeOf(ev.Block)}
-	oi := idx(e.wireOf(ev.Index))
+	// oi 一律在 register 之后才取：wireOf 是首次见到即分配，先分配再决定跳过
+	// 会烧掉一个 output_index，而 response.completed 的全量 output 里并没有
+	// 对应条目——客户端拿 output_index 去索引那个数组必然越界。
 	switch b.typ {
 	case ir.BlockThinking:
 		b.itemID = e.nextID("rs")
 		e.register(ev.Index, b)
+		oi := idx(e.wireOf(ev.Index))
 		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
 			Type: "reasoning", ID: b.itemID, Summary: json.RawMessage(`[]`),
 		}})}, nil
@@ -232,6 +238,7 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		}
 		b.itemID = e.nextID(prefix)
 		e.register(ev.Index, b)
+		oi := idx(e.wireOf(ev.Index))
 		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
 			Type: typ, ID: b.itemID, CallID: b.toolID, Name: b.toolName,
 		}})}, nil
@@ -240,6 +247,7 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		// 会让客户端把拒绝当普通回答渲染。
 		b.itemID = e.nextID("msg")
 		e.register(ev.Index, b)
+		oi := idx(e.wireOf(ev.Index))
 		added := e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
 			Type: "message", ID: b.itemID, Role: "assistant", Content: json.RawMessage(`[]`),
 		}})
@@ -281,6 +289,7 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		b.typ = ir.BlockText
 		b.itemID = e.nextID("msg")
 		e.register(ev.Index, b)
+		oi := idx(e.wireOf(ev.Index))
 		added := e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
 			Type: "message", ID: b.itemID, Role: "assistant", Content: json.RawMessage(`[]`),
 		}})

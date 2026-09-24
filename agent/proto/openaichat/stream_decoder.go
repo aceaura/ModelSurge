@@ -48,6 +48,9 @@ type streamDecoder struct {
 	// droppedModeration 携带审核结果的 chunk 数：审核结论没有 IR 槽位，
 	// 计数经 Notes() 报出。
 	droppedModeration int
+	// droppedObfuscation 携带混淆填充的 chunk 数：上游默认开启的侧信道
+	// 防护随机串，转发即剥掉，计数经 Notes() 报出。
+	droppedObfuscation int
 	// sawError 已下发过 EvError。错误帧是终止帧，Finish() 不得再补
 	// message_delta+message_stop，否则客户端在错误之后又看到一个正常收尾。
 	sawError       bool
@@ -127,6 +130,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	}
 	if len(chunk.Moderation) > 0 && string(chunk.Moderation) != "null" {
 		d.droppedModeration++
+	}
+	if chunk.Obfuscation != "" {
+		d.droppedObfuscation++
 	}
 	if !d.choiceSelected && len(chunk.Choices) > 0 {
 		d.primaryChoice = chunk.Choices[0].Index
@@ -375,6 +381,11 @@ func (d *streamDecoder) Notes() []string {
 		notes = append(notes, fmt.Sprintf(
 			"dropped moderation results on %d chunk(s): the relay has no slot for input/output safety verdicts, moderated-completion clients will not see them", d.droppedModeration))
 		d.droppedModeration = 0
+	}
+	if d.droppedObfuscation > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"stripped obfuscation padding from %d chunk(s): the upstream's side-channel protection random strings do not survive relaying, the client sees an unpadded stream", d.droppedObfuscation))
+		d.droppedObfuscation = 0
 	}
 	return notes
 }

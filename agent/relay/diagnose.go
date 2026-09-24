@@ -341,6 +341,12 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		if n := ir.CountNonPortableCitations(req); n > 0 {
 			notes = append(notes, proto.CitationDropNote(n))
 		}
+	} else if n := ir.CountAnthropicUnreplayable(req); n > 0 {
+		// 目标是 anthropic 时同族 Raw 原文回放缓存无损耗，但外来投影引用缺
+		// Required 的 encrypted_index（或 URL、cited_text 反推不出）会在编码侧
+		// 整条丢弃——缺键发出去上游 400 整轮。请求编码没有 Notes 通道，在这里报。
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d citation(s): projected citations lack the required encrypted_index or a resolvable cited_text, sending them would be rejected", n))
 	}
 	if req.TopK != nil && !caps.TopK {
 		notes = append(notes, "dropped top_k: upstream protocol has no equivalent field")

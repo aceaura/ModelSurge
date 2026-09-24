@@ -104,6 +104,14 @@ func encodeCitations(text string, cs []ir.Citation) (out []json.RawMessage, drop
 			dropped++
 			continue
 		}
+		// encrypted_index 与 url 是该形态的 Required 字段（官方
+		// citation_web_search_result_location_param.py）：外来投影（responses
+		// 的 url_citation、chat 的 annotations）拿不到加密下标，文档类投影
+		// 没有 URL，缺键发出去上游必 400，整条丢弃并计数，好过整轮被拒。
+		if c.EncryptedIndex == "" || c.URL == "" {
+			dropped++
+			continue
+		}
 		b, err := json.Marshal(citationOut{
 			Type: "web_search_result_location", URL: c.URL, Title: c.Title,
 			CitedText: cited, EncryptedIndex: c.EncryptedIndex,

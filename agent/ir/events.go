@@ -51,6 +51,10 @@ type Event struct {
 	// Container 代码执行容器回显（EvMessageStart 首帧携带；anthropic 的
 	// message_delta 也可能晚到，EvMessageDelta 上也收，后值覆盖）。
 	Container *Container
+	// ContextMgmt anthropic message_delta 事件顶层的服务端上下文清理回执原文
+	// （官方 BetaRawMessageDeltaEvent.context_management，与 delta 平级）。
+	// 仅 anthropic 有槽位，跨族出站不投影；聚合落 Response.AnthropicContextMgmt。
+	ContextMgmt json.RawMessage `json:",omitempty"`
 	// Audio 非流式完整响应转事件流时随 EvMessageStart 携带。所有当前流式
 	// 客户端协议均无官方完整音频槽位，只用于编码器记账并报告丢失。
 	Audio            *AudioOutput
@@ -98,6 +102,11 @@ const (
 	// 补救动作相反——这里要压缩/截短输入，抬 max_tokens 没有用。塌成 end_turn
 	// 会把截断回答伪装成自然说完。
 	StopContextWindow StopReason = "context_window_exceeded"
+	// StopMaxMessages 消息数上限截断（Responses incomplete_details.reason
+	// 的 "max_messages"）。与 max_tokens 的输出长度上限是两回事：客户端照
+	// max_tokens 提示加大输出预算重试仍会被同一上限拦住。只有 responses
+	// 一族有此档，外族出站归 length（输出确实不完整）。
+	StopMaxMessages StopReason = "max_messages"
 )
 
 // Incomplete 报告该停止原因是否意味着输出不完整——客户端不应把正文当成

@@ -144,6 +144,14 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		f.Format.Type == "json_schema" && len(f.Format.Schema) > 0 && string(f.Format.Schema) != "null" {
 		out.ResponseFormat = &ir.ResponseFormat{Schema: f.Format.Schema, Strict: true}
 	}
+	// output_format 是同一诉求的 beta 旧槽位（同形同判据）：两槽同给时
+	// output_config.format 已先落 IR，新槽胜出；只有新槽缺席才回落旧槽。
+	if out.ResponseFormat == nil {
+		if f := req.OutputFormat; f != nil &&
+			f.Type == "json_schema" && len(f.Schema) > 0 && string(f.Schema) != "null" {
+			out.ResponseFormat = &ir.ResponseFormat{Schema: f.Schema, Strict: true}
+		}
+	}
 	// output_config.effort 原值进 IR Thinking.Effort（值集是 OpenAI 的
 	// 子集，无需翻译）。effort 独立出现也算开了思考。
 	if f := req.OutputConfig; f != nil && f.Effort != "" {

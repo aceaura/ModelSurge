@@ -100,3 +100,25 @@ func CountNonPortableCitations(r *Request) int {
 	}
 	return n
 }
+
+// CountAnthropicUnreplayable 统计目标是 anthropic 时编码侧会整条丢弃的引用
+// 条数（用于有损诊断）。判据与 anthropic encodeCitations 逐条对齐：带 Raw 的
+// 原文带回不算丢；外来投影（responses 的 url_citation、chat 的 annotations）
+// 缺 encrypted_index（web_search_result_location 的 Required 字段，缺键上游
+// 400）、缺 URL（同 Required）或 cited_text 反推不出来的，编码侧宁丢不伪造。
+func CountAnthropicUnreplayable(r *Request) int {
+	n := 0
+	for _, m := range r.Messages {
+		for _, b := range m.Content {
+			for _, c := range b.Citations {
+				if len(c.Raw) > 0 {
+					continue
+				}
+				if c.EncryptedIndex == "" || c.URL == "" || ResolveCitedText(b.Text, c) == "" {
+					n++
+				}
+			}
+		}
+	}
+	return n
+}

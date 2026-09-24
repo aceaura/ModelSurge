@@ -186,7 +186,7 @@ func TestEncodeSynthesizedCitationUsesOfficialFieldSet(t *testing.T) {
 // 只给范围不给 cited_text 时按范围切出原文：cited_text 是官方必填字段。
 func TestEncodeCitationsBackfillsCitedText(t *testing.T) {
 	resp := &ir.Response{Content: []ir.Block{{Type: ir.BlockText, Text: "北京今天晴",
-		Citations: []ir.Citation{{URL: "https://w", Start: 0, End: 2}}}}}
+		Citations: []ir.Citation{{URL: "https://w", Start: 0, End: 2, EncryptedIndex: "idx"}}}}}
 	out, err := codec{}.EncodeResponse(resp)
 	if err != nil {
 		t.Fatal(err)
@@ -217,7 +217,7 @@ func TestEncodeCitationsDropsOnlyWhenCitedTextUnresolvable(t *testing.T) {
 		})
 	}
 	t.Run("保留/原文不在正文里", func(t *testing.T) {
-		c := ir.Citation{URL: "https://w", CitedText: "不存在的片段"}
+		c := ir.Citation{URL: "https://w", CitedText: "不存在的片段", EncryptedIndex: "idx"}
 		resp := &ir.Response{Content: []ir.Block{{Type: ir.BlockText, Text: "北京今天晴", Citations: []ir.Citation{c}}}}
 		out, err := codec{}.EncodeResponse(resp)
 		if err != nil {
@@ -329,7 +329,7 @@ func TestStreamEncodeSynthesizedCitation(t *testing.T) {
 		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}},
 		{Type: ir.EvTextDelta, Index: 0, Text: "北京今天晴，"},
 		{Type: ir.EvTextDelta, Index: 0, Text: "明天有雨。"},
-		{Type: ir.EvCitation, Index: 0, Citations: []ir.Citation{{URL: "https://w", CitedText: "明天有雨"}}},
+		{Type: ir.EvCitation, Index: 0, Citations: []ir.Citation{{URL: "https://w", CitedText: "明天有雨", EncryptedIndex: "idx"}}},
 	} {
 		frames, err := enc.Encode(ev)
 		if err != nil {

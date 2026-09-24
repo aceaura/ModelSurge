@@ -470,6 +470,12 @@ func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error
 	if selected != nil && len(selected.LogProbs) > 0 && string(selected.LogProbs) != "null" {
 		notes = append(notes, proto.LogProbsDropNote(1))
 	}
+	if len(r.Moderation) > 0 && string(r.Moderation) != "null" {
+		// 与流式 chunk 同款判据（stream_decoder.go droppedModeration）：
+		// 审核结论没有 IR 槽位，两条路径口径保持一致。
+		notes = append(notes,
+			"dropped moderation results on 1 response(s): the relay has no slot for input/output safety verdicts, moderated-completion clients will not see them")
+	}
 	return out, notes, nil
 }
 

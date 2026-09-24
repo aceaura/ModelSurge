@@ -23,6 +23,10 @@ type request struct {
 	// OutputConfig 2026 新增的输出控制：format 是结构化输出槽位，
 	// effort 是思考档位（R63 起双向贯通）。
 	OutputConfig *outputConfig `json:"output_config,omitempty"`
+	// OutputFormat beta 的请求级结构化输出槽位（官方 BetaJSONOutputFormatParam，
+	// message_create_params.py:164）：与 output_config.format 同形同判据，
+	// 是同一诉求的旧槽位。只入不出——编码恒写新槽 output_config.format。
+	OutputFormat *jsonOutputFormat `json:"output_format,omitempty"`
 	// ServiceTier 服务质量档位：auto / standard_only。
 	ServiceTier string `json:"service_tier,omitempty"`
 	// CacheControl 顶层缓存便捷糖：自动给最后一个可缓存块打断点。
@@ -282,6 +286,10 @@ type streamEvent struct {
 	Delta        *delta             `json:"delta,omitempty"`         // content_block_delta / message_delta
 	Usage        *messageDeltaUsage `json:"usage,omitempty"`         // message_delta
 	Error        *errorBody         `json:"error,omitempty"`         // error
+	// ContextManagement message_delta 事件顶层的服务端上下文清理回执（官方
+	// BetaRawMessageDeltaEvent.context_management，与 delta 平级不在 delta 里）。
+	// 原文收：applied_edits 的编辑类型在演进，建模会截断新型。
+	ContextManagement json.RawMessage `json:"context_management,omitempty"`
 }
 
 type eventMessage struct {

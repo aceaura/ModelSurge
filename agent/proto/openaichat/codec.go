@@ -71,7 +71,7 @@ func UnmapFinishReason(s ir.StopReason) string {
 		return "tool_calls"
 	case ir.StopRefusal:
 		return "content_filter"
-	case ir.StopPauseTurn, ir.StopAborted, ir.StopContextWindow:
+	case ir.StopPauseTurn, ir.StopAborted, ir.StopContextWindow, ir.StopMaxMessages:
 		// pause_turn 是「这一轮没做完，回传对话继续」，aborted 是「流断了」，
 		// context_window 是输入占满窗口挤断输出，OpenAI 侧都没有对应值。
 		// 取 length 而非 stop：三者都表示输出不完整，
@@ -128,6 +128,29 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		})
 	}
 	out.ToolChoice = decodeToolChoice(req.ToolChoice)
+	// 废弃形态折进现代槽位：functions 条目就是扁平的 {name,description,
+	// parameters}；function_call 的 none/auto/{"name":...} 与 tool_choice
+	// 同值集。现代键已给时现代键胜出（官方语义 tools 取代 functions）。
+	for _, f := range req.Functions {
+		var fd struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			Parameters  json.RawMessage `json:"parameters"`
+		}
+		if json.Unmarshal(f, &fd) == nil && fd.Name != "" {
+			out.Tools = append(out.Tools, ir.Tool{
+				Name: fd.Name, Description: fd.Description, InputSchema: fd.Parameters,
+			})
+		}
+	}
+	if out.ToolChoice == nil && len(req.FunctionCall) > 0 {
+		// decodeToolChoice 的 switch 只认 string/map，RawMessage 直接传会静默
+		// 落空；先解析成 any 再走同一条值集判据。
+		var fc any
+		if json.Unmarshal(req.FunctionCall, &fc) == nil {
+			out.ToolChoice = decodeToolChoice(fc)
+		}
+	}
 	// parallel_tool_calls=false 是「禁止并行」，与 anthropic 的
 	// disable_parallel_tool_use 同一维度。客户端没给时不表态（IR 零值即允许并行）。
 	if req.ParallelToolCalls != nil && !*req.ParallelToolCalls {
@@ -475,6 +498,13 @@ func decodeToolChoice(v any) *ir.ToolChoice {
 		if cu, ok := tc["custom"].(map[string]any); ok {
 			if name, ok := cu["name"].(string); ok {
 				return &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: name, ToolKind: ir.ToolCustom}
+			}
+		}
+		// 废弃 function_call 的指名形态是扁平 {"name":"x"}（无 type、无
+		// function/custom 包装）：同值集折进现代槽位时从这一支命中。
+		if _, hasType := tc["type"]; !hasType {
+			if name, ok := tc["name"].(string); ok && name != "" {
+				return &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: name}
 			}
 		}
 	}

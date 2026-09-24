@@ -117,6 +117,10 @@ type generationConfig struct {
 	RoutingConfig              json.RawMessage `json:"routingConfig,omitempty"`
 	ModelSelectionConfig       json.RawMessage `json:"modelSelectionConfig,omitempty"`
 	ModelArmorConfig           json.RawMessage `json:"modelArmorConfig,omitempty"`
+	// AudioTranscriptionConfig 语音转写配置（官方
+	// GenerateContentConfig.audioTranscriptionConfig）：输入音频的转写开关，
+	// 没有任何出站接得住，同档收键名。
+	AudioTranscriptionConfig json.RawMessage `json:"audioTranscriptionConfig,omitempty"`
 }
 
 type thinkingConfig struct {
@@ -133,8 +137,9 @@ type toolDef struct {
 	GoogleSearch         *googleSearch  `json:"googleSearch,omitempty"`
 	CodeExecution        *struct{}      `json:"codeExecution,omitempty"`
 	// GoogleSearchRetrieval 旧版托管搜索声明（gemini 1.5 时代形态），语义
-	// 与 googleSearch 相同，归一到同一 canonical。
-	GoogleSearchRetrieval *struct{} `json:"googleSearchRetrieval,omitempty"`
+	// 与 googleSearch 相同，归一到同一 canonical。dynamicRetrievalConfig
+	// （动态检索阈值/模式）没有跨族槽位，收下键名让诊断报得出。
+	GoogleSearchRetrieval *googleSearchRetrieval `json:"googleSearchRetrieval,omitempty"`
 	// 以下托管工具声明没有任何跨族映射：收下只为让出站按「未识别托管
 	// 工具」丢弃并报诊断，而不是解码即蒸发。
 	URLContext          *struct{}         `json:"urlContext,omitempty"`
@@ -144,6 +149,15 @@ type toolDef struct {
 	EnterpriseWebSearch *struct{}         `json:"enterpriseWebSearch,omitempty"`
 	ParallelAISearch    *struct{}         `json:"parallelAiSearch,omitempty"`
 	MCPServers          []json.RawMessage `json:"mcpServers,omitempty"`
+	// Retrieval / ExaAISearch 官方 Tool 的另外两种托管检索声明（genai
+	// types.go Tool.Retrieval / Tool.ExaAISearch），同档收下。
+	Retrieval   *struct{} `json:"retrieval,omitempty"`
+	ExaAISearch *struct{} `json:"exaAiSearch,omitempty"`
+}
+
+// googleSearchRetrieval 旧版托管搜索声明的配置体。
+type googleSearchRetrieval struct {
+	DynamicRetrievalConfig json.RawMessage `json:"dynamicRetrievalConfig,omitempty"`
 }
 
 // googleSearch 托管搜索声明。官方（genai GoogleSearch）还有 searchTypes/
@@ -161,6 +175,12 @@ type functionDecl struct {
 
 type toolConfig struct {
 	FunctionCallingConfig *functionCallingConfig `json:"functionCallingConfig,omitempty"`
+	// RetrievalConfig 检索工具的全局配置（官方 ToolConfig.retrievalConfig，
+	// 地理位置等）：没有 IR 槽位，收键名让诊断可见。
+	RetrievalConfig json.RawMessage `json:"retrievalConfig,omitempty"`
+	// IncludeServerSideToolInvocations 让响应携带服务端工具调用过程（官方
+	// ToolConfig.includeServerSideToolInvocations）：跨族无槽位，收键名。
+	IncludeServerSideToolInvocations *bool `json:"includeServerSideToolInvocations,omitempty"`
 }
 
 type functionCallingConfig struct {

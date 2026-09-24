@@ -76,27 +76,43 @@ func TestForeignCitationRequestHasNoNullElement(t *testing.T) {
 		t.Fatalf("前提变了：Raw=%q EncryptedIndex=%q", c.Raw, c.EncryptedIndex)
 	}
 
-	req := &ir.Request{Model: "claude", MaxTokens: 16, Messages: []ir.Message{
-		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "天气"}}},
-		{Role: ir.RoleAssistant, Content: resp.Content},
-		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "继续"}}},
-	}}
-	body, err := proto.MustOutbound("anthropic").EncodeRequest(req)
-	if err != nil {
-		t.Fatalf("anthropic EncodeRequest: %v", err)
+	build := func(content []ir.Block) []byte {
+		req := &ir.Request{Model: "claude", MaxTokens: 16, Messages: []ir.Message{
+			{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "天气"}}},
+			{Role: ir.RoleAssistant, Content: content},
+			{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "继续"}}},
+		}}
+		body, err := proto.MustOutbound("anthropic").EncodeRequest(req)
+		if err != nil {
+			t.Fatalf("anthropic EncodeRequest: %v", err)
+		}
+		return body
 	}
 
-	elems := anthropicCitations(t, body)
+	// R109 起：encrypted_index 是 web_search_result_location 的 Required 字段
+	// （stable 与 beta 的 param 定义一致），投影引用拿不到它——缺键发出去整轮
+	// 400，编码侧整条丢弃。出站数组必须为空：既不是 null 也不是缺键对象。
+	if elems := anthropicCitations(t, build(resp.Content)); len(elems) != 0 {
+		t.Fatalf("缺 encrypted_index 的投影引用应整条丢弃：%q", elems)
+	}
+
+	// 上游给了 encrypted_index 的投影（同族历史轮带回来的）正常合成，
+	// 元素必须是完整 JSON 对象：不是 null，五个 Required 键一个不缺。
+	withIndex := make([]ir.Block, len(resp.Content))
+	copy(withIndex, resp.Content)
+	withIndex[0].Citations = append([]ir.Citation(nil), resp.Content[0].Citations...)
+	withIndex[0].Citations[0].EncryptedIndex = "enc_from_upstream"
+	elems := anthropicCitations(t, build(withIndex))
 	if len(elems) != 1 {
-		t.Fatalf("citations 元素数 = %d, want 1：%s", len(elems), body)
+		t.Fatalf("citations 元素数 = %d, want 1", len(elems))
 	}
 	if elems[0] == "null" {
-		t.Fatalf("出站引用是字面量 null，上游必拒整轮：%s", body)
+		t.Fatal("出站引用是字面量 null，上游必拒整轮")
 	}
 	if !strings.HasPrefix(strings.TrimSpace(elems[0]), "{") {
 		t.Fatalf("出站引用不是 JSON 对象：%q", elems[0])
 	}
-	for _, want := range []string{`"type":"web_search_result_location"`, `"url":"https://w"`, `"cited_text":"明天有雨"`} {
+	for _, want := range []string{`"type":"web_search_result_location"`, `"url":"https://w"`, `"cited_text":"明天有雨"`, `"encrypted_index":"enc_from_upstream"`} {
 		if !strings.Contains(elems[0], want) {
 			t.Errorf("合成的引用缺 %s：%q", want, elems[0])
 		}

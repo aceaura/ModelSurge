@@ -10,7 +10,10 @@ import (
 func citationReq(n int) *ir.Request {
 	cs := make([]ir.Citation, 0, n)
 	for i := 0; i < n; i++ {
-		cs = append(cs, ir.Citation{URL: "https://w", Start: i, End: i + 1})
+		// R109 起目标是 anthropic 时缺 encrypted_index 的投影引用会被整条
+		// 丢弃（Required 字段，缺键 400）并有专属注记。本组测的是「有/无
+		// 槽位」那一层，夹具带全 Required 字段，别让新判据串进来。
+		cs = append(cs, ir.Citation{URL: "https://w", Start: i, End: i + 1, EncryptedIndex: "enc"})
 	}
 	return &ir.Request{Messages: []ir.Message{
 		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "天气"}}},
@@ -78,9 +81,14 @@ func TestDiagnoseNonPortableCitations(t *testing.T) {
 		{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "天气"}}},
 		{Role: ir.RoleAssistant, Content: []ir.Block{{Type: ir.BlockText, Text: "北京今天晴",
 			Citations: []ir.Citation{
-				{URL: "https://w", Start: 0, End: 2},
-				{WireType: "char_location", CitedText: "晴", Start: 4, End: 5},
-				{WireType: "page_location", CitedText: "晴"},
+				// 模拟 anthropic 原生解码进 IR 的引用：同族回放走 Raw 原文，
+				// 不触发 R109 的投影丢弃判据；Portable() 只看 URL，带 Raw
+				// 不影响外族方向的计数。
+				{URL: "https://w", Start: 0, End: 2, EncryptedIndex: "enc"},
+				{WireType: "char_location", CitedText: "晴", Start: 4, End: 5,
+					Raw: []byte(`{"type":"char_location","cited_text":"晴","document_index":0,"start_char_index":4,"end_char_index":5,"encrypted_index":"e"}`)},
+				{WireType: "page_location", CitedText: "晴",
+					Raw: []byte(`{"type":"page_location","cited_text":"晴","document_index":0,"start_page_number":1,"end_page_number":2,"encrypted_index":"e"}`)},
 			}}}},
 	}}
 	for _, name := range []string{"codex", "openai-chat", "openai-responses"} {

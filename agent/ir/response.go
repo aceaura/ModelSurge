@@ -85,6 +85,9 @@ func (a *Aggregator) Feed(ev Event) bool {
 		a.started = true
 		a.resp.ID = ev.MessageID
 		a.resp.Model = ev.Model
+		if ev.Created != 0 {
+			a.resp.Created = ev.Created
+		}
 		if ev.ServiceTier != "" {
 			a.resp.ServiceTier = ev.ServiceTier
 		}
@@ -187,6 +190,11 @@ func (a *Aggregator) Feed(ev Event) bool {
 		// anthropic 的 container 回显也可能落在 message_delta 上。
 		if ev.Container != nil {
 			a.resp.Container = ev.Container
+		}
+		// 服务端上下文清理回执（anthropic message_delta 事件顶层）：流式
+		// 聚合后与非流式 DecodeResponse 落同一个 IR 槽位。
+		if len(ev.ContextMgmt) > 0 {
+			a.resp.AnthropicContextMgmt = ev.ContextMgmt
 		}
 		if ev.Usage != nil {
 			a.resp.Usage.MergeNonZero(*ev.Usage)

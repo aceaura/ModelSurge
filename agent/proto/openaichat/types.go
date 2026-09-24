@@ -12,21 +12,26 @@ const Name = "openai-chat"
 // ---- 请求 DTO ----
 
 type request struct {
-	Model               string          `json:"model"`
-	Messages            []message       `json:"messages"`
-	MaxTokens           int             `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
-	Temperature         *float64        `json:"temperature,omitempty"`
-	TopP                *float64        `json:"top_p,omitempty"`
-	Stop                any             `json:"stop,omitempty"` // string 或 []string
-	Stream              bool            `json:"stream,omitempty"`
-	StreamOptions       *streamOptions  `json:"stream_options,omitempty"`
-	Tools               []tool          `json:"tools,omitempty"`
-	ToolChoice          any             `json:"tool_choice,omitempty"` // string 或 object
-	ParallelToolCalls   *bool           `json:"parallel_tool_calls,omitempty"`
-	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
-	ResponseFormat      *responseFormat `json:"response_format,omitempty"`
-	Metadata            json.RawMessage `json:"metadata,omitempty"`
+	Model               string         `json:"model"`
+	Messages            []message      `json:"messages"`
+	MaxTokens           int            `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int            `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64       `json:"temperature,omitempty"`
+	TopP                *float64       `json:"top_p,omitempty"`
+	Stop                any            `json:"stop,omitempty"` // string 或 []string
+	Stream              bool           `json:"stream,omitempty"`
+	StreamOptions       *streamOptions `json:"stream_options,omitempty"`
+	Tools               []tool         `json:"tools,omitempty"`
+	ToolChoice          any            `json:"tool_choice,omitempty"` // string 或 object
+	// Functions / FunctionCall 官方废弃多年的请求级形态（openai_chat.go:4005-4009，
+	// Deprecated in favor of tools/tool_choice）。老客户端还在用：解码折进现代
+	// 槽位（声明与指名不丢），编码不产出废弃键。
+	Functions         []json.RawMessage `json:"functions,omitempty"`
+	FunctionCall      json.RawMessage   `json:"function_call,omitempty"`
+	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort   string            `json:"reasoning_effort,omitempty"`
+	ResponseFormat    *responseFormat   `json:"response_format,omitempty"`
+	Metadata          json.RawMessage   `json:"metadata,omitempty"`
 	// User 终端用户标识（滥用追踪/计费归属）。与 anthropic 的 metadata.user_id
 	// 同一维度，IR 里统一放 Metadata["user_id"]。
 	User string `json:"user,omitempty"`
@@ -341,6 +346,10 @@ type response struct {
 	// 只在客户端请求 moderated completions 时出现）。审核结论是上游产品语义，
 	// IR 没有槽位，解码侧计数经 Notes() 报出。
 	Moderation json.RawMessage `json:"moderation,omitempty"`
+	// Obfuscation 流式混淆填充（官方 ChatCompletionChunk.Obfuscation：上游
+	// 默认开启的侧信道防护随机串，include_obfuscation=false 时省略）。无语义
+	// 载荷，转发即剥掉，解码侧计数经 Notes() 报出。
+	Obfuscation string `json:"obfuscation,omitempty"`
 }
 
 type choice struct {

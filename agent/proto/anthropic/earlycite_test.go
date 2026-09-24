@@ -40,7 +40,7 @@ func TestStreamEncodeCitationOnOpenBlockNotCounted(t *testing.T) {
 		{Type: ir.EvMessageStart, MessageID: "m1", Model: "m"},
 		{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}},
 		{Type: ir.EvTextDelta, Index: 0, Text: "正文"},
-		{Type: ir.EvCitation, Index: 0, Citations: []ir.Citation{{URL: "https://w", Start: 0, End: 2}}},
+		{Type: ir.EvCitation, Index: 0, Citations: []ir.Citation{{URL: "https://w", Start: 0, End: 2, EncryptedIndex: "idx"}}},
 	} {
 		if _, err := enc.Encode(ev); err != nil {
 			t.Fatal(err)

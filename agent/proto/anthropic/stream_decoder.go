@@ -52,6 +52,10 @@ func UnmapStopReason(s ir.StopReason) string {
 		// Anthropic 没有「中断」档。取 max_tokens 而非 end_turn：两者都表示
 		// 输出不完整，客户端至少不会把半截结果当成最终答案（end_turn 会）。
 		return "max_tokens"
+	case ir.StopMaxMessages:
+		// responses 的消息数上限档，Anthropic 无对应值；同 aborted 取
+		// max_tokens（输出确实不完整，只是上限的维度不同）。
+		return "max_tokens"
 	default:
 		return "end_turn"
 	}
@@ -69,6 +73,10 @@ type streamDecoder struct {
 	// droppedUnknown 不认识的事件型/delta 型计数：静默丢弃会让新事件型
 	// （官方加字段或代理上游乱发）完全不可见，经 Notes() 报出。
 	droppedUnknown int
+	// droppedCompaction 服务端压缩回执帧计数：官方类型、语义清楚，但
+	// encrypted_content 要求逐字回传下一轮而 IR 没有槽位，与 droppedUnknown
+	// 分账——混进去会把「认识但装不下」误报成「不认识」。
+	droppedCompaction int
 }
 
 func (codec) NewStreamDecoder() proto.StreamDecoder { return &streamDecoder{} }
@@ -137,6 +145,12 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 				return nil, nil
 			}
 			return []ir.Event{{Type: ir.EvCitation, Index: se.Index, Citations: cs}}, nil
+		case "compaction_delta":
+			// 服务端压缩回执（官方 BetaCompactionContentBlockDelta）：
+			// encrypted_content 官方要求逐字回传下一轮，IR 没有槽位。
+			// 这是「有对应物但装不下」，与「连语义都不认识的型」分账计数。
+			d.droppedCompaction++
+			return nil, nil
 		}
 		d.droppedUnknown++
 		return nil, nil
@@ -156,6 +170,11 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			u := convDeltaUsage(*se.Usage)
 			d.usage.MergeNonZero(u)
 			ev.Usage = &u
+		}
+		// 服务端上下文清理回执挂在事件顶层（官方与 delta 平级），原文进
+		// IR：applied_edits 的编辑类型在演进，只认已知字段会截断新型。
+		if len(se.ContextManagement) > 0 && string(se.ContextManagement) != "null" {
+			ev.ContextMgmt = se.ContextManagement
 		}
 		return []ir.Event{ev}, nil
 	case "message_stop":
@@ -195,12 +214,17 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 
 // Notes 排干解码损耗注记（未知事件型/delta 型计数）。
 func (d *streamDecoder) Notes() []string {
-	if d.droppedUnknown == 0 {
-		return nil
+	var notes []string
+	if d.droppedUnknown > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"ignored %d stream event(s) or delta(s) of a type this decoder does not know: the wire carried types outside the documented set, their payload was dropped because no mapping exists", d.droppedUnknown))
+		d.droppedUnknown = 0
 	}
-	notes := []string{fmt.Sprintf(
-		"ignored %d stream event(s) or delta(s) of a type this decoder does not know: the wire carried types outside the documented set, their payload was dropped because no mapping exists", d.droppedUnknown)}
-	d.droppedUnknown = 0
+	if d.droppedCompaction > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d compaction delta(s): the upstream's server-side context compaction receipt must be round-tripped verbatim on the next turn, but no protocol slot carries it through the relay", d.droppedCompaction))
+		d.droppedCompaction = 0
+	}
 	return notes
 }
 

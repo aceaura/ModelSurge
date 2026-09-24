@@ -79,6 +79,10 @@ type streamDecoder struct {
 	// IR 槽位（文字转写走 transcript.delta 通道已单独送达），计数经
 	// Notes() 报出。
 	droppedAudio int
+	// mergedSummary 携带 summary_index>0 的 reasoning 帧数：IR 一个
+	// reasoning item 只建模一段 summary，多段 part 并入同一 thinking 块，
+	// 正文不丢但 part 边界与 summary_index 寻址变形，计数报出。
+	mergedSummary int
 }
 
 // pendingToolCall 漏发 added 帧的工具调用缓存：参数碎片加上调用种类
@@ -424,16 +428,25 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		if se.Delta == "" {
 			return nil, nil
 		}
+		if se.SummaryIndex != nil && *se.SummaryIndex > 0 {
+			d.mergedSummary++
+		}
 		i, out := d.assign(partKey{out: oi}, thinkingBlock())
 		d.blockText[i] += se.Delta
 		return append(out, ir.Event{Type: ir.EvThinkingDelta, Index: i, Text: se.Delta}), nil
 	case "response.reasoning_summary_text.done", "response.reasoning_text.done":
+		if se.SummaryIndex != nil && *se.SummaryIndex > 0 {
+			d.mergedSummary++
+		}
 		// 不在这里关块：encrypted_content 要到 output_item.done 才给，提前关会丢
 		// signature_delta 并打断多轮缓存（对齐 sub2api responses_to_anthropic.go:238）。
 		return d.backfill(partKey{out: oi}, thinkingBlock(), se.Text, ir.EvThinkingDelta), nil
 	case "response.reasoning_summary_part.done":
 		if se.Part == nil {
 			return nil, nil
+		}
+		if se.SummaryIndex != nil && *se.SummaryIndex > 0 {
+			d.mergedSummary++
 		}
 		return d.backfill(partKey{out: oi}, thinkingBlock(), se.Part.Text, ir.EvThinkingDelta), nil
 	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
@@ -729,11 +742,17 @@ func completeValue(acc map[int]string, index int, full string, typ ir.EventType)
 
 // mapIncompleteReason 读 incomplete_details.reason 判断截断原因。
 // 此前恒判 max_tokens，把风控拦截误报成「输出太长」——客户端据此会加大
-// max_output_tokens 重试，而真正要做的是改提示词。
+// max_output_tokens 重试，而真正要做的是改提示词。max_messages 单列一档
+// 同理：那是消息数上限，加大输出预算照样撞墙。
 // reason 缺失时仍按 max_tokens（对齐 cc-switch transform_responses.rs:2091）。
 func mapIncompleteReason(r *responseObj) ir.StopReason {
-	if r != nil && r.IncompleteDetails != nil && r.IncompleteDetails.Reason == "content_filter" {
-		return ir.StopRefusal
+	if r != nil && r.IncompleteDetails != nil {
+		switch r.IncompleteDetails.Reason {
+		case "content_filter":
+			return ir.StopRefusal
+		case "max_messages":
+			return ir.StopMaxMessages
+		}
 	}
 	return ir.StopMaxTokens
 }
@@ -746,6 +765,8 @@ func unmapIncompleteReason(s ir.StopReason) string {
 	switch s {
 	case ir.StopMaxTokens, ir.StopPauseTurn, ir.StopAborted, ir.StopContextWindow:
 		return "max_output_tokens"
+	case ir.StopMaxMessages:
+		return "max_messages"
 	case ir.StopRefusal:
 		return "content_filter"
 	default:
@@ -805,6 +826,11 @@ func (d *streamDecoder) Notes() []string {
 		notes = append(notes, fmt.Sprintf(
 			"dropped %d audio frame(s): the base64 audio bytes have no counterpart in this conversion, only the transcript text was forwarded", d.droppedAudio))
 		d.droppedAudio = 0
+	}
+	if d.mergedSummary > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"merged %d reasoning summary frame(s) with summary_index>0 into the first summary part: the text is preserved, but the part boundaries and summary_index addressing of a multi-part reasoning item are not", d.mergedSummary))
+		d.mergedSummary = 0
 	}
 	return notes
 }

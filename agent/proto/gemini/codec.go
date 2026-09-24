@@ -163,6 +163,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			{"routingConfig", gc.RoutingConfig},
 			{"modelSelectionConfig", gc.ModelSelectionConfig},
 			{"modelArmorConfig", gc.ModelArmorConfig},
+			{"audioTranscriptionConfig", gc.AudioTranscriptionConfig},
 		} {
 			if len(kv.raw) > 0 && string(kv.raw) != "null" {
 				out.GeminiExtras = append(out.GeminiExtras, kv.key)
@@ -261,6 +262,13 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 				gs.HostedParams = &ir.HostedParams{BlockedDomains: t.GoogleSearch.ExcludeDomains}
 			}
 			out.Tools = append(out.Tools, gs)
+			// 动态检索配置没有跨族槽位：收键名让 Diagnose 报得出，
+			// 别让阈值随旧版声明形态静默蒸发。
+			if t.GoogleSearchRetrieval != nil &&
+				len(t.GoogleSearchRetrieval.DynamicRetrievalConfig) > 0 &&
+				string(t.GoogleSearchRetrieval.DynamicRetrievalConfig) != "null" {
+				out.GeminiExtras = append(out.GeminiExtras, "googleSearchRetrieval.dynamicRetrievalConfig")
+			}
 		}
 		if t.CodeExecution != nil {
 			out.Tools = append(out.Tools, ir.Tool{Name: "code_execution", Hosted: ir.HostedCodeExecution, HostedType: "code_execution"})
@@ -288,12 +296,27 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		if len(t.MCPServers) > 0 {
 			out.Tools = append(out.Tools, ir.Tool{Name: "mcp_servers", Hosted: "mcp_servers", HostedType: "mcpServers"})
 		}
+		if t.Retrieval != nil {
+			out.Tools = append(out.Tools, ir.Tool{Name: "retrieval", Hosted: "retrieval", HostedType: "retrieval"})
+		}
+		if t.ExaAISearch != nil {
+			out.Tools = append(out.Tools, ir.Tool{Name: "exa_ai_search", Hosted: "exa_ai_search", HostedType: "exaAiSearch"})
+		}
 		for _, fd := range t.FunctionDeclarations {
 			out.Tools = append(out.Tools, ir.Tool{Name: fd.Name, Description: fd.Description, InputSchema: fd.Parameters})
 		}
 	}
 	if cfg := req.ToolConfig; cfg != nil && cfg.FunctionCallingConfig != nil {
 		out.ToolChoice = decodeToolChoice(cfg.FunctionCallingConfig)
+	}
+	// toolConfig 的另外两键没有 IR 槽位：收键名让 Diagnose 报得出。
+	if cfg := req.ToolConfig; cfg != nil {
+		if len(cfg.RetrievalConfig) > 0 && string(cfg.RetrievalConfig) != "null" {
+			out.GeminiExtras = append(out.GeminiExtras, "toolConfig.retrievalConfig")
+		}
+		if cfg.IncludeServerSideToolInvocations != nil {
+			out.GeminiExtras = append(out.GeminiExtras, "toolConfig.includeServerSideToolInvocations")
+		}
 	}
 	return out, nil
 }

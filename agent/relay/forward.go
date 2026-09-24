@@ -989,6 +989,7 @@ func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, req *i
 func EventsFromResponse(resp *ir.Response) []ir.Event {
 	events := []ir.Event{{
 		Type: ir.EvMessageStart, MessageID: resp.ID, Model: resp.Model,
+		Created: resp.Created, Metadata: resp.Metadata,
 		ServiceTier: resp.ServiceTier, SystemFingerprint: resp.SystemFingerprint,
 		Container: resp.Container, Audio: resp.Audio,
 	}}
@@ -1049,7 +1050,7 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 	}
 	u := resp.Usage
 	events = append(events,
-		ir.Event{Type: ir.EvMessageDelta, StopReason: resp.StopReason, StopSequence: resp.StopSequence, StopDetails: resp.StopDetails, Usage: &u},
+		ir.Event{Type: ir.EvMessageDelta, StopReason: resp.StopReason, StopSequence: resp.StopSequence, StopDetails: resp.StopDetails, Usage: &u, ContextMgmt: resp.AnthropicContextMgmt},
 		ir.Event{Type: ir.EvMessageStop})
 	return events
 }

@@ -35,8 +35,9 @@ type streamEncoder struct {
 	// droppedCites 先于正文块到达而被丢弃的引用条数。块内偏移相对累积正文
 	// 计算，块没开时引用无处可贴，只能丢——但要报出来。
 	droppedCites int
-	// droppedCitesUnresolved cited_text 反推失败被丢弃的引用条数（跨族投影
-	// 的标注缺有效区间）。丢弃避免整轮 400，但必须报出来。
+	// droppedCitesUnresolved cited_text 反推失败或缺 Required 字段
+	// （encrypted_index/url）被丢弃的投影引用条数。丢弃避免整轮 400，
+	// 但必须报出来。
 	droppedCitesUnresolved int
 	tierSent               bool
 	messageDeltaSent       bool
@@ -163,6 +164,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			Type:  "message_delta",
 			Delta: &delta{StopReason: UnmapStopReason(ev.StopReason), StopSequence: ev.StopSequence, Container: encodeContainerInfo(ev.Container), StopDetails: encodeStopDetails(ev.StopDetails)},
 			Usage: encodeDeltaUsagePtr(ev.Usage),
+			// 服务端上下文清理回执挂在事件顶层（与 delta 平级），同族原文
+			// 回写；外族投影不进这个槽位（解码侧只有 anthropic 会填）。
+			ContextManagement: ev.ContextMgmt,
 		}))}, nil
 	case ir.EvMessageStop:
 		if e.sawError {
@@ -250,7 +254,7 @@ func (e *streamEncoder) Notes() []string {
 	}
 	if e.droppedCitesUnresolved > 0 {
 		notes = append(notes, fmt.Sprintf(
-			"dropped %d citation(s) whose cited text could not be resolved against the block text: the receiving side cannot see those sources", e.droppedCitesUnresolved))
+			"dropped %d citation(s) that lack the required encrypted_index or a resolvable cited_text: the receiving side cannot see those sources", e.droppedCitesUnresolved))
 		e.droppedCitesUnresolved = 0
 	}
 	return notes
@@ -511,22 +515,23 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 // 本族是附件的原生形态（image / document 块），模型产出的附件不丢。
 func (codec) ResponseNotes(resp *ir.Response) []string {
 	notes := proto.ScanResponseLosses(resp, Name, false, true, false)
-	// cited_text 反推失败的引用在 encodeCitations 里整条丢弃（带空 cited_text
-	// 发出整轮必 400）。非流式不走流式编码器的计数器，这里按同一条判据扫出来。
+	// cited_text 反推失败或缺 Required 字段（encrypted_index/url）的投影引用在
+	// encodeCitations 里整条丢弃（缺键发出整轮必 400）。非流式不走流式编码器的
+	// 计数器，这里按同一条判据扫出来。
 	unresolved := 0
 	for _, b := range resp.Content {
 		if b.Type != ir.BlockText {
 			continue
 		}
 		for _, c := range b.Citations {
-			if len(c.Raw) == 0 && ir.ResolveCitedText(b.Text, c) == "" {
+			if len(c.Raw) == 0 && (c.EncryptedIndex == "" || c.URL == "" || ir.ResolveCitedText(b.Text, c) == "") {
 				unresolved++
 			}
 		}
 	}
 	if unresolved > 0 {
 		notes = append(notes, fmt.Sprintf(
-			"dropped %d citation(s) whose cited text could not be resolved against the block text: the receiving side cannot see those sources", unresolved))
+			"dropped %d citation(s) that lack the required encrypted_index or a resolvable cited_text: the receiving side cannot see those sources", unresolved))
 	}
 	return notes
 }

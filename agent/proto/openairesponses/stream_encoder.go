@@ -278,9 +278,17 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		}
 		e.register(ev.Index, b)
 		oi := idx(e.wireOf(ev.Index))
-		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
-			Type: "reasoning", ID: b.itemID, Summary: json.RawMessage(`[]`),
-		}})}, nil
+		// summary part 生命周期帧必须齐全：Codex 类严格客户端只在见到
+		// reasoning_summary_part.added 之后才渲染后续 summary delta
+		// （sub2api chatcompletions_responses_bridge.go:1888-1906、
+		// cc-switch codex_responses_sse.rs:197-200 都显式合成这一帧）。
+		return [][]byte{
+			e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
+				Type: "reasoning", ID: b.itemID, Summary: json.RawMessage(`[]`),
+			}}),
+			e.frame(streamEvent{Type: "response.reasoning_summary_part.added", OutputIndex: oi,
+				SummaryIndex: idx(0), ItemID: b.itemID, Part: &contentPart{Type: "summary_text"}}),
+		}, nil
 	case ir.BlockToolUse:
 		prefix := "fc"
 		typ := "function_call"

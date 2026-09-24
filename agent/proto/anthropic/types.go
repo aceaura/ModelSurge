@@ -211,6 +211,12 @@ type tool struct {
 	InputExamples []json.RawMessage `json:"input_examples,omitempty"`
 	// AllowedCallers 允许的程序化调用方（direct / code_execution_*）。
 	AllowedCallers []string `json:"allowed_callers,omitempty"`
+	// 以下四维是 web_search_* 托管工具的声明参数（官方 WebSearchTool20250305）。
+	// 函数工具上这些键不存在。
+	MaxUses        int             `json:"max_uses,omitempty"`
+	AllowedDomains []string        `json:"allowed_domains,omitempty"`
+	BlockedDomains []string        `json:"blocked_domains,omitempty"`
+	UserLocation   json.RawMessage `json:"user_location,omitempty"`
 }
 
 type toolChoice struct {

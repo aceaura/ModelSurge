@@ -224,8 +224,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return e.finishChunk(ev.StopReason, &e.usage), nil
 		}
 		return e.finishChunk(ev.StopReason, nil), nil
-	case ir.EvMessageStop, ir.EvPing:
+	case ir.EvMessageStop:
 		return nil, nil
+	case ir.EvPing:
+		// Gemini 流式没有 ping 帧类型，SSE 注释行是协议合法的保活帧。
+		return [][]byte{[]byte(": ping\n\n")}, nil
 	case ir.EvError:
 		e.finished = true
 		// 错误帧之后不得再吐新内容。Gemini 的 functionCall 是攒到块结束才整块下发，

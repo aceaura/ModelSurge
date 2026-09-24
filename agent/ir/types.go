@@ -421,7 +421,14 @@ type Tool struct {
 	Description string
 	InputSchema json.RawMessage `json:",omitempty"`
 	Hosted      string
-	Kind        ToolKind
+	// HostedType 协议原生类型名（"web_search_20250305" / "web_search_preview" /
+	// "google_search"）。同族回写优先用它，外族原名必须回落各族默认名
+	// （HostedTypeFamily 判定），否则是上游必 400 的形状。
+	HostedType string
+	// HostedParams 托管工具声明参数；nil 表示客户端一个参数都没给，
+	// 同族回写时一个键也不造（缺省保持缺省）。
+	HostedParams *HostedParams `json:",omitempty"`
+	Kind         ToolKind
 	// Format 是 Responses custom tool 的文本/grammar 格式对象；外族只能降级成
 	// 一个必填 input 字符串参数的 function tool。
 	Format json.RawMessage `json:",omitempty"`

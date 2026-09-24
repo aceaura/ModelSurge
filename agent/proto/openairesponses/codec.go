@@ -106,7 +106,11 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 				InputSchema: customToolInputSchema(), Format: t.Format,
 			})
 		default:
-			out.Tools = append(out.Tools, ir.Tool{Hosted: ir.CanonicalHosted(t.Type)})
+			out.Tools = append(out.Tools, ir.Tool{
+				Hosted:       ir.CanonicalHosted(t.Type),
+				HostedType:   t.Type,
+				HostedParams: hostedParamsOf(t),
+			})
 		}
 	}
 	out.ToolChoice = decodeToolChoice(req.ToolChoice)
@@ -536,7 +540,21 @@ func (c codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	}
 	for _, t := range r.Tools {
 		if t.Hosted != "" {
-			out.Tools = append(out.Tools, tool{Type: nativeHosted(t.Hosted)})
+			// 原生类型名只在同族来路时可信；anthropic 的带版本名或 gemini 的
+			// google_search 写进 responses 的 type 是必 400 的形状，回落默认名。
+			typ := nativeHosted(t.Hosted)
+			if t.HostedType != "" && ir.HostedTypeFamily(t.HostedType) == Name {
+				typ = t.HostedType
+			}
+			ht := tool{Type: typ}
+			if p := t.HostedParams; p != nil {
+				if len(p.AllowedDomains) > 0 {
+					ht.Filters = &webSearchFilters{AllowedDomains: p.AllowedDomains}
+				}
+				ht.UserLocation = p.UserLocation
+				ht.SearchContextSize = p.SearchContextSize
+			}
+			out.Tools = append(out.Tools, ht)
 			continue
 		}
 		if t.Kind == ir.ToolCustom {
@@ -844,6 +862,23 @@ func nativeHosted(canonical string) string {
 		return "code_interpreter"
 	default:
 		return canonical
+	}
+}
+
+// hostedParamsOf 把 web_search 系托管工具的声明参数收进 IR；一个都没给时
+// 保持 nil，同族回写一个键也不造（缺省保持缺省）。
+func hostedParamsOf(t tool) *ir.HostedParams {
+	var domains []string
+	if t.Filters != nil {
+		domains = t.Filters.AllowedDomains
+	}
+	if len(domains) == 0 && len(t.UserLocation) == 0 && t.SearchContextSize == "" {
+		return nil
+	}
+	return &ir.HostedParams{
+		AllowedDomains:    domains,
+		UserLocation:      t.UserLocation,
+		SearchContextSize: t.SearchContextSize,
 	}
 }
 

@@ -209,6 +209,16 @@ type tool struct {
 	Format      json.RawMessage `json:"format,omitempty"`
 	// Strict 严格 schema 校验开关（官方 FunctionTool.strict）。
 	Strict *bool `json:"strict,omitempty"`
+	// 以下三维是 web_search / web_search_preview 托管工具的声明参数
+	// （官方 WebSearchTool）。函数工具上这些键不存在。
+	Filters           *webSearchFilters `json:"filters,omitempty"`
+	UserLocation      json.RawMessage   `json:"user_location,omitempty"`
+	SearchContextSize string            `json:"search_context_size,omitempty"`
+}
+
+// webSearchFilters web_search 工具的检索过滤器。官方目前只有 allowed_domains。
+type webSearchFilters struct {
+	AllowedDomains []string `json:"allowed_domains,omitempty"`
 }
 
 type toolChoiceNamed struct {

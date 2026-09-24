@@ -206,7 +206,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvMessageStop:
 		return nil, nil // response.completed 已是终止事件
 	case ir.EvPing:
-		return nil, nil
+		// Responses 没有 ping 事件类型，但 SSE 注释行是协议合法的保活帧：
+		// 长思考间隔下吞掉 ping 等于让客户端侧读超时裸奔。
+		return [][]byte{[]byte(": ping\n\n")}, nil
 	case ir.EvError:
 		// 错误帧就是终止帧，置 completed 免得 Finish() 再凭空补一个终止事件：
 		// 那时 stopReason 还是零值，补出来的是 response.incomplete 带

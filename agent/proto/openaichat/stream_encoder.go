@@ -192,7 +192,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.stopped = true
 		return [][]byte{[]byte("data: [DONE]\n\n")}, nil
 	case ir.EvPing:
-		return nil, nil
+		// Chat 没有 ping 事件类型，但 SSE 注释行是协议合法的保活帧：
+		// 长思考间隔下吞掉 ping 等于让客户端侧读超时裸奔（sub2api 同款做法）。
+		return [][]byte{[]byte(": ping\n\n")}, nil
 	case ir.EvError:
 		// 错误帧就是终止帧，且 RenderStreamError 自带 [DONE]。不置 stopped 的话
 		// Finish() 会再补一个 finish_reason="length" 的 chunk 加第二个 [DONE]：

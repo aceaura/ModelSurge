@@ -94,9 +94,13 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			Description: t.Description,
 			InputSchema: t.InputSchema,
 			Hosted:      hosted,
-			CacheCtl:    ctl,
-			CacheTTL:    ttl,
-			Strict:      t.Strict,
+			// 原生类型名（含版本后缀）原样进 IR：同族回写要用它，硬编码默认
+			// 版本会把客户端指名的版本偷换掉。
+			HostedType:   t.Type,
+			HostedParams: hostedParamsOf(t),
+			CacheCtl:     ctl,
+			CacheTTL:     ttl,
+			Strict:       t.Strict,
 			// 2026 修饰四维原样进 IR（hosted 工具上也照收——出站按目标能力取舍）。
 			DeferLoading:        t.DeferLoading,
 			EagerInputStreaming: t.EagerInputStreaming,
@@ -424,6 +428,20 @@ func nativeHosted(canonical string) (typ, name string) {
 	}
 }
 
+// hostedParamsOf 把托管工具的声明参数收进 IR；一个都没给时保持 nil，
+// 同族回写一个键也不造（缺省保持缺省）。
+func hostedParamsOf(t tool) *ir.HostedParams {
+	if t.MaxUses == 0 && len(t.AllowedDomains) == 0 && len(t.BlockedDomains) == 0 && len(t.UserLocation) == 0 {
+		return nil
+	}
+	return &ir.HostedParams{
+		MaxUses:        t.MaxUses,
+		AllowedDomains: t.AllowedDomains,
+		BlockedDomains: t.BlockedDomains,
+		UserLocation:   t.UserLocation,
+	}
+}
+
 // degradeThinking 把历史消息中无法通过 Anthropic 签名校验的 thinking 块
 // （无签名或外族形态签名）降级为 text 块——Anthropic 对历史 thinking 块
 // 强制签名校验，透传必 400，宁可断签名链保住请求。
@@ -477,11 +495,27 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	}
 	for _, t := range r.Tools {
 		if t.Hosted != "" {
+			// 原生类型名只在同族来路时可信；外族原名（responses 的
+			// web_search_preview、gemini 的 google_search）写进 anthropic 的
+			// type 是必 400 的形状，回落默认带版本名。
 			typ, name := nativeHosted(t.Hosted)
+			if t.HostedType != "" && ir.HostedTypeFamily(t.HostedType) == Name {
+				typ = t.HostedType
+			}
+			// 固定名只在种类未识别时才让位给 IR 里的名字：web_search 一族的
+			// name 上游写死校验（必须 "web_search"），外族来路的原生名
+			// （gemini 的 google_search）盖上去是必 400 的形状。
 			if name == "" {
 				name = t.Name
 			}
-			out.Tools = append(out.Tools, tool{Type: typ, Name: name})
+			ht := tool{Type: typ, Name: name}
+			if p := t.HostedParams; p != nil {
+				ht.MaxUses = p.MaxUses
+				ht.AllowedDomains = p.AllowedDomains
+				ht.BlockedDomains = p.BlockedDomains
+				ht.UserLocation = p.UserLocation
+			}
+			out.Tools = append(out.Tools, ht)
 			continue
 		}
 		out.Tools = append(out.Tools, tool{

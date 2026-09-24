@@ -193,10 +193,12 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	}
 	for _, t := range req.Tools {
 		if t.GoogleSearch != nil {
-			out.Tools = append(out.Tools, ir.Tool{Name: "google_search", Hosted: ir.HostedWebSearch})
+			// 原生名进 IR：跨族出站按 HostedTypeFamily 回落目标族默认名，
+			// 不会把 google_search 写进别族的 type 槽位。
+			out.Tools = append(out.Tools, ir.Tool{Name: "google_search", Hosted: ir.HostedWebSearch, HostedType: "google_search"})
 		}
 		if t.CodeExecution != nil {
-			out.Tools = append(out.Tools, ir.Tool{Name: "code_execution", Hosted: ir.HostedCodeExecution})
+			out.Tools = append(out.Tools, ir.Tool{Name: "code_execution", Hosted: ir.HostedCodeExecution, HostedType: "code_execution"})
 		}
 		for _, fd := range t.FunctionDeclarations {
 			out.Tools = append(out.Tools, ir.Tool{Name: fd.Name, Description: fd.Description, InputSchema: fd.Parameters})

@@ -410,6 +410,14 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 			dropped = append(dropped, t.Hosted)
 		case t.Hosted != ir.HostedWebSearch && t.Hosted != ir.HostedCodeExecution:
 			unmapped = append(unmapped, t.Hosted) // 无跨协议映射的种类，即使上游支持托管工具也只能透传同族
+		default:
+			// 工具本体映射得过去，但声明参数按目标族槽位取舍：装不下的报出来，
+			// 客户端要的限制（调用上限/域名黑名单/检索规模）不会生效。
+			if p := t.HostedParams.UnsupportedOn(protoName); len(p) > 0 {
+				notes = append(notes, fmt.Sprintf(
+					"dropped hosted tool parameter(s) %s on %s: upstream protocol has no slot for them, the constraint will not be enforced",
+					strings.Join(p, ","), t.Hosted))
+			}
 		}
 	}
 	if protoName != "openai-responses" && protoName != "codex" {

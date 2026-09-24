@@ -189,20 +189,21 @@ func MapServiceTier(tier, protoName string) (string, bool) {
 		switch tier {
 		case "standard_only":
 			return tier, true
-		case "default":
+		case "default", "standard":
+			// standard 是 gemini 方言的标准容量档，与 default 同义。
 			return "standard_only", true
 		}
 		return "", false
 	case "openai-chat":
 		switch tier {
-		case "standard_only":
+		case "standard_only", "standard":
 			return "default", true
 		case "ultrafast":
 			return "", false
 		}
 		return tier, true
 	default: // openai-responses / codex：值集是 chat 的超集
-		if tier == "standard_only" {
+		if tier == "standard_only" || tier == "standard" {
 			return "default", true
 		}
 		return tier, true
@@ -493,6 +494,11 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	if resp.Usage.CacheCreationDetailsKnown && protoName != "anthropic" {
 		notes = append(notes, CacheCreationDetailsDropNote())
 	}
+	// usage 细分维度（服务端工具执行次数、推理区域、音频/预测 token）同理：
+	// 目标家族没有对应字段时聚合总量仍在，细分静默蒸发——报出来。
+	if dims := UsageDropDims(&resp.Usage, protoName); len(dims) > 0 {
+		notes = append(notes, UsageDetailDropNote(dims))
+	}
 	if n := countNonPortable(resp.Content); n > 0 && protoName != "anthropic" {
 		notes = append(notes, CitationDropNote(n))
 	}
@@ -569,7 +575,11 @@ func ServerToolMappable(b ir.Block, protoName string, wsCallIDs map[string]bool)
 		case ir.BlockServerToolUse:
 			return b.ServerToolUse != nil && b.ServerToolUse.Name == "web_search"
 		case ir.BlockWebSearchToolResult:
-			return b.WebSearchToolResult != nil && wsCallIDs[b.WebSearchToolResult.ToolUseID]
+			// web_search_call 的 action 只有 sources（URL 列表），没有错误
+			// 槽位：错误形态的结果块带不过去，实编时错误信息被折成空
+			// sources，与实编同源判为不可映射。
+			return b.WebSearchToolResult != nil && b.WebSearchToolResult.ErrorCode == "" &&
+				wsCallIDs[b.WebSearchToolResult.ToolUseID]
 		}
 	}
 	return false
@@ -702,6 +712,54 @@ func CustomToolDowngradeNote(n int) string {
 func AdditionalChoicesDropNote(n int) string {
 	return fmt.Sprintf(
 		"discarded %d additional response choice(s): the internal response model carries one candidate, only one OpenAI Chat choice was preserved", n)
+}
+
+// LogProbsDropNote 响应侧对数概率载荷丢弃注记：IR 响应模型没有逐 token
+// 概率槽位（请求侧开关可贯通，算出来的内容带不走）。
+func LogProbsDropNote(n int) string {
+	return fmt.Sprintf(
+		"dropped %d logprobs payload(s): per-token log probabilities have no representation in the internal response model, only the generated content is preserved", n)
+}
+
+// UsageDetailDropNote usage 细分维度跨族丢弃注记（聚合 token 总量不丢）。
+func UsageDetailDropNote(dims []string) string {
+	return "dropped usage detail(s) (" + strings.Join(dims, ", ") +
+		"): this protocol's usage has no field for them; aggregate token totals remain preserved"
+}
+
+// UsageDropDims 算出把 u 编码进 protoName 家族时会被丢掉的细分维度名。
+// 流式编码器的 Notes() 与非流式 ScanResponseLosses 共用同一判据，保证
+// 同一响应按 stream=true/false 请求报出的损耗一致。
+// 细分维度的原生槽位：服务端工具执行次数与推理区域只有 anthropic 有；
+// 音频与预测加速 token 只有 openai-chat 有。
+func UsageDropDims(u *ir.Usage, protoName string) []string {
+	if u == nil {
+		return nil
+	}
+	var dims []string
+	if protoName != "anthropic" {
+		if u.WebSearchRequests > 0 {
+			dims = append(dims, "web search request count")
+		}
+		if u.WebFetchRequests > 0 {
+			dims = append(dims, "web fetch request count")
+		}
+		if u.InferenceGeo != "" {
+			dims = append(dims, "inference geo")
+		}
+	}
+	if protoName != "openai-chat" {
+		if u.PromptAudioTokens > 0 {
+			dims = append(dims, "prompt audio tokens")
+		}
+		if u.CompletionAudioTokens > 0 {
+			dims = append(dims, "completion audio tokens")
+		}
+		if u.AcceptedPredictionTokens > 0 || u.RejectedPredictionTokens > 0 {
+			dims = append(dims, "prediction tokens")
+		}
+	}
+	return dims
 }
 
 // SigDropNote 流式编码器的外族签名丢弃注记（计数由编码器在门控分支累计）。

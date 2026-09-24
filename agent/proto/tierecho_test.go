@@ -1,6 +1,7 @@
 package proto_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -12,9 +13,10 @@ import (
 	_ "github.com/aceaura/ModelSurge/agent/proto/openairesponses"
 )
 
-// R64：响应侧 service_tier 回显贯通。官方 SDK 核对（2026-09-22）：
-// anthropic Message.service_tier ∈ standard|priority|batch；chat chunk/响应
-// ∈ auto|default|flex|scale|priority|fast；responses 另有 ultrafast。
+// R64：响应侧 service_tier 回显贯通。官方 SDK 核对（2026-09-24 复核）：
+// anthropic 的回显长在 usage.service_tier（∈ standard|priority|batch，
+// Message 顶层没有该键）；chat chunk/响应顶层 ∈ auto|default|flex|scale|
+// priority|fast；responses 另有 ultrafast。
 // 此前三族回显全部静默蒸发——客户端看不到实际用了哪档容量。
 
 func TestMapServiceTierEchoValues(t *testing.T) {
@@ -52,7 +54,7 @@ func TestMapServiceTierEchoValues(t *testing.T) {
 // 三族流式解码：回显进 IR 事件。
 func TestTierEchoStreamDecode(t *testing.T) {
 	evs, err := proto.MustOutbound("anthropic").NewStreamDecoder().Feed("message_start",
-		`{"type":"message_start","message":{"id":"m1","model":"c","service_tier":"priority"}}`)
+		`{"type":"message_start","message":{"id":"m1","model":"c","usage":{"input_tokens":1,"output_tokens":0,"service_tier":"priority"}}}`)
 	if err != nil || len(evs) == 0 || evs[0].ServiceTier != "priority" {
 		t.Errorf("anthropic message_start 回显 = %+v, %v", evs, err)
 	}
@@ -194,7 +196,7 @@ func TestTierEchoLateArrival(t *testing.T) {
 // 非流式双向：DecodeResponse 进 IR，EncodeResponse 按目标值集回写。
 func TestTierEchoNonStreamRoundTrip(t *testing.T) {
 	for _, c := range []struct{ name, body, tier string }{
-		{"anthropic", `{"id":"m1","type":"message","role":"assistant","model":"c","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"service_tier":"batch"}`, "batch"},
+		{"anthropic", `{"id":"m1","type":"message","role":"assistant","model":"c","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1,"service_tier":"batch"}}`, "batch"},
 		{"openai-chat", `{"id":"c1","object":"chat.completion","created":1,"model":"g","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"service_tier":"scale"}`, "scale"},
 		{"openai-responses", `{"id":"r1","model":"g","status":"completed","output":[],"service_tier":"ultrafast"}`, "ultrafast"},
 	} {
@@ -271,6 +273,73 @@ func TestTierEchoFirstWins(t *testing.T) {
 	}
 	if !strings.Contains(joined, `"service_tier":"flex"`) || strings.Contains(joined, "fast") {
 		t.Errorf("先到档位被覆盖：%s", joined)
+	}
+}
+
+// anthropic 槽位精确位置：回显长在 usage 里（官方 usage.service_tier），
+// Message 顶层不得出现该键——顶层那个键是本仓 R64 时代的伪造（R106 复核
+// anthropic-sdk-python：Message 无顶层 service_tier，仅 Usage/MessageDeltaUsage
+// 建模，且 MessageDeltaUsage 无此键）。子串断言分不出槽位，必须拆 JSON 看。
+func TestTierEchoAnthropicSlotIsUsage(t *testing.T) {
+	// 流式 message_start
+	enc := proto.MustInbound("anthropic").NewStreamEncoder()
+	frames, err := enc.Encode(ir.Event{Type: ir.EvMessageStart, MessageID: "m1", Model: "c", ServiceTier: "priority"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		Message struct {
+			Usage         map[string]any `json:"usage"`
+			TopServiceTie string         `json:"service_tier"`
+		} `json:"message"`
+	}
+	var data string
+	for _, line := range strings.Split(string(frames[0]), "\n") {
+		if strings.HasPrefix(line, "data: ") {
+			data = strings.TrimPrefix(line, "data: ")
+		}
+	}
+	if err := json.Unmarshal([]byte(data), &env); err != nil {
+		t.Fatalf("message_start 帧拆不开：%v: %s", err, data)
+	}
+	if env.Message.TopServiceTie != "" {
+		t.Errorf("顶层伪造键仍在：%s", data)
+	}
+	if env.Message.Usage["service_tier"] != "priority" {
+		t.Errorf("usage.service_tier 未写：%s", data)
+	}
+
+	// 非流式
+	out, err := proto.MustInbound("anthropic").EncodeResponse(&ir.Response{
+		ID: "m1", Model: "c", ServiceTier: "batch",
+		Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Usage         map[string]any `json:"usage"`
+		TopServiceTie string         `json:"service_tier"`
+	}
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.TopServiceTie != "" {
+		t.Errorf("非流式顶层伪造键仍在：%s", out)
+	}
+	if body.Usage["service_tier"] != "batch" {
+		t.Errorf("非流式 usage.service_tier 未写：%s", out)
+	}
+
+	// 解码容错：旧伪造顶层键不再读，usage 里的真值才进 IR。
+	resp, err := proto.MustOutbound("anthropic").DecodeResponse([]byte(
+		`{"id":"m1","type":"message","role":"assistant","model":"c","content":[],"stop_reason":"end_turn",` +
+			`"usage":{"input_tokens":1,"output_tokens":1},"service_tier":"batch"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ServiceTier != "" {
+		t.Errorf("顶层伪造键被当成真回显读入：%q", resp.ServiceTier)
 	}
 }
 

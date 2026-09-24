@@ -63,6 +63,18 @@ type streamDecoder struct {
 	pendingToolArgs map[int]*pendingToolCall // output_index -> 缓存的参数
 	// synthTools 身份全程未到、合成 id 开块的工具调用数，Notes() 报出。
 	synthTools int
+	// droppedProgress 被忽略的托管调用进度帧数（*.in_progress/searching/
+	// completed、partial_image、mcp_call_arguments/code_interpreter 的 delta
+	// 等）：终态内容随 output_item.done 完整到达，进度帧本身没有 IR 事件
+	// 对应物，同族转发也只能丢——计数经 Notes() 报出，不再静默。
+	droppedProgress int
+	// droppedUnknown 本仓不认识的事件型计数（上游新增事件、畸形 type 等）：
+	// 与进度帧分账——前者是「有对应物但本协议装不下的过程信号」，这里是
+	// 「解码器连语义都不知道的帧」，漏报会让上游新能力静默蒸发。
+	droppedUnknown int
+	// droppedLogprobs 携带 logprobs 的 output_text part 数：逐 token 概率
+	// 没有 IR 槽位，计数经 Notes() 报出。
+	droppedLogprobs int
 }
 
 // pendingToolCall 漏发 added 帧的工具调用缓存：参数碎片加上调用种类
@@ -207,6 +219,9 @@ func (d *streamDecoder) completeItemParts(oi int, raw json.RawMessage) []ir.Even
 		}
 		if p.Type != "" && p.Type != "output_text" {
 			continue
+		}
+		if len(p.LogProbs) > 0 && string(p.LogProbs) != "null" {
+			d.droppedLogprobs++
 		}
 		out = append(out, d.backfill(k, &ir.Block{Type: ir.BlockText}, p.Text, ir.EvTextDelta)...)
 		out = append(out, d.backfillCites(k, p.Annotations)...)
@@ -559,7 +574,30 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		d.sawError = true
 		return []ir.Event{{Type: ir.EvError, Err: streamErrorOf(se, "upstream stream error")}}, nil
 	}
-	return nil, nil // response.queued / in_progress 等进度事件忽略
+	// response.queued / in_progress 与托管调用的进度事件（*_call.* 的
+	// in_progress/searching/completed、partial_image、mcp_call_arguments 与
+	// code_interpreter_call_code 的增量）没有 IR 事件对应物：终态内容随
+	// done 帧完整到达，进度帧只是过程信号。忽略但分类计数，同族转发丢帧
+	// 与遇到本仓不认识的新事件型，都经 Notes() 报出，不再静默。
+	switch {
+	case isProgressEvent(se.Type):
+		d.droppedProgress++
+	default:
+		d.droppedUnknown++
+	}
+	return nil, nil
+}
+
+// isProgressEvent 已知但无 IR 对应物的进度信号：response.queued/in_progress、
+// 托管调用的生命周期帧（*_call.in_progress/searching/completed 等）与它们的
+// 增量帧（mcp_call_arguments.*、code_interpreter_call_code.*）、
+// mcp_list_tools.* 与 partial_image。终态内容都随 output_item.done 到达。
+func isProgressEvent(typ string) bool {
+	if typ == "response.queued" || typ == "response.in_progress" {
+		return true
+	}
+	return strings.Contains(typ, "_call.") || strings.Contains(typ, "_call_") ||
+		strings.Contains(typ, "_list_tools.")
 }
 
 // itemTypeOf 从 item 原文里探出 type 键：整块解析失败的 item 归不透明块时
@@ -697,6 +735,20 @@ func (d *streamDecoder) Notes() []string {
 		notes = append(notes, fmt.Sprintf(
 			"synthesized an id for %d streamed tool call(s) that ended without one: the upstream never sent an item frame carrying the call's identity, and the call would otherwise have been dropped", d.synthTools))
 		d.synthTools = 0
+	}
+	if d.droppedProgress > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"ignored %d hosted-call progress frame(s): terminal content still arrives with each item's done frame, only the progress signal itself has no counterpart in this conversion", d.droppedProgress))
+		d.droppedProgress = 0
+	}
+	if d.droppedUnknown > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"ignored %d stream event(s) of a type this decoder does not know: the upstream sent event types outside the documented set, their payload was dropped because no mapping exists", d.droppedUnknown))
+		d.droppedUnknown = 0
+	}
+	if d.droppedLogprobs > 0 {
+		notes = append(notes, proto.LogProbsDropNote(d.droppedLogprobs))
+		d.droppedLogprobs = 0
 	}
 	return notes
 }

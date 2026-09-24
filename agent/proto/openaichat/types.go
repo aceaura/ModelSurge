@@ -306,6 +306,9 @@ type choice struct {
 	Message      *message `json:"message,omitempty"` // 非流式
 	Delta        *message `json:"delta,omitempty"`   // 流式
 	FinishReason string   `json:"finish_reason,omitempty"`
+	// LogProbs 逐 token 对数概率（官方 choice.logprobs，请求侧 logprobs=true
+	// 时下发）。IR 响应模型没有槽位：只探测计数、经注记报出，内容不建模。
+	LogProbs json.RawMessage `json:"logprobs,omitempty"`
 }
 
 type usage struct {

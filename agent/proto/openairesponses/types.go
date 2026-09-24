@@ -185,6 +185,10 @@ type contentPart struct {
 	Refusal string `json:"refusal,omitempty"`
 	// Annotations output_text 部分的来源标注（托管搜索开启时下发）。
 	Annotations []annotation `json:"annotations,omitempty"`
+	// LogProbs output_text 的逐 token 对数概率（官方 part.logprobs，请求侧
+	// top_logprobs 给档时下发）。IR 响应模型没有槽位：只探测计数、经注记
+	// 报出，内容不建模。
+	LogProbs json.RawMessage `json:"logprobs,omitempty"`
 	// Raw 本族未知 part 的原样线体。标 json:"-" 是为了不参与逐字段序列化：
 	// MarshalJSON 优先整块吐出它（同 anthropic block.OpaqueRaw 的做法），
 	// 逐字段重建会丢掉这个 part 没建模的键。

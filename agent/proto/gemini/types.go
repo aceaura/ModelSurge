@@ -47,6 +47,11 @@ type part struct {
 	// 跨族出站跳过并报损耗。
 	ExecutableCode      json.RawMessage `json:"executableCode,omitempty"`
 	CodeExecutionResult json.RawMessage `json:"codeExecutionResult,omitempty"`
+	// VideoMetadata 视频截取元数据（startOffset/endOffset/fps，官方要求只在
+	// 视频 inlineData/fileData 上出现）。RawMessage 延迟到 mediaBlock 决定。
+	VideoMetadata json.RawMessage `json:"videoMetadata,omitempty"`
+	// PartMetadata 客户端簿记元数据（map，可挂在任意部件型上）。
+	PartMetadata json.RawMessage `json:"partMetadata,omitempty"`
 }
 
 type blob struct {
@@ -82,6 +87,11 @@ type generationConfig struct {
 	// ResponseSchema 是可选的 schema 约束（Gemini 的 schema 恒为严格语义）。
 	ResponseMimeType string          `json:"responseMimeType,omitempty"`
 	ResponseSchema   json.RawMessage `json:"responseSchema,omitempty"`
+	// ResponseJsonSchema responseSchema 的替代槽位：接受完整 JSON Schema
+	// （responseSchema 只收 OpenAPI 3.0 子集）。官方文档标注两槽互斥。
+	ResponseJsonSchema json.RawMessage `json:"responseJsonSchema,omitempty"`
+	// ServiceTier 服务质量档位（unspecified/flex/standard/priority）。
+	ServiceTier string `json:"serviceTier,omitempty"`
 	// ResponseModalities 输出模态（TEXT/AUDIO/IMAGE）。OpenAI 值集是它的真子集
 	// （text/audio），IMAGE 没有任何出站接得住——收下只为跨族传递与诊断可见。
 	ResponseModalities []string `json:"responseModalities,omitempty"`

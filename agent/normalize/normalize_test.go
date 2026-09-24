@@ -172,13 +172,20 @@ func TestStripToolTracesWhenNoTools(t *testing.T) {
 }
 
 func TestSanitizeSchema(t *testing.T) {
-	in := json.RawMessage(`{"type":"object","required":[],"properties":{"a":{"type":"string","additionalProperties":false}},"additionalProperties":true}`)
+	in := json.RawMessage(`{"type":"object","required":[],"properties":{"a":{"type":"string","additionalProperties":false}},"additionalProperties":false}`)
 	out := SanitizeSchema(in)
 	if !json.Valid(out) {
 		t.Fatalf("invalid json: %s", out)
 	}
-	if s := string(out); strings.Contains(s, "additionalProperties") || strings.Contains(s, `"required":[]`) {
-		t.Errorf("schema not sanitized: %s", s)
+	s := string(out)
+	// 空 required 数组照旧清掉（语义等同缺省）。
+	if strings.Contains(s, `"required":[]`) {
+		t.Errorf("empty required not sanitized: %s", s)
+	}
+	// additionalProperties 是契约的一部分：OpenAI strict 工具官方要求每个
+	// object 节点都带 additionalProperties:false，剥掉后上游必 400。
+	if got := strings.Count(s, `"additionalProperties":false`); got != 2 {
+		t.Errorf("additionalProperties must be preserved at both levels, got %d: %s", got, s)
 	}
 }
 

@@ -78,7 +78,28 @@ func TestToolStrictRoundTrip(t *testing.T) {
 	}
 }
 
-// R62：anthropic 工具修饰四维跨族零泄漏。
+// B1：strict:true 的 OpenAI 工具官方要求 schema 每个 object 节点都带
+// additionalProperties:false；规整曾无条件剥掉它，strict 工具发出去必 400。
+// 三族出站都必须原样保留。
+func TestToolStrictSchemaAdditionalPropertiesPreserved(t *testing.T) {
+	req := &ir.Request{Model: "m", MaxTokens: 100,
+		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+		Tools: []ir.Tool{{Name: "ping", Strict: boolPtr(true), InputSchema: []byte(
+			`{"type":"object","additionalProperties":false,` +
+				`"properties":{"a":{"type":"object","additionalProperties":false,"properties":{"b":{"type":"string"}}}}}`)}}}
+	for _, name := range []string{"anthropic", "openai-chat", "openai-responses", "codex"} {
+		t.Run(name, func(t *testing.T) {
+			out, err := proto.MustOutbound(name).EncodeRequest(req)
+			if err != nil {
+				t.Fatalf("EncodeRequest: %v", err)
+			}
+			if got := strings.Count(string(out), `"additionalProperties":false`); got != 2 {
+				t.Errorf("additionalProperties must survive normalization at both levels, got %d: %s", got, out)
+			}
+		})
+	}
+}
+
 func TestToolModifiersNeverLeakToOtherFamilies(t *testing.T) {
 	fa := false
 	req := &ir.Request{Model: "m", MaxTokens: 100,

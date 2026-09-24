@@ -2,6 +2,7 @@ package proto_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -416,7 +417,7 @@ func TestMediaRoundTripsSameProtocol(t *testing.T) {
 				t.Fatalf("二次 DecodeRequest: %v", err)
 			}
 			out := onlyMediaOf(t, back)
-			if *out != *in {
+			if !reflect.DeepEqual(*out, *in) {
 				t.Errorf("往返后变了：\n got %+v\nwant %+v", *out, *in)
 			}
 		})
@@ -541,7 +542,7 @@ func TestMediaSurvivesClone(t *testing.T) {
 		Filename: "clip.wav", Format: "wav",
 	}
 	got := onlyMediaOf(t, mediaReq(in).Clone())
-	if *got != *in {
+	if !reflect.DeepEqual(*got, *in) {
 		t.Errorf("Clone 后变了：\n got %+v\nwant %+v", *got, *in)
 	}
 }

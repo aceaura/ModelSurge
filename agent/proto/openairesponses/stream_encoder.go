@@ -609,6 +609,10 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.CacheCreationDetailsDropNote())
 		e.droppedCacheDetails = false
 	}
+	if dims := proto.UsageDropDims(&e.usage, Name); len(dims) > 0 {
+		notes = append(notes, proto.UsageDetailDropNote(dims))
+		e.usage = ir.Usage{}
+	}
 	return notes
 }
 
@@ -674,24 +678,30 @@ func encodeUsage(u *ir.Usage) *usage {
 
 // ---- 非流式响应 ----
 
-func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
+func (c codec) DecodeResponse(body []byte) (*ir.Response, error) {
+	resp, _, err := c.DecodeResponseWithNotes(body)
+	return resp, err
+}
+
+func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error) {
 	var r responseObj
 	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, fmt.Errorf("openai-responses: decode response: %w", err)
+		return nil, nil, fmt.Errorf("openai-responses: decode response: %w", err)
 	}
 	// 终态失败的响应不得伪造成 completed：此前只判 incomplete，failed/cancelled
 	// 走到这里会产出 200+空 output 的"成功"，error.code/message 全丢——而流式
 	// 路径同事件是报错的，两条路径口径相反（OpenAI SDK status 六值为权威形状）。
 	switch r.Status {
 	case "failed", "cancelled":
-		return nil, errorFromBody(r.Error, "upstream response "+r.Status)
+		return nil, nil, errorFromBody(r.Error, "upstream response "+r.Status)
 	case "queued", "in_progress":
 		// background 模式的非终态：换一个真流式的目标可能成，判可重试。
-		return nil, &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream returned non-terminal status " + r.Status, Retryable: true}
+		return nil, nil, &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream returned non-terminal status " + r.Status, Retryable: true}
 	}
 	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, Created: r.CreatedAt}
 	// 复用请求解码的 item 逻辑：把 output items 当成一条对话的尾部
 	fake := &ir.Request{}
+	logprobParts := 0
 	for _, raw := range r.Output {
 		var it inputItem
 		// raw 已是合法 JSON，这里只可能报字段类型不匹配；Unmarshal 会跳过
@@ -699,6 +709,7 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 		// item（连 default 的不透明块兜底都进不去），改成降级解出——冲突
 		// 字段缺省，其余键与原文（opaque 捕获用）都还在（R92a 同款证据）。
 		_ = json.Unmarshal(raw, &it)
+		logprobParts += countLogprobsParts(it.Content)
 		decodeItem(fake, it, raw)
 	}
 	for _, m := range fake.Messages {
@@ -717,7 +728,30 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 	if r.Usage != nil {
 		out.Usage = decodeUsage(r.Usage)
 	}
-	return out, nil
+	var notes []string
+	if logprobParts > 0 {
+		notes = append(notes, proto.LogProbsDropNote(logprobParts))
+	}
+	return out, notes, nil
+}
+
+// countLogprobsParts 数 content 数组里带 logprobs 载荷的 part 数（逐 token
+// 概率没有 IR 槽位，只探测计数）。
+func countLogprobsParts(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var parts []contentPart
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return 0
+	}
+	n := 0
+	for _, p := range parts {
+		if len(p.LogProbs) > 0 && string(p.LogProbs) != "null" {
+			n++
+		}
+	}
+	return n
 }
 
 func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {

@@ -166,6 +166,10 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		return nil, err
 	}
 	out.Container = ct
+	// beta 两参数原值进 IR：speed 是溢价计费档；mcp_servers 含凭据与
+	// 嵌套工具配置，不展开建模（同 Moderation 的不透明原文口径）。
+	out.Speed = req.Speed
+	out.MCPServers = req.MCPServers
 	return out, nil
 }
 
@@ -330,7 +334,7 @@ func decodeBlock(b block, raw json.RawMessage) ir.Block {
 		out.ServerToolUse = &ir.ServerToolUse{ID: b.ID, Name: b.Name, Input: b.Input}
 	case "web_search_tool_result":
 		out.Type = ir.BlockWebSearchToolResult
-		out.WebSearchToolResult = decodeWebSearchToolResult(b.ToolUseID, b.Content)
+		out.WebSearchToolResult = decodeWebSearchToolResult(b.ToolUseID, b.Caller, b.Content)
 	case "container_upload":
 		out.Type = ir.BlockContainerUpload
 		out.ContainerUpload = &ir.ContainerUploadRef{FileID: b.FileID}
@@ -397,18 +401,27 @@ func decodeToolResultContent(raw json.RawMessage) []ir.Block {
 	return decodeBlocks(raw)
 }
 
-// decodeWebSearchToolResult web_search_tool_result.content 子块数组 -> IR 结果。
-func decodeWebSearchToolResult(toolUseID string, raw json.RawMessage) *ir.WebSearchToolResult {
-	var rs []webSearchResultBlock
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &rs); err != nil {
-			rs = nil
-		}
+// decodeWebSearchToolResult web_search_tool_result.content -> IR 结果。
+// content 是 union：错误形态是单个对象（web_search_tool_result_error），
+// 结果形态是子块数组。只按数组解会把错误对象解成零条结果——「搜索失败」
+// 被伪造成「搜索成功但没找到东西」，两种语义对客户端完全不同。
+func decodeWebSearchToolResult(toolUseID string, caller, raw json.RawMessage) *ir.WebSearchToolResult {
+	out := &ir.WebSearchToolResult{ToolUseID: toolUseID, Caller: caller}
+	if len(raw) == 0 {
+		return out
 	}
-	out := &ir.WebSearchToolResult{ToolUseID: toolUseID}
+	var eb webSearchToolErrorBlock
+	if json.Unmarshal(raw, &eb) == nil && eb.ErrorCode != "" {
+		out.ErrorCode = eb.ErrorCode
+		return out
+	}
+	var rs []webSearchResultBlock
+	if err := json.Unmarshal(raw, &rs); err != nil {
+		rs = nil
+	}
 	for _, r := range rs {
 		out.Results = append(out.Results, ir.WebSearchResult{
-			Title: r.Title, URL: r.URL, Snippet: r.EncryptedContent,
+			Title: r.Title, URL: r.URL, Snippet: r.EncryptedContent, PageAge: r.PageAge,
 		})
 	}
 	return out
@@ -636,6 +649,8 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			out.Container, _ = json.Marshal(p)
 		}
 	}
+	out.Speed = r.Speed
+	out.MCPServers = r.MCPServers
 	return json.Marshal(out)
 }
 
@@ -765,13 +780,21 @@ func encodeBlock(b ir.Block) block {
 		out.Type = "web_search_tool_result"
 		if b.WebSearchToolResult != nil {
 			out.ToolUseID = b.WebSearchToolResult.ToolUseID
-			rs := make([]webSearchResultBlock, 0, len(b.WebSearchToolResult.Results))
-			for _, r := range b.WebSearchToolResult.Results {
-				rs = append(rs, webSearchResultBlock{
-					Type: "web_search_result", Title: r.Title, URL: r.URL, EncryptedContent: r.Snippet,
+			out.Caller = b.WebSearchToolResult.Caller
+			if b.WebSearchToolResult.ErrorCode != "" {
+				out.Content = marshal(webSearchToolErrorBlock{
+					Type: "web_search_tool_result_error", ErrorCode: b.WebSearchToolResult.ErrorCode,
 				})
+			} else {
+				rs := make([]webSearchResultBlock, 0, len(b.WebSearchToolResult.Results))
+				for _, r := range b.WebSearchToolResult.Results {
+					rs = append(rs, webSearchResultBlock{
+						Type: "web_search_result", Title: r.Title, URL: r.URL, EncryptedContent: r.Snippet,
+						PageAge: r.PageAge,
+					})
+				}
+				out.Content = marshal(rs)
 			}
-			out.Content = marshal(rs)
 		}
 	case ir.BlockContainerUpload:
 		out.Type = "container_upload"

@@ -42,6 +42,9 @@ type streamDecoder struct {
 	synthIDs int
 	// droppedTools 既没名字也没 id、无从还原的工具调用碎片数量。
 	droppedTools int
+	// droppedLogprobs 携带 logprobs 载荷的 chunk 数：逐 token 概率没有 IR
+	// 槽位，内容带不走，计数经 Notes() 报出，不再静默。
+	droppedLogprobs int
 	// sawError 已下发过 EvError。错误帧是终止帧，Finish() 不得再补
 	// message_delta+message_stop，否则客户端在错误之后又看到一个正常收尾。
 	sawError       bool
@@ -141,6 +144,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		}
 		if ch.Delta != nil {
 			out = append(out, d.feedDelta(ch.Delta)...)
+		}
+		if len(ch.LogProbs) > 0 && string(ch.LogProbs) != "null" {
+			d.droppedLogprobs++
 		}
 		if ch.FinishReason != "" {
 			d.gotFinish = true
@@ -348,6 +354,10 @@ func (d *streamDecoder) Notes() []string {
 		notes = append(notes, fmt.Sprintf(
 			"dropped %d streamed tool call fragment(s) that ended with neither a name nor an id: the call cannot be reconstructed", d.droppedTools))
 		d.droppedTools = 0
+	}
+	if d.droppedLogprobs > 0 {
+		notes = append(notes, proto.LogProbsDropNote(d.droppedLogprobs))
+		d.droppedLogprobs = 0
 	}
 	return notes
 }

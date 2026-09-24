@@ -251,9 +251,9 @@ func decodeMessage(req *ir.Request, m message) {
 	case "system", "developer":
 		req.System = append(req.System, contentBlocks(m.Content)...)
 	case "user":
-		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: contentBlocks(m.Content)})
+		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: contentBlocks(m.Content), Name: m.Name})
 	case "assistant":
-		msg := ir.Message{Role: ir.RoleAssistant, Content: attachCitations(contentBlocks(m.Content), decodeAnnotations(m.Annotations))}
+		msg := ir.Message{Role: ir.RoleAssistant, Content: attachCitations(contentBlocks(m.Content), decodeAnnotations(m.Annotations)), Name: m.Name}
 		if len(m.Audio) > 0 && string(m.Audio) != "null" {
 			var a audioRef
 			if json.Unmarshal(m.Audio, &a) == nil {
@@ -275,7 +275,7 @@ func decodeMessage(req *ir.Request, m message) {
 		}
 		req.Messages = append(req.Messages, msg)
 	case "tool":
-		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: []ir.Block{{
+		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Name: m.Name, Content: []ir.Block{{
 			Type: ir.BlockToolResult,
 			ToolResult: &ir.ToolResult{
 				ToolUseID: m.ToolCallID,
@@ -283,7 +283,7 @@ func decodeMessage(req *ir.Request, m message) {
 			},
 		}}})
 	default: // function 等未知角色归一为 user
-		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: contentBlocks(m.Content)})
+		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: contentBlocks(m.Content), Name: m.Name})
 	}
 }
 
@@ -592,7 +592,7 @@ func marshalString(s string) []byte {
 func encodeMessages(m ir.Message) []message {
 	switch m.Role {
 	case ir.RoleAssistant:
-		msg := message{Role: "assistant"}
+		msg := message{Role: "assistant", Name: m.Name}
 		if m.AudioID != "" {
 			msg.Audio = marshal(audioRef{ID: m.AudioID})
 		}
@@ -644,9 +644,9 @@ func encodeMessages(m ir.Message) []message {
 			}
 			// 纯文本单块用 string 形态，兼容性最好
 			if len(parts) == 1 && parts[0].Type == "text" {
-				out = append(out, message{Role: "user", Content: json.RawMessage(marshalString(parts[0].Text))})
+				out = append(out, message{Role: "user", Content: json.RawMessage(marshalString(parts[0].Text)), Name: m.Name})
 			} else {
-				out = append(out, message{Role: "user", Content: marshal(parts)})
+				out = append(out, message{Role: "user", Content: marshal(parts), Name: m.Name})
 			}
 			parts = nil
 		}

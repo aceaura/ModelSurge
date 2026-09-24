@@ -100,10 +100,16 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			}
 		}
 		// responseSchema 单独出现（没写 mimeType）也是结构化输出诉求：
-		// 只看 mimeType 会把带 schema 的请求整条漏掉。
-		if gc.ResponseMimeType == "application/json" || len(gc.ResponseSchema) > 0 {
+		// 只看 mimeType 会把带 schema 的请求整条漏掉。responseJsonSchema
+		// 是接受完整 JSON Schema 的替代槽位（官方标注互斥，两槽都给时取
+		// responseSchema——它是先存在的老槽位，客户端两槽同值是常态）。
+		schema := gc.ResponseSchema
+		if len(schema) == 0 {
+			schema = gc.ResponseJsonSchema
+		}
+		if gc.ResponseMimeType == "application/json" || len(schema) > 0 {
 			// Gemini 的 responseSchema 恒为严格语义，没有 strict 开关也没有名称。
-			out.ResponseFormat = &ir.ResponseFormat{Schema: gc.ResponseSchema, Strict: true}
+			out.ResponseFormat = &ir.ResponseFormat{Schema: schema, Strict: true}
 		} else if gc.ResponseMimeType != "" && gc.ResponseMimeType != "text/plain" {
 			// text/x.enum 等非 JSON MIME：约束输出类型，四个出站（gemini 只入
 			// 不出）没有一个接得住——收进 IR 只为诊断报得出。text/plain 是显式
@@ -114,6 +120,12 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		// modalities，IMAGE 没有出站接得住，过滤由诊断报出。
 		for _, m := range gc.ResponseModalities {
 			out.Modalities = append(out.Modalities, strings.ToLower(m))
+		}
+		// serviceTier 服务质量档位原值进 IR，跨族映射是出站的事
+		// （proto.MapServiceTier）。"unspecified" 是显式缺省，与不给同义，
+		// 收进来会让出站发明一个客户端没要的档位。
+		if gc.ServiceTier != "" && gc.ServiceTier != "unspecified" {
+			out.ServiceTier = gc.ServiceTier
 		}
 	}
 	if req.SystemInstruction != nil {
@@ -152,6 +164,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	for _, c := range req.Contents {
 		msg := ir.Message{Role: decodeRole(c.Role)}
 		for _, p := range c.Parts {
+			if len(p.PartMetadata) > 0 && string(p.PartMetadata) != "null" {
+				out.PartMetaParts++
+			}
 			switch {
 			case p.FunctionCall != nil:
 				id := p.FunctionCall.ID
@@ -182,9 +197,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 					Content:   []ir.Block{{Type: ir.BlockText, Text: decodeFuncResponseText(p.FunctionResponse.Response)}},
 				}})
 			case p.InlineData != nil:
-				msg.Content = append(msg.Content, mediaBlock(p.InlineData.MimeType, p.InlineData.Data, ""))
+				msg.Content = append(msg.Content, mediaBlock(p.InlineData.MimeType, p.InlineData.Data, "", p.VideoMetadata))
 			case p.FileData != nil:
-				msg.Content = append(msg.Content, mediaBlock(p.FileData.MimeType, "", p.FileData.FileURI))
+				msg.Content = append(msg.Content, mediaBlock(p.FileData.MimeType, "", p.FileData.FileURI, p.VideoMetadata))
 			case len(p.ExecutableCode) > 0 && string(p.ExecutableCode) != "null":
 				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockOpaque,
 					Opaque: &ir.Opaque{WireType: "executableCode", Body: p.ExecutableCode, From: Name}})
@@ -419,12 +434,15 @@ func undeliverableMedia(blocks []ir.Block) (images, files int) {
 // mediaBlock 按 MIME 分流 inlineData / fileData。Gemini 的这两个字段能装
 // 任意 MIME（音频、PDF、视频），此前一律解成 BlockImage：音频会被写进目标协议的
 // 图片槽位，上游按图片解码后 400。空 MIME 也不猜图片——它在 Gemini 里是可选字段。
-func mediaBlock(mime, data, uri string) ir.Block {
+func mediaBlock(mime, data, uri string, videoMeta json.RawMessage) ir.Block {
 	if strings.HasPrefix(mime, "image/") {
 		return ir.Block{Type: ir.BlockImage, Image: &ir.Image{MediaType: mime, Data: data, URL: uri}}
 	}
 	return ir.Block{Type: ir.BlockMedia, Media: &ir.Media{
 		Kind: ir.MediaKindOf(mime), MediaType: mime, Data: data, URL: uri,
+		// 官方要求 videoMetadata 只随视频数据出现；挂在非视频附件上是客户端
+		// 错误，但原样带上比静默丢弃更可诊断（跨族损耗由 Diagnose 报出）。
+		VideoMeta: videoMeta,
 	}}
 }
 

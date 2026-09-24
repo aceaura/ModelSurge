@@ -33,6 +33,13 @@ type request struct {
 	// Container 代码执行容器复用标识与技能声明。官方两形态：string 简写
 	// （仅 id）或 {id, skills} 对象——RawMessage 延迟判断。
 	Container json.RawMessage `json:"container,omitempty"`
+	// Speed 推理速度档位（beta：standard/fast）。fast 是溢价计费档，
+	// 丢了客户端按快速度预期计费却对不上账。
+	Speed string `json:"speed,omitempty"`
+	// MCPServers MCP 连接器服务器声明数组（beta：
+	// {type:"url",name,url,authorization_token?,tool_configuration?}）。
+	// 含凭据与嵌套工具配置，不展开建模，原样透传。
+	MCPServers json.RawMessage `json:"mcp_servers,omitempty"`
 }
 
 // containerParams 请求侧 container 的对象形态（官方 ContainerParams）。
@@ -101,6 +108,8 @@ type block struct {
 	Name      string          `json:"name,omitempty"`  // tool_use / server_tool_use
 	Input     json.RawMessage `json:"input,omitempty"` // tool_use / server_tool_use
 	ToolUseID string          `json:"tool_use_id,omitempty"`
+	// Caller web_search_tool_result 的发起方回执（可选 union 对象，原样透传）。
+	Caller json.RawMessage `json:"caller,omitempty"`
 	// FileID container_upload 块的文件引用（type=container_upload 时唯一载荷）。
 	FileID    string          `json:"file_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"` // tool_result / web_search_tool_result
@@ -168,6 +177,14 @@ type webSearchResultBlock struct {
 	Title            string `json:"title"`
 	URL              string `json:"url"`
 	EncryptedContent string `json:"encrypted_content"` // 原文摘要（上游侧加密，原样透传）
+	PageAge          string `json:"page_age,omitempty"`
+}
+
+// webSearchToolErrorBlock web_search_tool_result.content 的错误形态：
+// content 是结果数组与本对象的 union，判别靠 type + error_code。
+type webSearchToolErrorBlock struct {
+	Type      string `json:"type"` // "web_search_tool_result_error"
+	ErrorCode string `json:"error_code"`
 }
 
 // mediaSource image 与 document 共用的 source 外形。
@@ -258,8 +275,6 @@ type eventMessage struct {
 	ID    string `json:"id"`
 	Model string `json:"model"`
 	Usage *usage `json:"usage,omitempty"`
-	// ServiceTier 实际服务档位回显（standard/priority/batch）。
-	ServiceTier string `json:"service_tier,omitempty"`
 	// Container 代码执行容器回显（按需出场，缺键与 null 同义）。
 	Container *container `json:"container,omitempty"`
 }
@@ -304,6 +319,11 @@ type usage struct {
 	OutputTokensDetails *outputTokensDetails `json:"output_tokens_details,omitempty"`
 	// InferenceGeo 实际推理区域回显（官方 usage.inference_geo）。
 	InferenceGeo string `json:"inference_geo,omitempty"`
+	// ServiceTier 实际服务档位回显（官方 usage.service_tier，∈ standard/
+	// priority/batch）。注意它长在 usage 里，不在 Message 顶层——顶层那个键
+	// 是本仓曾经的伪造。MessageDeltaUsage 没有此键：message_delta 帧编解码
+	// 都不该出现它（编码侧靠调用方只给 message_start/非流式 usage 赋值）。
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 type serverToolUsage struct {
@@ -340,7 +360,6 @@ type response struct {
 	// StopDetails 拒绝档的结构化分类（官方 response.stop_details）。
 	StopDetails *stopDetails `json:"stop_details,omitempty"`
 	Usage       usage        `json:"usage"`
-	ServiceTier string       `json:"service_tier,omitempty"`
 	// Container 代码执行容器回显（按需出场，缺键与 null 同义）。
 	Container *container `json:"container,omitempty"`
 }

@@ -297,6 +297,14 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.CacheCreationDetailsDropNote())
 		e.droppedCacheDetails = false
 	}
+	// usage 细分维度与 TTL 明细同口径门控：客户端没 opt-in 时 usage 帧
+	// 压根没发，细分也就无所谓「没能交付」。
+	if e.includeUsage {
+		if dims := proto.UsageDropDims(&e.usage, Name); len(dims) > 0 {
+			notes = append(notes, proto.UsageDetailDropNote(dims))
+			e.usage = ir.Usage{}
+		}
+	}
 	return notes
 }
 
@@ -452,6 +460,9 @@ func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error
 	var notes []string
 	if len(r.Choices) > 1 {
 		notes = append(notes, proto.AdditionalChoicesDropNote(len(r.Choices)-1))
+	}
+	if selected != nil && len(selected.LogProbs) > 0 && string(selected.LogProbs) != "null" {
+		notes = append(notes, proto.LogProbsDropNote(1))
 	}
 	return out, notes, nil
 }

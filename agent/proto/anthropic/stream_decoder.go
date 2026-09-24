@@ -78,12 +78,13 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		if se.Message != nil {
 			ev.MessageID = se.Message.ID
 			ev.Model = se.Message.Model
-			ev.ServiceTier = se.Message.ServiceTier
 			ev.Container = decodeContainer(se.Message.Container)
 			if se.Message.Usage != nil {
 				u := convUsage(*se.Message.Usage)
 				d.usage.MergeNonZero(u)
 				ev.Usage = &u
+				// 档位回显在 usage 里（官方 usage.service_tier），顶层没有该键。
+				ev.ServiceTier = se.Message.Usage.ServiceTier
 			}
 		}
 		return []ir.Event{ev}, nil

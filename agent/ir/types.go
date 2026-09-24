@@ -216,9 +216,18 @@ type ServerToolUse struct {
 }
 
 // WebSearchToolResult web_search 服务端工具的结果块（Anthropic 形态）。
+// content 是 union：结果数组 或 错误对象（web_search_tool_result_error）。
 type WebSearchToolResult struct {
 	ToolUseID string
 	Results   []WebSearchResult
+	// ErrorCode 错误形态的判别值（error_code，如 max_uses_exceeded /
+	// query_too_long）。非空时 Results 必为空。没有这个字段时错误对象按
+	// 结果数组解，解出零条 Results——把「搜索失败」伪造成「搜索成功但没
+	// 找到东西」，客户端会基于假成功继续规划下一步。
+	ErrorCode string
+	// Caller 发起方回执（type=direct / server_tool 的对象，官方 Caller
+	// union 仍在演化）。逐字段重建会丢掉未建模发起方形态的键，原样带回。
+	Caller json.RawMessage `json:",omitempty"`
 }
 
 // WebSearchResult 单条搜索结果。Snippet 对应 Anthropic 的
@@ -227,6 +236,8 @@ type WebSearchResult struct {
 	Title   string
 	URL     string
 	Snippet string
+	// PageAge 页面抓取时间（官方可选字段，如 "April 15, 2025"）。
+	PageAge string
 }
 
 // Image 图片内容。Data 为 base64 编码；URL 与 Data 二选一。
@@ -290,6 +301,11 @@ type Media struct {
 	// 用指针而不是 bool：「键缺失」与「显式 false」语义不同——后者是客户端主动
 	// 关掉文档引用，压成 false 会把主动关闭与没表态混为一谈，同族往返也不再逐字。
 	CitationsEnabled *bool
+	// VideoMeta 视频截取元数据（Gemini videoMetadata：startOffset/endOffset/
+	// fps）。它决定模型看整段还是指定片段——丢了模型看到的内容范围就与
+	// 客户端指定不同。四个出站（gemini 只入不出）都没有对应槽位，入 IR
+	// 只为跨族损耗可见。原始对象透传，不展开建模。
+	VideoMeta json.RawMessage `json:",omitempty"`
 }
 
 // MediaKindOf 从 MIME 推大类。空 MIME 归 MediaOther 而不是猜测：
@@ -389,6 +405,10 @@ type Message struct {
 	// AudioID 是 Chat assistant 历史消息的音频引用。官方请求只接受
 	// {audio:{id}}，完整音频数据不会在多轮上下文中重复回传。
 	AudioID string
+	// Name Chat messages[].name（多方参与者区分）。只有 chat 族有槽位：
+	// 同族往返原样带回，跨族投影无处安放（与 user 维度的处置不同——那是
+	// 会话级身份，这是消息级身份）。
+	Name string
 }
 
 // SigFrom 签名非空时返回协议名作为 SignatureFrom，空签名为空串。
@@ -737,6 +757,9 @@ type Request struct {
 	Store *bool
 	// ItemRefs input 里 item_reference 条目的计数（内容拿不到，只记数）。
 	ItemRefs int
+	// PartMetaParts 带 partMetadata 的 gemini 部件计数（客户端簿记元数据，
+	// 可挂在任意部件型上，IR 块没有通用槽位，只记数供诊断报出）。
+	PartMetaParts int
 
 	// 以下四维只有 Responses 一族有。ConversationID 与 PreviousResponseID
 	// 互斥（官方 API 同给会 400），是同族会话锚点的另一种形态，同协议出站
@@ -791,6 +814,14 @@ type Request struct {
 	// 参数，string 简写与 {id,skills} 对象两形态统一成此结构；外族无对应，
 	// 跨族由诊断报出）。nil = 客户端没提。
 	Container *Container
+	// Speed 推理速度档位（anthropic beta speed：standard/fast，fast 是
+	// 溢价计费档）。只有 anthropic 一族有此参数；跨族由诊断报出。
+	Speed string
+	// MCPServers MCP 连接器服务器声明数组（anthropic beta mcp_servers：
+	// {type:"url",name,url,authorization_token?,tool_configuration?}）。
+	// 含凭据与嵌套工具配置，不展开建模，原样透传；值含敏感凭据，诊断与
+	// 日志一律不回显值本身。外族无对应物，跨族由诊断报出。
+	MCPServers json.RawMessage `json:",omitempty"`
 	// Verbosity 输出啰嗦程度档位（low/medium/high）。Chat 是顶层 verbosity，
 	// Responses 是 text.verbosity；其余协议没有输出长度转向这一维。
 	Verbosity string

@@ -41,6 +41,9 @@ type streamEncoder struct {
 	tierSent                 bool
 	messageDeltaSent         bool
 	stopped                  bool
+	// usage 逐事件累计的响应用量：Notes() 按本族槽位算出被丢的细分维度
+	// （音频/预测 token 等 anthropic 无对应字段的项）。
+	usage ir.Usage
 	// sawError 已下发错误帧。错误帧就是终止帧，Finish() 不得再补
 	// message_delta+message_stop，否则限流会被告诉客户端「你输出超长了」，
 	// 紧接的 message_stop 又把失败伪装成正常结束。
@@ -55,9 +58,12 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	switch ev.Type {
 	case ir.EvMessageStart:
 		em := encodeMessageStart(ev)
+		if ev.Usage != nil {
+			e.usage.MergeNonZero(*ev.Usage)
+		}
 		if ev.ServiceTier != "" {
 			if tier, ok := proto.MapServiceTierEcho(ev.ServiceTier, Name); ok {
-				em.ServiceTier = tier
+				em.Usage.ServiceTier = tier
 				e.tierSent = true
 			} else {
 				e.droppedTier = ev.ServiceTier
@@ -150,6 +156,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.ServiceTier != "" && !e.tierSent && e.droppedTier == "" {
 			e.droppedTier = ev.ServiceTier
 		}
+		if ev.Usage != nil {
+			e.usage.MergeNonZero(*ev.Usage)
+		}
 		return [][]byte{sseFrame("message_delta", marshal(streamEvent{
 			Type:  "message_delta",
 			Delta: &delta{StopReason: UnmapStopReason(ev.StopReason), StopSequence: ev.StopSequence, Container: encodeContainerInfo(ev.Container), StopDetails: encodeStopDetails(ev.StopDetails)},
@@ -217,6 +226,10 @@ func (e *streamEncoder) Notes() []string {
 	if e.droppedTier != "" {
 		notes = append(notes, proto.TierEchoDropNote(e.droppedTier))
 		e.droppedTier = ""
+	}
+	if dims := proto.UsageDropDims(&e.usage, Name); len(dims) > 0 {
+		notes = append(notes, proto.UsageDetailDropNote(dims))
+		e.usage = ir.Usage{}
 	}
 	if e.droppedAudio {
 		notes = append(notes, proto.AudioOutputDropNote())
@@ -330,7 +343,6 @@ type messageStartBody struct {
 	StopReason   *string           `json:"stop_reason"`
 	StopSequence *string           `json:"stop_sequence"`
 	Usage        messageStartUsage `json:"usage"`
-	ServiceTier  string            `json:"service_tier,omitempty"`
 	Container    *container        `json:"container,omitempty"`
 }
 
@@ -343,6 +355,9 @@ type messageStartUsage struct {
 	CacheCreation            *cacheCreationUsage `json:"cache_creation,omitempty"`
 	ServerToolUse            *serverToolUsage    `json:"server_tool_use,omitempty"`
 	InferenceGeo             string              `json:"inference_geo,omitempty"`
+	// ServiceTier 档位回显（官方 usage.service_tier）：长在 usage 里，
+	// 顶层写这个键是伪造。
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 // encodeMessageStart 构造 message_start 的完整 message 信封。Content 必须是
@@ -434,7 +449,7 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 		StopSequence: r.StopSequence,
 		StopDetails:  decodeStopDetails(r.StopDetails),
 		Usage:        convUsage(r.Usage),
-		ServiceTier:  r.ServiceTier,
+		ServiceTier:  r.Usage.ServiceTier,
 		Container:    decodeContainer(r.Container),
 	}, nil
 }
@@ -452,8 +467,9 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		Usage:        *encodeUsagePtr(&resp.Usage),
 	}
 	// 值集装不下的回显（OpenAI 的 flex/fast 等）丢弃，由 ResponseNotes 报出。
+	// 槽位在 usage 里（官方 usage.service_tier），顶层没有该键。
 	if tier, ok := proto.MapServiceTierEcho(resp.ServiceTier, Name); ok {
-		out.ServiceTier = tier
+		out.Usage.ServiceTier = tier
 	}
 	out.Container = encodeContainerInfo(resp.Container)
 	return json.Marshal(out)

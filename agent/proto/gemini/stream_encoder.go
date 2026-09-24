@@ -349,6 +349,10 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.CacheCreationDetailsDropNote())
 		e.droppedCacheDetails = false
 	}
+	if dims := proto.UsageDropDims(&e.usage, Name); len(dims) > 0 {
+		notes = append(notes, proto.UsageDetailDropNote(dims))
+		e.usage = ir.Usage{}
+	}
 	return notes
 }
 

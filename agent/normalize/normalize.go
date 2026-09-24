@@ -26,7 +26,7 @@ type Options struct {
 	FixOrphanToolResults bool // 孤儿 tool_result 降级为文本
 	RequireToolPairing   bool // tool_use 后必须紧跟含对应 tool_result 的 user 消息，缺失则补占位结果
 	StripToolsIfNoTools  bool // 请求无 tools 时把 tool 痕迹渲染为文本
-	SanitizeSchemas      bool // 清洗工具 schema（去 additionalProperties、空 required）
+	SanitizeSchemas      bool // 清洗工具 schema（去空 required；additionalProperties 保留，见 SanitizeSchema）
 	MaxToolNameLength    int  // 工具名长度上限，0 不限制
 }
 
@@ -132,8 +132,12 @@ func DropToolChoiceWithoutTools(req *ir.Request) {
 	}
 }
 
-// SanitizeSchema 递归删除 additionalProperties 与空 required 数组。
-// 部分上游（Gemini 一类严格校验 schema 的）对这些字段敏感。
+// SanitizeSchema 递归删除空 required 数组。
+// additionalProperties 必须保留：它是客户端工具契约的一部分（false 表示
+// 「模型不得产出未声明字段」），剥掉等于悄悄放宽契约；更硬的是 OpenAI
+// strict 工具（strict:true）官方要求每个 object 节点都带
+// additionalProperties:false，剥掉后上游按 strict 校验直接 400 拒整轮。
+// 空 required 数组语义等同缺省，删除不改契约。
 func SanitizeSchema(schema json.RawMessage) json.RawMessage {
 	if len(schema) == 0 {
 		return schema
@@ -161,7 +165,6 @@ func sanitizeNode(v any) any {
 		}
 		return v
 	}
-	delete(m, "additionalProperties")
 	if req, ok := m["required"].([]any); ok && len(req) == 0 {
 		delete(m, "required")
 	}

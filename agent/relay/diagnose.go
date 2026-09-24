@@ -530,6 +530,17 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 		// cachedContent 同理：缓存是服务端资源 id，换协议后引用不到。
 		notes = append(notes, "dropped cached content reference: upstream protocol has no context-caching parameter, the full context will be sent and billed")
 	}
+	// 视频截取元数据（gemini videoMetadata）没有任何出站接得住，恒报：
+	// 丢了模型看到的是整段视频而非客户端指定的片段。
+	if n := countVideoMeta(req); n > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"dropped video metadata on %d media part(s): the target protocol has no video clip-offset parameter, the model sees the whole video instead of the specified clip", n))
+	}
+	// partMetadata 是客户端簿记元数据，换协议后无任何槽位，恒报。
+	if req.PartMetaParts > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"dropped part metadata on %d part(s): the target protocol has no per-part bookkeeping metadata slot, client-side source annotations are lost", req.PartMetaParts))
+	}
 	if req.ResponseMimeType != "" {
 		// 非 JSON 的输出 MIME 约束（text/x.enum 等）是 Gemini 独有维度，四个
 		// 出站（gemini 只入不出）没有一个接得住，恒报。
@@ -711,6 +722,18 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 			notes = append(notes,
 				"dropped container parameter: the target protocol has no code-execution container reuse or skill declaration, the upstream starts with a fresh container and no skills loaded")
 		}
+		// 推理速度档位：fast 是溢价计费档，丢了请求按标准速度跑，
+		// 客户端的延迟预期落空。
+		if req.Speed != "" {
+			notes = append(notes,
+				"dropped speed: the target protocol has no inference-speed mode parameter, the request runs at the upstream's default speed")
+		}
+		// MCP 连接器声明：外族没有网关代连 MCP 服务器的概念，声明里的
+		// 工具整个不可用。值含凭据，不回显内容。
+		if len(req.MCPServers) > 0 {
+			notes = append(notes,
+				"dropped mcp_servers: the target protocol has no MCP connector, none of the tools hosted on the declared servers are available to the model")
+		}
 	}
 	if !caps.ToolStrict {
 		n := 0
@@ -783,4 +806,17 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 		}
 	}
 	return notes
+}
+
+// countVideoMeta 统计带视频截取元数据的媒体块数。
+func countVideoMeta(req *ir.Request) int {
+	n := 0
+	for _, m := range req.Messages {
+		for _, b := range m.Content {
+			if b.Media != nil && len(b.Media.VideoMeta) > 0 && string(b.Media.VideoMeta) != "null" {
+				n++
+			}
+		}
+	}
+	return n
 }

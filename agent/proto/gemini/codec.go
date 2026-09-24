@@ -83,13 +83,20 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		out.TopLogProbs = gc.Logprobs
 		if tc := gc.ThinkingConfig; tc != nil {
 			// thinkingBudget=0 是官方的「关闭思考」，-1 是动态思考；
-			// 一律 Enabled=true 会把显式关闭翻成开启。
+			// 一律 Enabled=true 会把显式关闭翻成开启。thinkingLevel 是
+			// Gemini 3 的新代表达：只给 level 时 budget 缺省为 0，不能据此
+			// 判关——level 本身就是「要思考」的表态。
 			out.Thinking = &ir.ThinkingConfig{
-				Enabled:      tc.ThinkingBudget != 0,
+				Enabled:      tc.ThinkingBudget != 0 || tc.ThinkingLevel != "",
 				BudgetTokens: tc.ThinkingBudget,
 				// includeThoughts=false 是「照常思考但别把思考内容给我」。
 				// 上游无法据此少想，所以只能在回客户端的方向上抑制。
 				HideThoughts: tc.IncludeThoughts != nil && !*tc.IncludeThoughts,
+			}
+			if tc.ThinkingLevel != "" {
+				// 档位原值小写进 effort：跨族出站按目标协议档位集映射，
+				// 认不出的档位由出站编码器按既有口径回落。
+				out.Thinking.Effort = strings.ToLower(tc.ThinkingLevel)
 			}
 		}
 		// responseSchema 单独出现（没写 mimeType）也是结构化输出诉求：
@@ -119,6 +126,18 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	out.CachedContent = req.CachedContent
 	for _, s := range req.SafetySettings {
 		out.SafetySettings = append(out.SafetySettings, ir.SafetySetting{Category: s.Category, Threshold: s.Threshold})
+	}
+	// 不建模值的专属声明键：记下键名让 Diagnose 报得出，值本身不解释。
+	if len(req.Labels) > 0 && string(req.Labels) != "null" {
+		out.GeminiExtras = append(out.GeminiExtras, "labels")
+	}
+	if gc := req.GenerationConfig; gc != nil {
+		if len(gc.SpeechConfig) > 0 && string(gc.SpeechConfig) != "null" {
+			out.GeminiExtras = append(out.GeminiExtras, "speechConfig")
+		}
+		if gc.MediaResolution != "" {
+			out.GeminiExtras = append(out.GeminiExtras, "mediaResolution")
+		}
 	}
 
 	// Gemini 的 functionCall/functionResponse 历史上没有 ID。
@@ -166,6 +185,12 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 				msg.Content = append(msg.Content, mediaBlock(p.InlineData.MimeType, p.InlineData.Data, ""))
 			case p.FileData != nil:
 				msg.Content = append(msg.Content, mediaBlock(p.FileData.MimeType, "", p.FileData.FileURI))
+			case len(p.ExecutableCode) > 0 && string(p.ExecutableCode) != "null":
+				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockOpaque,
+					Opaque: &ir.Opaque{WireType: "executableCode", Body: p.ExecutableCode, From: Name}})
+			case len(p.CodeExecutionResult) > 0 && string(p.CodeExecutionResult) != "null":
+				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockOpaque,
+					Opaque: &ir.Opaque{WireType: "codeExecutionResult", Body: p.CodeExecutionResult, From: Name}})
 			case p.Thought || p.ThoughtSignature != "":
 				sig, from := p.ThoughtSignature, ir.SigFrom(Name, p.ThoughtSignature)
 				if sig == dummyThoughtSignature {
@@ -192,13 +217,25 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		out.Messages = append(out.Messages, msg)
 	}
 	for _, t := range req.Tools {
-		if t.GoogleSearch != nil {
+		if t.GoogleSearch != nil || t.GoogleSearchRetrieval != nil {
 			// 原生名进 IR：跨族出站按 HostedTypeFamily 回落目标族默认名，
-			// 不会把 google_search 写进别族的 type 槽位。
+			// 不会把 google_search 写进别族的 type 槽位。retrieval 是旧版
+			// 声明形态，语义相同，归一到同一 canonical。
 			out.Tools = append(out.Tools, ir.Tool{Name: "google_search", Hosted: ir.HostedWebSearch, HostedType: "google_search"})
 		}
 		if t.CodeExecution != nil {
 			out.Tools = append(out.Tools, ir.Tool{Name: "code_execution", Hosted: ir.HostedCodeExecution, HostedType: "code_execution"})
+		}
+		// 无跨族映射的托管声明：以未识别 canonical 进 IR，出站按「未映射
+		// 托管工具」丢弃并由 Diagnose 报出——比解码即蒸发诚实。
+		if t.URLContext != nil {
+			out.Tools = append(out.Tools, ir.Tool{Name: "url_context", Hosted: "url_context", HostedType: "urlContext"})
+		}
+		if t.FileSearch != nil {
+			out.Tools = append(out.Tools, ir.Tool{Name: "file_search", Hosted: "file_search", HostedType: "fileSearch"})
+		}
+		if t.GoogleMaps != nil {
+			out.Tools = append(out.Tools, ir.Tool{Name: "google_maps", Hosted: "google_maps", HostedType: "googleMaps"})
 		}
 		for _, fd := range t.FunctionDeclarations {
 			out.Tools = append(out.Tools, ir.Tool{Name: fd.Name, Description: fd.Description, InputSchema: fd.Parameters})

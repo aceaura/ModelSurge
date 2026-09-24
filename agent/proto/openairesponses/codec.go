@@ -103,7 +103,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		_ = json.Unmarshal(raw, &it)
 		decodeItem(out, it, raw)
 	}
-	for _, t := range req.Tools {
+	for i, t := range req.Tools {
 		switch t.Type {
 		case "", "function":
 			out.Tools = append(out.Tools, ir.Tool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters, Strict: t.Strict})
@@ -117,6 +117,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 				Hosted:       ir.CanonicalHosted(t.Type),
 				HostedType:   t.Type,
 				HostedParams: hostedParamsOf(t),
+				HostedRaw:    hostedRawAt(body, i),
 			})
 		}
 	}
@@ -192,7 +193,25 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	if req.Prompt != nil {
 		out.Prompt = &ir.PromptRef{ID: req.Prompt.ID, Version: req.Prompt.Version, Variables: req.Prompt.Variables}
 	}
+	out.Truncation = req.Truncation
+	out.MaxToolCalls = req.MaxToolCalls
+	if req.StreamOptions != nil {
+		out.IncludeObfuscation = req.StreamOptions.IncludeObfuscation
+	}
 	return out, nil
+}
+
+// hostedRawAt 取 tools 数组第 i 条的原始线体（托管工具 HostedRaw 通道）。
+// 外层 body 已经过 request 整单解析确认是合法 JSON，这里只可能报字段类型
+// 不匹配的 UnmarshalTypeError；解析失败按没有原文处理，不拒整单。
+func hostedRawAt(body []byte, i int) json.RawMessage {
+	var rawTools struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &rawTools); err != nil || i >= len(rawTools.Tools) {
+		return nil
+	}
+	return rawTools.Tools[i]
 }
 
 // decodeConversation conversation 参数归一：字符串 id 或 {id} 对象。
@@ -226,9 +245,10 @@ func decodeResponseFormat(f *textFormat) *ir.ResponseFormat {
 		return nil
 	}
 	return &ir.ResponseFormat{
-		Name:   f.Name,
-		Schema: f.Schema,
-		Strict: f.Strict != nil && *f.Strict,
+		Name:        f.Name,
+		Description: f.Description,
+		Schema:      f.Schema,
+		Strict:      f.Strict != nil && *f.Strict,
 	}
 }
 
@@ -240,7 +260,7 @@ func encodeResponseFormat(f *ir.ResponseFormat) *textConfig {
 	if !f.IsSchema() {
 		return &textConfig{Format: &textFormat{Type: "json_object"}}
 	}
-	out := &textFormat{Type: "json_schema", Name: f.Name, Schema: f.Schema}
+	out := &textFormat{Type: "json_schema", Name: f.Name, Description: f.Description, Schema: f.Schema}
 	if out.Name == "" {
 		out.Name = "response" // name 是 json_schema 的必填字段
 	}
@@ -707,6 +727,11 @@ func (c codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 				// （Diagnose 已按 no cross-protocol mapping 报出）。
 				continue
 			}
+			if sameNative && len(t.HostedRaw) > 0 {
+				// 同族原文整块回吐：未建模的声明参数（及未来新增键）一个不丢。
+				out.Tools = append(out.Tools, tool{Raw: t.HostedRaw})
+				continue
+			}
 			ht := tool{Type: typ}
 			if p := t.HostedParams; p != nil {
 				if len(p.AllowedDomains) > 0 {
@@ -817,6 +842,11 @@ func (c codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	out.SafetyIdentifier = r.SafetyIdentifier
 	out.Moderation = r.Moderation
 	out.PromptCacheOptions = r.PromptCacheOptions
+	out.Truncation = r.Truncation
+	out.MaxToolCalls = r.MaxToolCalls
+	if r.IncludeObfuscation != nil {
+		out.StreamOptions = &streamOptions{IncludeObfuscation: r.IncludeObfuscation}
+	}
 	return json.Marshal(out)
 }
 

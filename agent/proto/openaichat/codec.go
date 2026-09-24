@@ -112,6 +112,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	// choices[0] 取增量会越界。
 	if req.StreamOptions != nil {
 		out.IncludeUsage = req.StreamOptions.IncludeUsage
+		out.IncludeObfuscation = req.StreamOptions.IncludeObfuscation
 	}
 	for _, m := range req.Messages {
 		decodeMessage(out, m)
@@ -200,6 +201,7 @@ func decodeResponseFormat(f *responseFormat) *ir.ResponseFormat {
 	out := &ir.ResponseFormat{}
 	if f.JSONSchema != nil {
 		out.Name = f.JSONSchema.Name
+		out.Description = f.JSONSchema.Description
 		out.Schema = f.JSONSchema.Schema
 		out.Strict = f.JSONSchema.Strict != nil && *f.JSONSchema.Strict
 	}
@@ -215,7 +217,7 @@ func encodeResponseFormat(f *ir.ResponseFormat) *responseFormat {
 	if !f.IsSchema() {
 		return &responseFormat{Type: "json_object"}
 	}
-	js := &jsonSchema{Name: f.Name, Schema: f.Schema}
+	js := &jsonSchema{Name: f.Name, Description: f.Description, Schema: f.Schema}
 	if js.Name == "" {
 		js.Name = "response" // name 是 json_schema 的必填字段
 	}
@@ -474,6 +476,12 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		// （见 stream_encoder.go 的 includeUsage）。把这里改成跟随客户端意图会
 		// 让没 opt-in 的请求丢掉记账数据。
 		out.StreamOptions = &streamOptions{IncludeUsage: true}
+	}
+	if r.IncludeObfuscation != nil {
+		if out.StreamOptions == nil {
+			out.StreamOptions = &streamOptions{}
+		}
+		out.StreamOptions.IncludeObfuscation = r.IncludeObfuscation
 	}
 	if sys := joinSystem(r.System); sys != "" {
 		out.Messages = append(out.Messages, message{Role: "system", Content: json.RawMessage(marshalString(sys))})

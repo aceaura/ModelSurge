@@ -561,6 +561,30 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 		notes = append(notes,
 			"dropped context_management: the target protocol has no server-side context compaction configuration, the upstream default policy applies")
 	}
+	if req.Truncation != "" && !caps.ResponseChain {
+		// 截断策略是 responses 一族专属开关：丢了上游按自己的超长处理
+		// （截断或报错）行事，与客户端点名的策略不一定一致。
+		notes = append(notes, fmt.Sprintf(
+			"dropped truncation=%q: the target protocol has no truncation policy switch, the upstream default long-context behavior applies", req.Truncation))
+	}
+	if req.MaxToolCalls != nil && !caps.ResponseChain {
+		// 工具调用次数上限同为 responses 一族专属：其他三族没有计数闸门，
+		// 客户端要的安全上限在上游侧不再生效。
+		notes = append(notes,
+			"dropped max_tool_calls: the target protocol has no tool-call budget, the model may make more tool calls than the client allowed")
+	}
+	if req.IncludeObfuscation != nil && !caps.OpenAIExtras {
+		// 流式混淆开关是 OpenAI 两系专属：其余两族的流式帧没有混淆机制，
+		// 客户端关保护的意图无法传达。
+		notes = append(notes,
+			"dropped stream obfuscation preference: the target protocol has no stream-obfuscation switch")
+	}
+	if len(req.GeminiExtras) > 0 {
+		// labels / speechConfig / mediaResolution 是 gemini 独有维度，四个
+		// 出站（gemini 只入不出）没有一个接得住，恒报。值不建模，只报键名。
+		notes = append(notes, fmt.Sprintf(
+			"dropped gemini-only request key(s) %s: the target protocol has no counterpart for them", strings.Join(req.GeminiExtras, ", ")))
+	}
 	if req.Background != nil && *req.Background && !caps.ResponsesExtras {
 		// 客户端期待的异步行为会变成同步等待；显式 false 等同默认，不算丢。
 		notes = append(notes,

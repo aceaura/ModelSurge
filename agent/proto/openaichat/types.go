@@ -83,13 +83,17 @@ type responseFormat struct {
 }
 
 type jsonSchema struct {
-	Name   string          `json:"name,omitempty"`
-	Strict *bool           `json:"strict,omitempty"`
-	Schema json.RawMessage `json:"schema,omitempty"`
+	Name        string          `json:"name,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
+	Schema      json.RawMessage `json:"schema,omitempty"`
 }
 
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+	// IncludeObfuscation 流式混淆开关。三态指针：显式 false 是「关掉上游
+	// 默认开着的混淆保护」，与没提语义不同。
+	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
 }
 
 // message content 为 string 或 []part，用自定义 Unmarshal 兼容。

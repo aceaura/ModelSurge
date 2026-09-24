@@ -645,6 +645,10 @@ type ThinkingConfig struct {
 type ResponseFormat struct {
 	// Name schema 名称（OpenAI json_schema.name），无对应形态的协议会丢掉。
 	Name string
+	// Description schema 的自然语言说明（OpenAI json_schema.description，
+	// chat 与 responses 同形）。anthropic output_config.format 没有这一键，
+	// 跨族到 anthropic 时丢弃由诊断报出。
+	Description string
 	// Schema JSON Schema 原文；为空表示只要求「输出合法 JSON」。
 	Schema json.RawMessage `json:",omitempty"`
 	// Strict OpenAI 的 json_schema.strict：要求严格符合 schema。
@@ -679,6 +683,10 @@ type Request struct {
 	// 不出任何可观测差异。只有 Chat 一族有这个开关，Anthropic/Gemini/Responses
 	// 的 usage 是协议内建、无条件回传。
 	IncludeUsage bool
+	// IncludeObfuscation 流式混淆开关（OpenAI 两系 stream_options.
+	// include_obfuscation）。三态指针：显式 false 是「关掉上游默认开着的
+	// 混淆保护」，与没提不是一回事，两态布尔会把显式 false 吞回缺省。
+	IncludeObfuscation *bool
 	// ResponseFormat 结构化输出约束（JSON 模式 / JSON Schema）。
 	// nil = 客户端没要求，自由文本。
 	ResponseFormat *ResponseFormat
@@ -714,6 +722,10 @@ type Request struct {
 	// application/json 与带 schema 的情形走 ResponseFormat；text/plain 是显式
 	// 缺省不收。gemini 只入不出，这一维在所有出站上都是纯损耗，只报不映射。
 	ResponseMimeType string
+	// GeminiExtras 收到但不建模值的 gemini 专属声明键名（labels /
+	// speechConfig / mediaResolution）。与 SafetySettings 同组：只入不出，
+	// 收进 IR 只为 Diagnose 报得出「客户端给了但装不下」。
+	GeminiExtras []string
 
 	// 以下三维是 Responses 一族的服务端会话链语义。PreviousResponseID 与
 	// Store 在同协议出站时原样回写（链确实能接上）；ItemRefs 恒为诊断
@@ -745,6 +757,12 @@ type Request struct {
 	// 目前唯一条目 type 是 "compaction"：到 compact_threshold tokens 时服务端
 	// 自动压缩上下文）。外族无对应，跨族由诊断报出。
 	ContextMgmt []ContextMgmtEntry
+	// Truncation 超长时的截断策略（responses 一族的 truncation，
+	// "auto"/"disabled"）。其余三族没有对应开关，跨族由诊断报出。
+	Truncation string
+	// MaxToolCalls 单轮响应允许的工具调用总上限（responses 一族的
+	// max_tool_calls）。三态：nil = 客户端没提；其余三族无对应，跨族报出。
+	MaxToolCalls *int
 	// ServiceTier 服务质量档位原值（anthropic auto/standard_only；OpenAI 两系
 	// auto/default/flex/scale/priority/fast，responses 另有 ultrafast）。
 	// 保留原值不规整：跨族映射在出站编码按目标协议值集进行（proto.MapServiceTier）。

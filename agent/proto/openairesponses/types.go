@@ -52,6 +52,12 @@ type request struct {
 	PromptCacheOptions json.RawMessage `json:"prompt_cache_options,omitempty"`
 	// TopLogProbs 兼任开关与档位：Responses 没有独立的 logprobs 布尔。
 	TopLogProbs *int `json:"top_logprobs,omitempty"`
+	// Truncation 超长时的截断策略（"auto"/"disabled"）。
+	Truncation string `json:"truncation,omitempty"`
+	// MaxToolCalls 单轮响应允许的工具调用总上限。
+	MaxToolCalls *int `json:"max_tool_calls,omitempty"`
+	// StreamOptions 流式选项；本族目前只有 include_obfuscation。
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
 	// ContextManagement 服务端上下文管理策略（目前唯一条目 type 是
 	// "compaction" + compact_threshold tokens 阈值）。
 	ContextManagement []contextMgmtEntry `json:"context_management,omitempty"`
@@ -81,6 +87,12 @@ type reasoning struct {
 	Mode    json.RawMessage `json:"mode,omitempty"`
 }
 
+// streamOptions Responses 的流式选项。IncludeObfuscation 三态指针：
+// 显式 false 是「关掉上游默认开着的混淆保护」，与没提语义不同。
+type streamOptions struct {
+	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
+}
+
 // textConfig text.format 结构化输出：Responses 把 Chat 的 response_format
 // 挪进了 text 下，并把 json_schema 的三个字段平铺（没有嵌套的 json_schema 层）。
 // verbosity 也挂在 text 下（Chat 里是顶层字段）。
@@ -90,10 +102,11 @@ type textConfig struct {
 }
 
 type textFormat struct {
-	Type   string          `json:"type"`
-	Name   string          `json:"name,omitempty"`
-	Strict *bool           `json:"strict,omitempty"`
-	Schema json.RawMessage `json:"schema,omitempty"`
+	Type        string          `json:"type"`
+	Name        string          `json:"name,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
+	Schema      json.RawMessage `json:"schema,omitempty"`
 }
 
 // inputItem 输入项：message / function_call / custom_tool_call / 各自 output / reasoning。
@@ -254,6 +267,20 @@ type tool struct {
 	Filters           *webSearchFilters `json:"filters,omitempty"`
 	UserLocation      json.RawMessage   `json:"user_location,omitempty"`
 	SearchContextSize string            `json:"search_context_size,omitempty"`
+	// Raw 托管工具定义的原样线体（同族回写通道）：未建模的声明参数（及未来
+	// 新增键）建模跟进永远慢半拍，同族回写时整块原样吐出才能全保真；
+	// 外族出站忽略。标 json:"-" 不参与逐字段序列化：MarshalJSON 优先整块
+	// 吐出它（同 contentPart.Raw 的做法）。
+	Raw json.RawMessage `json:"-"`
+}
+
+// MarshalJSON 同族托管工具整块原样写出，其余按字段序列化。
+func (t tool) MarshalJSON() ([]byte, error) {
+	if len(t.Raw) > 0 {
+		return t.Raw, nil
+	}
+	type plain tool
+	return json.Marshal(plain(t))
 }
 
 // webSearchFilters web_search 工具的检索过滤器。官方目前只有 allowed_domains。

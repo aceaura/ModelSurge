@@ -270,6 +270,10 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return []ir.Event{ev}, nil
 	case "response.output_item.added":
 		if se.Item == nil {
+			// 整块解析失败的 item：原文留着，等 done 帧归不透明块报损耗。
+			if len(se.ItemRaw) > 0 {
+				d.pendingItems[oi] = se.ItemRaw
+			}
 			return nil, nil
 		}
 		switch se.Item.Type {
@@ -436,60 +440,75 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return append(out, d.completeToolArgs(i, se.Input)...), nil
 	case "response.output_item.done":
 		var out []ir.Event
-		if se.Item != nil {
-			switch se.Item.Type {
-			case "function_call", "custom_tool_call":
-				kind := ir.ToolFunction
-				full := se.Item.Arguments
-				if se.Item.Type == "custom_tool_call" {
-					kind = ir.ToolCustom
-					full = se.Item.Input
-				}
-				i, opened := d.assign(partKey{out: oi}, toolBlock(kind, se.Item))
+		if se.Item == nil {
+			// 整块解析失败（字段形状冲突到连 type 都解不出）：与未映射托管
+			// item 同一处置——原文归不透明块，同族编码器原样带回，外族跳过
+			// 并报损耗；静默丢弃会让客户端连「这里有过一个条目」都无从知晓。
+			raw := se.ItemRaw
+			if len(raw) == 0 {
+				raw = d.pendingItems[oi]
+			}
+			delete(d.pendingItems, oi)
+			if len(raw) > 0 {
+				d.hostedOpaque++
+				_, opened := d.assign(partKey{out: oi}, &ir.Block{Type: ir.BlockOpaque,
+					Opaque: &ir.Opaque{WireType: itemTypeOf(raw), Body: raw, From: Name, Item: true}})
 				out = append(out, opened...)
-				// added 漏发的畸形流：先回放缓存的参数碎片，再补 done 携带的
-				// 完整值后缀（completeToolArgs 按前缀判据去重）。
-				if p := d.pendingToolArgs[oi]; p != nil {
-					delete(d.pendingToolArgs, oi)
-					for _, frag := range p.frags {
-						d.toolArgs[i] += frag
-						out = append(out, ir.Event{Type: ir.EvToolInput, Index: i, Text: frag})
-					}
+			}
+			return append(out, d.closeItem(oi)...), nil
+		}
+		switch se.Item.Type {
+		case "function_call", "custom_tool_call":
+			kind := ir.ToolFunction
+			full := se.Item.Arguments
+			if se.Item.Type == "custom_tool_call" {
+				kind = ir.ToolCustom
+				full = se.Item.Input
+			}
+			i, opened := d.assign(partKey{out: oi}, toolBlock(kind, se.Item))
+			out = append(out, opened...)
+			// added 漏发的畸形流：先回放缓存的参数碎片，再补 done 携带的
+			// 完整值后缀（completeToolArgs 按前缀判据去重）。
+			if p := d.pendingToolArgs[oi]; p != nil {
+				delete(d.pendingToolArgs, oi)
+				for _, frag := range p.frags {
+					d.toolArgs[i] += frag
+					out = append(out, ir.Event{Type: ir.EvToolInput, Index: i, Text: frag})
 				}
-				out = append(out, d.completeToolArgs(i, full)...)
-				delete(d.toolArgs, i)
-			case "message":
-				// done-only 上游的整条正文只在 item.content 里，前面一帧增量都没有。
-				out = append(out, d.completeItemParts(oi, se.Item.Content)...)
-			case "reasoning":
-				// 关 thinking 块前先发 signature_delta（对齐 sub2api :688）
-				full := reasoningSummaryText(se.Item.Summary)
-				if full != "" || se.Item.EncryptedContent != "" {
-					i, opened := d.assign(partKey{out: oi}, thinkingBlock())
-					out = append(out, opened...)
-					if d.open[i] {
-						out = append(out, completeValue(d.blockText, i, full, ir.EvThinkingDelta)...)
-					}
-					if se.Item.EncryptedContent != "" {
-						out = append(out, ir.Event{Type: ir.EvSigDelta, Index: i, Text: se.Item.EncryptedContent,
-							SignatureFrom: ir.SigFrom(Name, se.Item.EncryptedContent)})
-					}
+			}
+			out = append(out, d.completeToolArgs(i, full)...)
+			delete(d.toolArgs, i)
+		case "message":
+			// done-only 上游的整条正文只在 item.content 里，前面一帧增量都没有。
+			out = append(out, d.completeItemParts(oi, se.Item.Content)...)
+		case "reasoning":
+			// 关 thinking 块前先发 signature_delta（对齐 sub2api :688）
+			full := reasoningSummaryText(se.Item.Summary)
+			if full != "" || se.Item.EncryptedContent != "" {
+				i, opened := d.assign(partKey{out: oi}, thinkingBlock())
+				out = append(out, opened...)
+				if d.open[i] {
+					out = append(out, completeValue(d.blockText, i, full, ir.EvThinkingDelta)...)
 				}
-			case "web_search_call":
-				delete(d.pendingItems, oi)
-				// 托管搜索 -> server_tool_use + web_search_tool_result 配平块：
-				// 客户端看得到网关代执行了哪次搜索、搜回了哪些页面。
-				out = append(out, d.emitWebSearchPair(oi, se.Item)...)
-			default:
-				delete(d.pendingItems, oi)
-				// 未映射的托管 item（file_search_call 等）：整块留成不透明块，
-				// 同族编码器原样带回，外族跳过并报损耗；计数经 Notes() 报出。
-				if len(se.ItemRaw) > 0 {
-					d.hostedOpaque++
-					_, opened := d.assign(partKey{out: oi}, &ir.Block{Type: ir.BlockOpaque,
-						Opaque: &ir.Opaque{WireType: se.Item.Type, Body: se.ItemRaw, From: Name, Item: true}})
-					out = append(out, opened...)
+				if se.Item.EncryptedContent != "" {
+					out = append(out, ir.Event{Type: ir.EvSigDelta, Index: i, Text: se.Item.EncryptedContent,
+						SignatureFrom: ir.SigFrom(Name, se.Item.EncryptedContent)})
 				}
+			}
+		case "web_search_call":
+			delete(d.pendingItems, oi)
+			// 托管搜索 -> server_tool_use + web_search_tool_result 配平块：
+			// 客户端看得到网关代执行了哪次搜索、搜回了哪些页面。
+			out = append(out, d.emitWebSearchPair(oi, se.Item)...)
+		default:
+			delete(d.pendingItems, oi)
+			// 未映射的托管 item（file_search_call 等）：整块留成不透明块，
+			// 同族编码器原样带回，外族跳过并报损耗；计数经 Notes() 报出。
+			if len(se.ItemRaw) > 0 {
+				d.hostedOpaque++
+				_, opened := d.assign(partKey{out: oi}, &ir.Block{Type: ir.BlockOpaque,
+					Opaque: &ir.Opaque{WireType: se.Item.Type, Body: se.ItemRaw, From: Name, Item: true}})
+				out = append(out, opened...)
 			}
 		}
 		return append(out, d.closeItem(oi)...), nil
@@ -541,6 +560,16 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		return []ir.Event{{Type: ir.EvError, Err: streamErrorOf(se, "upstream stream error")}}, nil
 	}
 	return nil, nil // response.queued / in_progress 等进度事件忽略
+}
+
+// itemTypeOf 从 item 原文里探出 type 键：整块解析失败的 item 归不透明块时
+// 仍要给出可识别的 wire 类型名，探不出就留空（Opaque.WireType 允许空）。
+func itemTypeOf(raw json.RawMessage) string {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(raw, &probe)
+	return probe.Type
 }
 
 // streamErrorOf 流式错误事件 -> IR 错误。裸 error 事件的错误体在顶层，

@@ -17,6 +17,8 @@ type generateRequest struct {
 	// 对应槽位。收进来只为诊断可见（「给了但装不下」），不作映射。
 	SafetySettings []safetySetting `json:"safetySettings,omitempty"`
 	CachedContent  string          `json:"cachedContent,omitempty"`
+	// Labels 计费/归因标签（gemini 独有）。收下只为诊断可见，不建模值。
+	Labels json.RawMessage `json:"labels,omitempty"`
 }
 
 type safetySetting struct {
@@ -39,6 +41,12 @@ type part struct {
 	FileData         *fileData         `json:"fileData,omitempty"`
 	FunctionCall     *functionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *functionResponse `json:"functionResponse,omitempty"`
+	// ExecutableCode / CodeExecutionResult 代码执行部件（模型生成的代码与其
+	// 执行结果，历史回传场景出现）。没有任何 IR 块型接得住：降级成文本是
+	// 编造正文，静默丢弃连「这里有过一段代码」都不留——收进不透明块，
+	// 跨族出站跳过并报损耗。
+	ExecutableCode      json.RawMessage `json:"executableCode,omitempty"`
+	CodeExecutionResult json.RawMessage `json:"codeExecutionResult,omitempty"`
 }
 
 type blob struct {
@@ -85,18 +93,33 @@ type generationConfig struct {
 	CandidateCount   *int     `json:"candidateCount,omitempty"`
 	ResponseLogprobs *bool    `json:"responseLogprobs,omitempty"`
 	Logprobs         *int     `json:"logprobs,omitempty"`
+	// SpeechConfig 语音输出配置、MediaResolution 媒体分辨率档位：
+	// gemini 独有，收下只为诊断可见，不建模值。
+	SpeechConfig    json.RawMessage `json:"speechConfig,omitempty"`
+	MediaResolution string          `json:"mediaResolution,omitempty"`
 }
 
 type thinkingConfig struct {
 	ThinkingBudget int `json:"thinkingBudget,omitempty"`
 	// 指针：未给 / true / false 三态语义不同，只有显式 false 要动作。
 	IncludeThoughts *bool `json:"includeThoughts,omitempty"`
+	// ThinkingLevel Gemini 3 的思考档位（"low"/"high"），与 thinkingBudget
+	// 是新旧两代表达，官方互斥。跨族按 effort 档位传递。
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
 }
 
 type toolDef struct {
 	FunctionDeclarations []functionDecl `json:"functionDeclarations,omitempty"`
 	GoogleSearch         *struct{}      `json:"googleSearch,omitempty"`
 	CodeExecution        *struct{}      `json:"codeExecution,omitempty"`
+	// GoogleSearchRetrieval 旧版托管搜索声明（gemini 1.5 时代形态），语义
+	// 与 googleSearch 相同，归一到同一 canonical。
+	GoogleSearchRetrieval *struct{} `json:"googleSearchRetrieval,omitempty"`
+	// 以下三种托管工具声明没有任何跨族映射：收下只为让出站按「未识别托管
+	// 工具」丢弃并报诊断，而不是解码即蒸发。
+	URLContext *struct{} `json:"urlContext,omitempty"`
+	FileSearch *struct{} `json:"fileSearch,omitempty"`
+	GoogleMaps *struct{} `json:"googleMaps,omitempty"`
 }
 
 type functionDecl struct {

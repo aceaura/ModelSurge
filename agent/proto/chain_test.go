@@ -71,8 +71,10 @@ func TestChainFieldsNeverLeakToOtherProtocols(t *testing.T) {
 	}
 }
 
-// 缺省语义保持：没给 store 仍写 false（codex 订阅端点硬要求），
-// 没给 previous_response_id 不出键，ItemRefs 为零。
+// 缺省语义保持：没给 previous_response_id 不出键，ItemRefs 为零。
+// store 的缺省两家分治：codex 订阅端点硬要求 store=false，官方 Responses
+// 缺省是 true——对官方端点伪造 false 会断掉 previous_response_id 会话链，
+// 所以只有 codex 补默认值，openai-responses 缺省不发。
 func TestChainDefaultsPreserved(t *testing.T) {
 	r, err := proto.MustInbound("openai-responses").DecodeRequest(
 		[]byte(`{"model":"m","input":"hi"}`))
@@ -85,12 +87,17 @@ func TestChainDefaultsPreserved(t *testing.T) {
 	for _, name := range []string{"openai-responses", "codex"} {
 		out, _ := proto.MustOutbound(name).EncodeRequest(r)
 		s := string(out)
-		if !strings.Contains(s, `"store":false`) {
-			t.Errorf("%s: 缺省 store=false 兜底丢了: %s", name, s)
-		}
 		if strings.Contains(s, "previous_response_id") {
 			t.Errorf("%s: 没给链锚点却造出该键: %s", name, s)
 		}
+	}
+	codexOut, _ := proto.MustOutbound("codex").EncodeRequest(r)
+	if !strings.Contains(string(codexOut), `"store":false`) {
+		t.Errorf("codex: 缺省 store=false 兜底丢了: %s", codexOut)
+	}
+	respOut, _ := proto.MustOutbound("openai-responses").EncodeRequest(r)
+	if strings.Contains(string(respOut), `"store"`) {
+		t.Errorf("openai-responses: 客户端没给 store 却伪造了该键: %s", respOut)
 	}
 }
 

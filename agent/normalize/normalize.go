@@ -46,6 +46,11 @@ func Strict() Options {
 
 // Request 按选项规整请求。返回错误仅用于硬性约束（如工具名超长）。
 func Request(req *ir.Request, o Options) error {
+	// 工具白名单收窄跑在最前面：被白名单排除的工具压根不会发给上游，它的名字
+	// 长度、schema 形状都不再是这一轮的问题，后面的硬性校验不该为它失败。
+	EnforceToolAllowlist(req)
+	RelaxUndeclaredForcedTool(req)
+	DropToolChoiceWithoutTools(req)
 	if o.MaxToolNameLength > 0 {
 		for _, t := range req.Tools {
 			if len(t.Name) > o.MaxToolNameLength {
@@ -80,6 +85,51 @@ func Request(req *ir.Request, o Options) error {
 		fillEmptyContent(req)
 	}
 	return nil
+}
+
+// EnforceToolAllowlist 把「只能调这些」的工具白名单落成目标协议能表达的形式。
+//
+// 四个出站都没有白名单槽位（Anthropic 官方 tool_choice 只有 auto/any/tool/none
+// 四个变体，OpenAI 两系只能指名一个工具），但这一维可以被等价实现：把声明的
+// 工具收窄成白名单与已声明工具的交集——上游看不见别的工具，就调不到。不收窄
+// 而照原样声明，等于把客户端明令禁止的工具又递了回去：模型随时可能调它，
+// 请求里看不出任何异常，客户端也拿不到注记可循。
+//
+// 收窄规则与「无从收窄」的判据都在 ir.Request.AllowlistNarrow 里，relay.Diagnose
+// 报损耗用的是同一个函数——两处各写一遍必然漂移。
+func EnforceToolAllowlist(req *ir.Request) {
+	if kept, ok := req.AllowlistNarrow(); ok {
+		req.Tools = kept
+	}
+}
+
+// RelaxUndeclaredForcedTool 指名调用的名字必须落在已声明的工具里。
+//
+// 不满足时回落成 auto。四个出站都会把 ChoiceTool 原样写成 tool_choice，指着
+// 一个不在 tools 里的名字是上游必 400 的形状（「tool_choice 必须是已声明工具
+// 之一」），而报错只说 tool_choice 无效，读者看不出真正的起因是白名单里写了
+// 个没声明的名字。回落是成熟网关的同一处置：客户端要的限制无从实现，但至少
+// 这一轮能跑完，落差由 relay.Diagnose 报出。
+func RelaxUndeclaredForcedTool(req *ir.Request) {
+	if req.ForcedToolUndeclared() {
+		req.ToolChoice.Mode = ir.ChoiceAuto
+		req.ToolChoice.ToolName = ""
+	}
+}
+
+// DropToolChoiceWithoutTools 一个工具都没声明时，要求有工具的 tool_choice 整个删掉。
+//
+// 判据与后果都写在 ir.Request.ToolChoiceWithoutTools 上，relay.Diagnose 报损耗用
+// 的是同一个函数。这一步不看 StripToolsIfNoTools 开关——空 tools 是既成事实，与
+// 用哪套选项无关。
+//
+// 删掉而不是回落成 none：没有工具可选时，「禁止调用」「自动决定」「压根不提」
+// 三者对上游完全同义，留着一个必然被拒的键没有任何好处。DisableParallel 随之
+// 一起没了，同理——零个工具无从并行。
+func DropToolChoiceWithoutTools(req *ir.Request) {
+	if req.ToolChoiceWithoutTools() {
+		req.ToolChoice = nil
+	}
 }
 
 // SanitizeSchema 递归删除 additionalProperties 与空 required 数组。

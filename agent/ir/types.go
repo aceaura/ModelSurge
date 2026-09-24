@@ -461,6 +461,120 @@ type ToolChoice struct {
 	ToolName        string // Mode == ChoiceTool 时有效
 	ToolKind        ToolKind
 	DisableParallel bool
+	// AllowedTools 允许被调用的工具名白名单（Gemini 的
+	// functionCallingConfig.allowedFunctionNames、Responses/codex 的
+	// tool_choice.type="allowed_tools"）。与 Mode 正交：Mode 说要不要必须调，
+	// 白名单说能调哪些。
+	//
+	// 四个出站都没有这一维的槽位——Anthropic 官方 tool_choice 只有
+	// auto/any/tool/none 四个变体，OpenAI 两系只能指名一个工具——但它可以被
+	// 等价实现：把声明的工具列表收窄成白名单与已声明工具的交集，上游看不见
+	// 别的工具就调不到。收窄见 AllowlistNarrow。因此这一维通常不产生损耗，
+	// 只有白名单与已声明工具全无交集时才无从收窄，由 relay.Diagnose 报出。
+	AllowedTools []string
+}
+
+// AllowlistApplies 白名单是否落在「靠收窄实现」的模式上。
+//
+// 指名调用（ChoiceTool）上游本来就只会调那一个，禁止调用（ChoiceNone）一个
+// 都不调，两者都不需要收窄。把它们算进来会让这两种模式恒报「限制失效」。
+func (tc *ToolChoice) AllowlistApplies() bool {
+	if tc == nil || len(tc.AllowedTools) == 0 {
+		return false
+	}
+	return tc.Mode == ChoiceAuto || tc.Mode == ChoiceAny
+}
+
+// AllowlistNarrow 按工具白名单收窄已声明的工具，返回收窄后的列表与「限制是否
+// 真的落得下去」。
+//
+// normalize 用它改写请求，relay.Diagnose 用它决定要不要报损耗——同一个判据两处
+// 共用，且 Diagnose 只读不改，所以判据必须是一个纯函数而不是各写一遍。各写一遍
+// 会让「收窄条件」与「报损耗条件」漂移：漂移之后要么明明收窄成功却照报损耗
+// （读者以为限制没生效），要么明明无从收窄却不报（读者以为限制生效了，实际模型
+// 照样能调被禁的工具）。
+//
+// 落不下去（第二个返回值为 false）只有一种情形：白名单里的名字一个都不在已声明
+// 的非托管工具里。此时原样返回整个列表——收窄到零个工具会触发
+// normalize.StripToolsIfNoTools，把整段工具历史改写成文本，那是比白名单失效大
+// 得多的破坏。白名单里写了未声明的名字本身不算损耗：那个名字压根不存在，模型
+// 调不到它，客户端要的限制照样成立。
+//
+// 托管工具（Hosted 非空）一律保留且不计入交集。Gemini 的 allowedFunctionNames
+// 管的是 functionDeclarations，把 google_search 一类连带删掉是删了客户端声明过
+// 的东西，那是比白名单失效更糟的结果。
+func (r *Request) AllowlistNarrow() ([]Tool, bool) {
+	if r == nil || !r.ToolChoice.AllowlistApplies() {
+		return nil, false
+	}
+	allowed := make(map[string]bool, len(r.ToolChoice.AllowedTools))
+	for _, name := range r.ToolChoice.AllowedTools {
+		allowed[name] = true
+	}
+	kept := make([]Tool, 0, len(r.Tools))
+	matched := 0
+	for _, t := range r.Tools {
+		if t.Hosted != "" {
+			kept = append(kept, t)
+			continue
+		}
+		if allowed[t.Name] {
+			kept = append(kept, t)
+			matched++
+		}
+	}
+	if matched == 0 {
+		return r.Tools, false
+	}
+	return kept, true
+}
+
+// ForcedToolUndeclared 指名调用是否指着一个没声明的工具。
+//
+// 与 AllowlistNarrow 同理，normalize 与 relay.Diagnose 共用这一个判据。四个
+// 出站都会把 ChoiceTool 原样写成 tool_choice，指着一个不在 tools 里的名字是
+// 上游必 400 的形状（「tool_choice 必须是已声明工具之一」）。
+//
+// 托管工具按名字比对即可：跨协议时它的线上名字会被换成目标协议的固定名
+// （Gemini 的 google_search 到 Anthropic 变成 web_search），那一层错位不是
+// 「名字没声明」，在这里回落只会把能用的请求改坏。
+//
+// 一个工具都没声明时不算，见 ToolChoiceWithoutTools——那是另一种形状，读者的
+// 下一步动作也不同。
+func (r *Request) ForcedToolUndeclared() bool {
+	if r == nil || r.ToolChoice == nil || r.ToolChoice.Mode != ChoiceTool {
+		return false
+	}
+	if r.ToolChoice.ToolName == "" || len(r.Tools) == 0 {
+		return false
+	}
+	for _, t := range r.Tools {
+		if t.Name == r.ToolChoice.ToolName {
+			return false
+		}
+	}
+	return true
+}
+
+// ToolChoiceWithoutTools 一个工具都没声明，却带着一个要求有工具的 tool_choice。
+//
+// 四个出站都会把 tool_choice 原样写出去，而 tools 键因为空数组被省略——线上形状
+// 就是「指名调用一个压根不存在的函数」（Anthropic 校验名字必须落在 tools 里）或
+// 「必须调用工具，但没有工具」（OpenAI 两系的 tool_choice 只在 tools 存在时才被
+// 接受），上游一律 400 拒整轮。最常见的来路不是客户端写错，而是本层自己造出来的：
+// normalize 在无工具时把整段工具历史渲染成文本（stripToolContent），请求已经彻底
+// 去工具化了，tool_choice 却留在原地。
+//
+// 只认 any 与 tool 两档。auto 与 none 在零工具下是上游接受的形状，且与「不带
+// tool_choice」同义，删不删都不产生损耗——报出来是假阳性。
+//
+// 与 ForcedToolUndeclared 互斥：那边要求 len(Tools) > 0。normalize 与
+// relay.Diagnose 共用这一个判据，理由同前。
+func (r *Request) ToolChoiceWithoutTools() bool {
+	if r == nil || r.ToolChoice == nil || len(r.Tools) > 0 {
+		return false
+	}
+	return r.ToolChoice.Mode == ChoiceAny || r.ToolChoice.Mode == ChoiceTool
 }
 
 // ThinkingConfig 推理配置。Effort 为 OpenAI 风格的等级
@@ -575,6 +689,10 @@ type Request struct {
 	SafetySettings []SafetySetting
 	// CachedContent 服务端缓存名（context caching 的资源 id）。
 	CachedContent string
+	// ResponseMimeType 非 JSON 的输出 MIME 约束（text/x.enum 等）。
+	// application/json 与带 schema 的情形走 ResponseFormat；text/plain 是显式
+	// 缺省不收。gemini 只入不出，这一维在所有出站上都是纯损耗，只报不映射。
+	ResponseMimeType string
 
 	// 以下三维是 Responses 一族的服务端会话链语义。PreviousResponseID 与
 	// Store 在同协议出站时原样回写（链确实能接上）；ItemRefs 恒为诊断
@@ -649,7 +767,9 @@ type Request struct {
 
 	// 以下四维只有 Chat 一族有（responses 全系无对应槽位，SDK 核对零命中）。
 	// 收进 IR 只为同协议回写 + 跨协议诊断，不作映射尝试。
-	// Modalities 输出模态（"text"/"audio"）。
+	// Modalities 输出模态，OpenAI 风格小写值。Chat 的值集是 text/audio；
+	// Gemini 入站还会带 image（responseModalities 归一而来），Chat 出站
+	// 装不下它，过滤与报损见 openaichat 编码器与 Diagnose。
 	Modalities []string
 	// AudioOut 音频输出配置 {format, voice}。voice 官方两形态（内置名 string
 	// 或自定义 {id} 对象），对象形态归一成 string（语义等价）；仅在

@@ -137,8 +137,17 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		out.Thinking = &ir.ThinkingConfig{Enabled: req.ReasoningEffort != "none", Effort: req.ReasoningEffort}
 	}
 	out.ResponseFormat = decodeResponseFormat(req.ResponseFormat)
+	// metadata 是官方文档维度（16 对键值）：整条丢掉等于客户端的关联数据
+	// 再也回不来。user 字段与 metadata.user_id 同维度，同给时 user 胜出
+	// （顶层字段比嵌套键更显式）。
+	if len(req.Metadata) > 0 {
+		out.Metadata = proto.DecodeStringMap(req.Metadata)
+	}
 	if req.User != "" {
-		out.Metadata = map[string]string{"user_id": req.User}
+		if out.Metadata == nil {
+			out.Metadata = map[string]string{}
+		}
+		out.Metadata["user_id"] = req.User
 	}
 	// 原值进 IR，跨族映射是出站的事（proto.MapServiceTier）。
 	out.ServiceTier = req.ServiceTier
@@ -513,6 +522,14 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		// 关着却带别的档位（账号覆盖强制关）时不写：写出去等于把「关」翻译成「开」。
 	}
 	out.ResponseFormat = encodeResponseFormat(r.ResponseFormat)
+	// metadata 同族回吐：客户端的关联数据通道，user_id 同时落 user 字段
+	// （顶层字段是滥用追踪的官方槽位）。
+	if len(r.Metadata) > 0 {
+		md, err := json.Marshal(r.Metadata)
+		if err == nil {
+			out.Metadata = md
+		}
+	}
 	if uid := r.Metadata["user_id"]; uid != "" {
 		out.User = uid
 	}
@@ -525,7 +542,13 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	out.SafetyIdentifier = r.SafetyIdentifier
 	out.Moderation = r.Moderation
 	out.PromptCacheOptions = r.PromptCacheOptions
-	out.Modalities = r.Modalities
+	// modalities 的官方值集只有 text/audio：gemini 入站归一来的 image 等值
+	// 写出去是上游必 400 的形状，被滤掉的值由诊断报出。
+	for _, m := range r.Modalities {
+		if m == "text" || m == "audio" {
+			out.Modalities = append(out.Modalities, m)
+		}
+	}
 	// voice 恒写 string 形态（{id} 对象与 string 语义等价，取最简）。
 	if r.AudioOut != nil {
 		out.Audio = &audioOutParam{Format: r.AudioOut.Format,

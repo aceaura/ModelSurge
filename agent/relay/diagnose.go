@@ -358,10 +358,39 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	if req.ToolChoice != nil && req.ToolChoice.DisableParallel && !caps.ParallelToolCalls {
 		notes = append(notes, "dropped parallel tool call restriction: upstream protocol cannot express it")
 	}
-	if req.Thinking != nil && req.Thinking.Enabled && req.ToolChoice != nil &&
-		(req.ToolChoice.Mode == ir.ChoiceAny || req.ToolChoice.Mode == ir.ChoiceTool) &&
-		!caps.ThinkingForcedToolChoice {
-		notes = append(notes, "downgraded tool_choice to auto: upstream rejects forced tool choice while thinking is enabled")
+	// 零工具那一态盖住下面三条：tool_choice 已被 normalize 整条删掉，白名单无从
+	// 收窄也没有工具可收窄，指名与思考的冲突随之消失。三条一起报等于把同一次删改
+	// 说三遍，读者会以为是三处独立的丢失。
+	if req.ToolChoiceWithoutTools() {
+		notes = append(notes, fmt.Sprintf(
+			"dropped tool_choice %q: the request declares no tools, and a choice that requires or names a tool cannot be satisfied without a tool list, so the receiving side would reject the whole turn",
+			string(req.ToolChoice.Mode)))
+	} else {
+		// 工具白名单靠收窄已声明工具实现（见 ir.Request.AllowlistNarrow），通常无损，
+		// 所以收窄成功时不出注记。只有白名单与已声明的非托管工具全无交集时无从收窄——
+		// 照原样发出，客户端明令禁止的工具照样递到了模型面前。判据与 normalize 共用同
+		// 一个纯函数：两处各写一遍会让「收窄条件」与「报损耗条件」漂移，漂移之后要么
+		// 明明收窄成功却照报损耗，要么明明无从收窄却不报。
+		if req.ToolChoice.AllowlistApplies() {
+			if _, ok := req.AllowlistNarrow(); !ok {
+				notes = append(notes, fmt.Sprintf(
+					"could not enforce the tool allowlist of %d name(s): none of them is a declared tool, so the full tool list went through and the model may call tools the client excluded",
+					len(req.ToolChoice.AllowedTools)))
+			}
+		}
+		if req.ForcedToolUndeclared() {
+			// 指名调用指着一个没声明的工具：四个出站都会把 ChoiceTool 原样写成
+			// tool_choice，那是上游必 400 的形状。normalize 已回落成 auto，所以这一轮
+			// 能跑完，但客户端要的限制没了。与下一条互斥——回落之后 mode 已是 auto，
+			// 思考与强制指名的冲突随之消失，两条一起报会把同一次回落说两遍。
+			notes = append(notes, fmt.Sprintf(
+				"downgraded tool_choice to auto: it named tool %q, which is not among the %d declared tool(s), and the receiving side rejects a forced choice naming an undeclared tool",
+				req.ToolChoice.ToolName, len(req.Tools)))
+		} else if req.Thinking != nil && req.Thinking.Enabled && req.ToolChoice != nil &&
+			(req.ToolChoice.Mode == ir.ChoiceAny || req.ToolChoice.Mode == ir.ChoiceTool) &&
+			!caps.ThinkingForcedToolChoice {
+			notes = append(notes, "downgraded tool_choice to auto: upstream rejects forced tool choice while thinking is enabled")
+		}
 	}
 
 	var dropped, unmapped []string
@@ -445,6 +474,20 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 	if req.Metadata["user_id"] != "" && !caps.UserID {
 		notes = append(notes, "dropped user id: upstream protocol has no end-user identifier parameter, abuse tracking will not see it")
 	}
+	if protoName == "anthropic" {
+		// metadata 是 OpenAI 两族的关联数据通道；anthropic 的 metadata 只有
+		// user_id 一个键，其余键到不了上游，客户端的关联数据不会随响应回来。
+		n := 0
+		for k := range req.Metadata {
+			if k != "user_id" {
+				n++
+			}
+		}
+		if n > 0 {
+			notes = append(notes, fmt.Sprintf(
+				"dropped %d metadata key(s): the target protocol keeps only the end-user id from client metadata, the rest of the client's correlation data will not come back", n))
+		}
+	}
 	if req.SafetyIdentifier != "" {
 		// safety_identifier 与 user 同一维度：出站 anthropic 且 user_id 槽被占
 		// 时挤不进去，其余无 UserID 位的协议直接丢。值不回显。
@@ -470,6 +513,12 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 	if req.CachedContent != "" {
 		// cachedContent 同理：缓存是服务端资源 id，换协议后引用不到。
 		notes = append(notes, "dropped cached content reference: upstream protocol has no context-caching parameter, the full context will be sent and billed")
+	}
+	if req.ResponseMimeType != "" {
+		// 非 JSON 的输出 MIME 约束（text/x.enum 等）是 Gemini 独有维度，四个
+		// 出站（gemini 只入不出）没有一个接得住，恒报。
+		notes = append(notes, fmt.Sprintf(
+			"dropped response mime type %q: the target protocol cannot constrain output to that type, the response follows the model's default format", req.ResponseMimeType))
 	}
 	if req.PreviousResponseID != "" && !caps.ResponseChain {
 		notes = append(notes, "dropped previous_response_id: upstream protocol has no response-chaining parameter, only the items in this request will reach the model")
@@ -560,6 +609,20 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 		if len(req.WebSearchOptions) > 0 {
 			notes = append(notes,
 				"dropped web_search_options: the target protocol has no web-search tuning parameter, search behavior follows the upstream default")
+		}
+	} else {
+		// chat 目标的 modalities 值集只有 text/audio：gemini 入站归一来的
+		// image 等值被编码器滤掉（写出去是必 400 的形状），这里报出来。
+		var unsupported []string
+		for _, m := range req.Modalities {
+			if m != "text" && m != "audio" {
+				unsupported = append(unsupported, m)
+			}
+		}
+		if len(unsupported) > 0 {
+			notes = append(notes, fmt.Sprintf(
+				"dropped modalities %s: chat completions accepts only text/audio output modalities, the response will not include that output",
+				strings.Join(unsupported, "/")))
 		}
 	}
 	if protoName != "anthropic" {

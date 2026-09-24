@@ -74,6 +74,9 @@ type generationConfig struct {
 	// ResponseSchema 是可选的 schema 约束（Gemini 的 schema 恒为严格语义）。
 	ResponseMimeType string          `json:"responseMimeType,omitempty"`
 	ResponseSchema   json.RawMessage `json:"responseSchema,omitempty"`
+	// ResponseModalities 输出模态（TEXT/AUDIO/IMAGE）。OpenAI 值集是它的真子集
+	// （text/audio），IMAGE 没有任何出站接得住——收下只为跨族传递与诊断可见。
+	ResponseModalities []string `json:"responseModalities,omitempty"`
 	// 调参维度全用指针，理由同 IR：零值与「没给」语义不同。
 	// ResponseLogprobs 是 Gemini 的开关，Logprobs 是档位（对应 top_logprobs）。
 	PresencePenalty  *float64 `json:"presencePenalty,omitempty"`

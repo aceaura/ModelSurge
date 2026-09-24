@@ -97,6 +97,16 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		if gc.ResponseMimeType == "application/json" || len(gc.ResponseSchema) > 0 {
 			// Gemini 的 responseSchema 恒为严格语义，没有 strict 开关也没有名称。
 			out.ResponseFormat = &ir.ResponseFormat{Schema: gc.ResponseSchema, Strict: true}
+		} else if gc.ResponseMimeType != "" && gc.ResponseMimeType != "text/plain" {
+			// text/x.enum 等非 JSON MIME：约束输出类型，四个出站（gemini 只入
+			// 不出）没有一个接得住——收进 IR 只为诊断报得出。text/plain 是显式
+			// 缺省，与不给同义，报出来是假阳性。
+			out.ResponseMimeType = gc.ResponseMimeType
+		}
+		// 输出模态归一成 OpenAI 风格小写值进 IR：TEXT/AUDIO 跨族可达 chat 的
+		// modalities，IMAGE 没有出站接得住，过滤由诊断报出。
+		for _, m := range gc.ResponseModalities {
+			out.Modalities = append(out.Modalities, strings.ToLower(m))
 		}
 	}
 	if req.SystemInstruction != nil {
@@ -242,18 +252,35 @@ func decodeFuncResponseText(raw json.RawMessage) string {
 	return string(raw)
 }
 
+// decodeToolChoice functionCallingConfig -> IR。
+//
+// allowedFunctionNames 是独立于 mode 的一维（mode 说要不要必须调，白名单说能调
+// 哪些），此前只被用来把 ANY+单项折成指名调用，其余形态一律解出即丢：客户端写明
+// 「只能调 alpha、beta」，出站却把 gamma 一并声明出去，模型调到 gamma 时客户端
+// 根本没有那个函数可执行，而请求与注记里都看不出任何异常。现在四个分支都把它带进
+// IR，由 normalize.EnforceToolAllowlist 收窄已声明工具来落地。
+//
+// ANY+单项仍折成指名调用：这一折是等价的（必须调 ∧ 只能调 alpha ⇒ 必须调 alpha），
+// 且降级路径更温和——名字没声明时回落成 auto（模型可以不调），若保留 any 则是
+// 「必须调一个被禁的工具」。
 func decodeToolChoice(cfg *functionCallingConfig) *ir.ToolChoice {
+	var out *ir.ToolChoice
 	switch strings.ToUpper(cfg.Mode) {
 	case "ANY":
 		if len(cfg.AllowedFunctionNames) == 1 {
-			return &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: cfg.AllowedFunctionNames[0]}
+			out = &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: cfg.AllowedFunctionNames[0]}
+		} else {
+			out = &ir.ToolChoice{Mode: ir.ChoiceAny}
 		}
-		return &ir.ToolChoice{Mode: ir.ChoiceAny}
 	case "NONE":
-		return &ir.ToolChoice{Mode: ir.ChoiceNone}
+		out = &ir.ToolChoice{Mode: ir.ChoiceNone}
 	default: // AUTO
-		return &ir.ToolChoice{Mode: ir.ChoiceAuto}
+		out = &ir.ToolChoice{Mode: ir.ChoiceAuto}
 	}
+	if len(cfg.AllowedFunctionNames) > 0 {
+		out.AllowedTools = append([]string(nil), cfg.AllowedFunctionNames...)
+	}
+	return out
 }
 
 // ensureThoughtSignature 保证返回给 Gemini 客户端的 functionCall 带签名。

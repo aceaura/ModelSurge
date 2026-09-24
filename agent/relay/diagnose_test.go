@@ -107,10 +107,14 @@ func TestDiagnose(t *testing.T) {
 		t.Errorf("unsigned thinking should not be noted: %v", notes)
 	}
 
-	// 思考模式 + 强制 tool_choice：上游不支持时提示降级，支持的协议不误报
+	// 思考模式 + 强制 tool_choice：上游不支持时提示降级，支持的协议不误报。
+	// 三个夹具都声明了工具：零工具下的 ChoiceAny 是上游必拒的形状，会被另一条
+	// 注记盖住，这条就测不到思考与强制指名的冲突了。
+	declared := []ir.Tool{{Name: "alpha"}}
 	req4 := &ir.Request{
 		Thinking:   &ir.ThinkingConfig{Enabled: true, Effort: "high"},
 		ToolChoice: &ir.ToolChoice{Mode: ir.ChoiceAny},
+		Tools:      declared,
 	}
 	if notes := Diagnose(req4, "openai-chat", chat); len(notes) != 1 || !strings.Contains(notes[0], "tool_choice") {
 		t.Errorf("forced tool choice in thinking mode not reported: %v", notes)
@@ -123,6 +127,7 @@ func TestDiagnose(t *testing.T) {
 	off := &ir.Request{
 		Thinking:   &ir.ThinkingConfig{Enabled: false},
 		ToolChoice: &ir.ToolChoice{Mode: ir.ChoiceAny},
+		Tools:      declared,
 	}
 	if notes := Diagnose(off, "openai-chat", chat); len(notes) != 0 {
 		t.Errorf("thinking off should not trigger tool_choice note: %v", notes)
@@ -130,6 +135,7 @@ func TestDiagnose(t *testing.T) {
 	auto := &ir.Request{
 		Thinking:   &ir.ThinkingConfig{Enabled: true},
 		ToolChoice: &ir.ToolChoice{Mode: ir.ChoiceAuto},
+		Tools:      declared,
 	}
 	if notes := Diagnose(auto, "openai-chat", chat); len(notes) != 0 {
 		t.Errorf("tool_choice auto should not trigger note: %v", notes)

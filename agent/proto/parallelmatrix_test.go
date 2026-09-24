@@ -120,8 +120,12 @@ func TestParallelDecodedFromInbound(t *testing.T) {
 }
 
 // 显式 tool_choice 与并行开关共存时，两者都要保住（并行位不能顶掉 Mode）。
+// 必须声明工具：零工具下的 tool_choice:"required" 是上游必拒的形状，规整流水线
+// 会把它整条删掉，那样这条断言测的就是删改而不是共存了。
 func TestParallelPreservesExplicitToolChoice(t *testing.T) {
-	body := `{"model":"m","messages":[{"role":"user","content":"hi"}],"tool_choice":"required","parallel_tool_calls":false}`
+	body := `{"model":"m","messages":[{"role":"user","content":"hi"}],` +
+		`"tools":[{"type":"function","function":{"name":"alpha","parameters":{"type":"object"}}}],` +
+		`"tool_choice":"required","parallel_tool_calls":false}`
 	req := decodeIn(t, "openai-chat", body)
 	if req.ToolChoice == nil || req.ToolChoice.Mode != ir.ChoiceAny || !req.ToolChoice.DisableParallel {
 		t.Fatalf("Mode 与 DisableParallel 应同时保住：%+v", req.ToolChoice)

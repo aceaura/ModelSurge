@@ -15,4 +15,4 @@ type codexCodec struct {
 
 func (codexCodec) Name() string { return NameCodex }
 
-func init() { proto.Register(codexCodec{codec{}}) }
+func init() { proto.Register(codexCodec{codec{subscriptionCompat: true}}) }

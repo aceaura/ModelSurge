@@ -114,7 +114,7 @@ func TestDecodeRequest_CompactionTrigger(t *testing.T) {
 // instructions 恒存在（订阅端点要求字段，无 system 时输出空串）。
 func TestCodexCodec(t *testing.T) {
 	c := New()
-	cx := codexCodec{codec: codec{}}
+	cx := codexCodec{codec: codec{subscriptionCompat: true}}
 	if c.Name() != "openai-responses" || cx.Name() != NameCodex {
 		t.Fatalf("codec names = %q / %q", c.Name(), cx.Name())
 	}

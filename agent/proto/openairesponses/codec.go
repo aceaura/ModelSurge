@@ -13,7 +13,13 @@ import (
 
 func init() { proto.Register(codec{}) }
 
-type codec struct{}
+// codec openai-responses 出站。subscriptionCompat 仅 codex 别名置位：订阅端点
+// 强制要求 instructions 字段存在（无 system 时也得给空串）且 store=false，
+// 官方 Responses API 没有这两条要求——instructions 缺省即无系统指令，store
+// 缺省是 true。对官方端点伪造这两个值会静默改语义：store 一翻成 false，响应
+// 不再落库，previous_response_id 会话链与事后拉取一起断掉，而客户端根本没
+// 提过这个字段。
+type codec struct{ subscriptionCompat bool }
 
 // New 返回 codec（便于测试直接构造）。
 func New() proto.Codec { return codec{} }
@@ -72,8 +78,8 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		yes := true
 		out.LogProbs = &yes
 	}
-	if req.Instructions != "" {
-		out.System = append(out.System, ir.Block{Type: ir.BlockText, Text: req.Instructions})
+	if req.Instructions != nil && *req.Instructions != "" {
+		out.System = append(out.System, ir.Block{Type: ir.BlockText, Text: *req.Instructions})
 	}
 	var items []inputItem
 	if len(req.Input) > 0 {
@@ -135,8 +141,17 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		out.ResponseFormat = decodeResponseFormat(req.Text.Format)
 		out.Verbosity = req.Text.Verbosity
 	}
+	// metadata 是官方文档维度（16 对键值，随响应回显）：整条丢掉等于客户端
+	// 的关联数据再也回不来，里面的 user_id 也跟着蒸发。user 字段与
+	// metadata.user_id 同维度，同给时 user 胜出（顶层字段比嵌套键更显式）。
+	if len(req.Metadata) > 0 {
+		out.Metadata = proto.DecodeStringMap(req.Metadata)
+	}
 	if req.User != "" {
-		out.Metadata = map[string]string{"user_id": req.User}
+		if out.Metadata == nil {
+			out.Metadata = map[string]string{}
+		}
+		out.Metadata["user_id"] = req.User
 	}
 	out.PreviousResponseID = req.PreviousResponseID
 	// store 三态透传：客户端显式给了就记住，没给保持 nil（出站再决定兜底值）。
@@ -430,6 +445,18 @@ func decodeToolChoice(v any) *ir.ToolChoice {
 			return &ir.ToolChoice{Mode: ir.ChoiceAny}
 		}
 	case map[string]any:
+		// allowed_tools 是 responses/codex 一族的白名单形态：type 说的是「这是一条
+		// 选择策略」而不是某个已声明工具的类型，内层 mode 才说要不要必须调。此前整个
+		// map 分支只认 name，这个形态没有 name，于是返回 nil——tool_choice 被整条
+		// 丢掉，连内层的 required 也一起没了，客户端既拿不到限制也拿不到注记。
+		if typ, _ := tc["type"].(string); typ == "allowed_tools" {
+			out := &ir.ToolChoice{Mode: ir.ChoiceAuto}
+			if mode, _ := tc["mode"].(string); mode == "required" {
+				out.Mode = ir.ChoiceAny
+			}
+			out.AllowedTools = decodeAllowedToolNames(tc["tools"])
+			return out
+		}
 		if name, ok := tc["name"].(string); ok {
 			out := &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: name}
 			if typ, _ := tc["type"].(string); typ == "custom" {
@@ -441,9 +468,39 @@ func decodeToolChoice(v any) *ir.ToolChoice {
 	return nil
 }
 
+// decodeAllowedToolNames 取 allowed_tools.tools 里的工具名。条目通常是
+// {"type":"function","name":...}，但白名单本质是一串名字，裸字符串形态也照收——
+// 认不出来就当没有，宁可少收窄（由 Diagnose 报出）也不要凭空捏一个名字进去。
+func decodeAllowedToolNames(v any) []string {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, item := range list {
+		switch t := item.(type) {
+		case string:
+			if t != "" {
+				names = append(names, t)
+			}
+		case map[string]any:
+			name, _ := t["name"].(string)
+			if name == "" {
+				if fn, ok := t["function"].(map[string]any); ok {
+					name, _ = fn["name"].(string)
+				}
+			}
+			if name != "" {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
 // ---- 请求编码：IR -> Responses ----
 
-func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
+func (c codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	r := req.Clone()
 	opts := normalize.Strict()
 	opts.EnsureFirstUser = false
@@ -465,7 +522,11 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		n := 1
 		out.TopLogProbs = &n
 	}
-	out.Instructions = joinSystem(r.System)
+	// instructions 缺省即无系统指令；仅订阅端点（Codex）强制字段存在，那一侧
+	// 无 system 时输出空串。官方端点伪造空串是把「没给」改写成「给了一条空指令」。
+	if sys := joinSystem(r.System); sys != "" || c.subscriptionCompat {
+		out.Instructions = &sys
+	}
 	var items []inputItem
 	for _, m := range r.Messages {
 		items = append(items, encodeMessageItems(m, true)...)
@@ -545,16 +606,26 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		}
 		out.Text.Verbosity = r.Verbosity
 	}
+	// metadata 随响应回显，是客户端的关联数据通道：同族回吐原样发，user_id
+	// 同时落 user 字段（顶层字段是滥用追踪的官方槽位）。
+	if len(r.Metadata) > 0 {
+		md, err := json.Marshal(r.Metadata)
+		if err == nil {
+			out.Metadata = md
+		}
+	}
 	if uid := r.Metadata["user_id"]; uid != "" {
 		out.User = uid
 	}
 	// 会话链同协议回写：链锚点是上游侧资源，只有 responses 系出站接得住。
 	out.PreviousResponseID = r.PreviousResponseID
-	// 订阅端点（Codex 形态）要求 store=false；对官方 API 无害。
 	// 客户端显式给了值就透传（显式 true 是客户端的选择，不该替它改）。
+	// 缺省时官方 API 不发：store 的官方缺省是 true，伪造 false 会让响应不再
+	// 落库，previous_response_id 会话链与事后拉取一起断掉，而客户端根本没提过
+	// 这个字段。只有订阅端点（Codex 形态）强制 store=false，那一侧补默认值。
 	if r.Store != nil {
 		out.Store = r.Store
-	} else {
+	} else if c.subscriptionCompat {
 		f := false
 		out.Store = &f
 	}

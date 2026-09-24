@@ -4,6 +4,7 @@
 package proto
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -783,4 +784,19 @@ func sortedNames[T any](registry map[string]T) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// DecodeStringMap 把 metadata 这类「键值全字符串」的 JSON 对象解成 map。
+// chat 与 responses 两族入站共用：形状非法（非对象、值非字符串）时返回 nil，
+// 那种 body 上游本来也会照实 400，此处不替它报错。键序按编码字典序自然排列，
+// 与客户端给定的顺序无关——metadata 是关联数据不是有序结构。
+func DecodeStringMap(raw json.RawMessage) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil || len(m) == 0 {
+		return nil
+	}
+	return m
 }

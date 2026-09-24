@@ -374,6 +374,14 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 			"dropped tool_choice %q: the request declares no tools, and a choice that requires or names a tool cannot be satisfied without a tool list, so the receiving side would reject the whole turn",
 			string(req.ToolChoice.Mode)))
 	} else {
+		// responses typed tool_choice（{"type":"mcp"/"file_search"/...} 不透明槽）：
+		// 只有 responses/codex 同族出站原样回写；其余三族编不出对应形状，
+		// tool_choice 整个缺省，模型不再被约束到声明的托管工具。
+		if req.ToolChoice != nil && len(req.ToolChoice.Raw) > 0 &&
+			protoName != "openai-responses" && protoName != "codex" {
+			notes = append(notes,
+				"dropped typed tool_choice: the target protocol cannot name a hosted tool in tool_choice, the model is no longer constrained to the declared hosted tool")
+		}
 		// 工具白名单靠收窄已声明工具实现（见 ir.Request.AllowlistNarrow），通常无损，
 		// 所以收窄成功时不出注记。只有白名单与已声明的非托管工具全无交集时无从收窄——
 		// 照原样发出，客户端明令禁止的工具照样递到了模型面前。判据与 normalize 共用同
@@ -417,7 +425,11 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		case !caps.HostedTools:
 			dropped = append(dropped, t.Hosted)
 		case t.Hosted != ir.HostedWebSearch && t.Hosted != ir.HostedCodeExecution:
-			unmapped = append(unmapped, t.Hosted) // 无跨协议映射的种类，即使上游支持托管工具也只能透传同族
+			// 无跨协议映射的种类只能同族透传：目标族与原生族一致时原样
+			// 回写不是损耗，只有落到外族才报。
+			if proto.WireFamily(protoName) != ir.HostedTypeFamily(t.HostedType) {
+				unmapped = append(unmapped, t.Hosted)
+			}
 		default:
 			// 工具本体映射得过去，但声明参数按目标族槽位取舍：装不下的报出来，
 			// 客户端要的限制（调用上限/域名黑名单/检索规模）不会生效。
@@ -752,6 +764,12 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 		if req.UserProfileID != "" {
 			notes = append(notes,
 				"dropped user_profile_id: the target protocol has no end-user attribution parameter, billing and audit trail attribute the call to the API account instead")
+		}
+		// task_budget 是给客户端压缩 harness 的跨 context 总预算：外族没有
+		// 这一维，预算约束整个不生效，长会话不再按声明的总量收敛。
+		if len(req.TaskBudget) > 0 {
+			notes = append(notes,
+				"dropped task_budget: the target protocol has no cross-context token budget parameter, the declared spending cap will not be enforced")
 		}
 	}
 	if !caps.ToolStrict {

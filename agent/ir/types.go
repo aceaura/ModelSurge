@@ -529,6 +529,11 @@ type ToolChoice struct {
 	// 别的工具就调不到。收窄见 AllowlistNarrow。因此这一维通常不产生损耗，
 	// 只有白名单与已声明工具全无交集时才无从收窄，由 relay.Diagnose 报出。
 	AllowedTools []string
+	// Raw responses 一族 typed tool_choice 的不透明槽：{"type":"mcp"}、
+	// {"type":"file_search"} 等托管工具指名变体（官方 ToolChoiceTypesParam /
+	// ToolChoiceMcpParam），没有跨族统一维度可建模。Mode 留零值：外族出站
+	// 编不出对应形状（tool_choice 缺省），损耗由诊断报出；同族出站原样回写。
+	Raw json.RawMessage `json:",omitempty"`
 }
 
 // AllowlistApplies 白名单是否落在「靠收窄实现」的模式上。
@@ -701,18 +706,22 @@ func (f *ResponseFormat) IsSchema() bool {
 
 // Request 统一请求模型。
 type Request struct {
-	Model         string
-	Messages      []Message
-	System        []Block // 顶层 system（text 块），Anthropic 形态
-	Tools         []Tool
-	ToolChoice    *ToolChoice
-	MaxTokens     int
-	Temperature   *float64
-	TopP          *float64
-	TopK          *int
-	StopSequences []string
-	Stream        bool
-	Thinking      *ThinkingConfig
+	Model      string
+	Messages   []Message
+	System     []Block // 顶层 system（text 块），Anthropic 形态
+	Tools      []Tool
+	ToolChoice *ToolChoice
+	MaxTokens  int
+	// MaxCompletionKey 客户端用的是现代键名 max_completion_tokens（true）还是
+	// 已废弃的 max_tokens（false）。官方注明旧键不兼容 o 系推理模型
+	// （openai_chat.go:3826），同族往返时原键名带回，跨族投影不影响。
+	MaxCompletionKey bool
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int
+	StopSequences    []string
+	Stream           bool
+	Thinking         *ThinkingConfig
 	// IncludeUsage 客户端显式要求流式末尾补一个只带 usage 的帧（Chat 的
 	// stream_options.include_usage）。这里用两态而非像下面的调参维度那样用指针：
 	// OpenAI 契约里「没提」与「显式 false」行为完全相同（都不发该帧），三态区分
@@ -852,6 +861,12 @@ type Request struct {
 	// 最终用户的归属标识（计费/审计维度），与 metadata.user_id 的滥用追踪
 	// 标识是两回事。只有 anthropic 一族有此参数；跨族由诊断报出。
 	UserProfileID string
+	// TaskBudget anthropic beta 的 output_config.task_budget
+	// （BetaTokenTaskBudgetParam：{"type":"tokens","total":N,"remaining":M?}）——
+	// 跨 context 的总 token 预算，给做客户端压缩的 harness 用。原文透传：
+	// 值域随 beta 演进，展开建模反而截断新键。只有 anthropic 有槽位，跨族
+	// 丢弃由诊断报出。
+	TaskBudget json.RawMessage `json:",omitempty"`
 	// Verbosity 输出啰嗦程度档位（low/medium/high）。Chat 是顶层 verbosity，
 	// Responses 是 text.verbosity；其余协议没有输出长度转向这一维。
 	Verbosity string

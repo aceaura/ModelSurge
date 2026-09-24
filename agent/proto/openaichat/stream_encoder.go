@@ -429,6 +429,9 @@ func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error
 		return nil, nil, chatErrorFromBody(r.Error, "upstream error")
 	}
 	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, SystemFingerprint: r.SystemFingerprint, Created: r.Created}
+	if len(r.Metadata) > 0 && string(r.Metadata) != "null" {
+		out.Metadata = r.Metadata
+	}
 	selected := primaryChoice(r.Choices)
 	if selected != nil && selected.Message != nil {
 		m := selected.Message
@@ -545,6 +548,7 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		out.ServiceTier = tier
 	}
 	out.SystemFingerprint = resp.SystemFingerprint
+	out.Metadata = resp.Metadata
 	return json.Marshal(out)
 }
 

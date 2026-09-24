@@ -152,6 +152,11 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		}
 		out.Thinking.Effort = f.Effort
 	}
+	// task_budget 原文进 IR；"null" 字面值按没给处理（与 R98 同判据，
+	// 否则 Clone 的 JSON 往返会把显式 null 当成真值带回）。
+	if f := req.OutputConfig; f != nil && len(f.TaskBudget) > 0 && string(f.TaskBudget) != "null" {
+		out.TaskBudget = f.TaskBudget
+	}
 	// 原值进 IR，跨族映射是出站的事（proto.MapServiceTier）。
 	out.ServiceTier = req.ServiceTier
 	// 顶层缓存便捷糖与推理地理偏好原值进 IR；不展开、不映射。
@@ -630,6 +635,13 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			}
 			out.OutputConfig.Effort = r.Thinking.Effort
 		}
+	}
+	// task_budget 只有 anthropic 有槽位，同族原文回写；跨族由诊断报出。
+	if len(r.TaskBudget) > 0 {
+		if out.OutputConfig == nil {
+			out.OutputConfig = &outputConfig{}
+		}
+		out.OutputConfig.TaskBudget = r.TaskBudget
 	}
 	// 值集装不下的档位（flex/scale/priority/fast 等）丢弃，由诊断报出。
 	if tier, ok := proto.MapServiceTier(r.ServiceTier, Name); ok {

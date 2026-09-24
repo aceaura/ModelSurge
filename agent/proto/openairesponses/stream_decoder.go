@@ -75,6 +75,10 @@ type streamDecoder struct {
 	// droppedLogprobs 携带 logprobs 的 output_text part 数：逐 token 概率
 	// 没有 IR 槽位，计数经 Notes() 报出。
 	droppedLogprobs int
+	// droppedAudio response.audio.delta 的 base64 音频帧数：音频字节没有
+	// IR 槽位（文字转写走 transcript.delta 通道已单独送达），计数经
+	// Notes() 报出。
+	droppedAudio int
 }
 
 // pendingToolCall 漏发 added 帧的工具调用缓存：参数碎片加上调用种类
@@ -163,6 +167,12 @@ func deref(p *int) int {
 
 // idx 编码侧用：把索引写进 wire（含 0）。
 func idx(v int) *int { return &v }
+
+// hasPayload RawMessage 探测字段判「真给了值」：null 与空数组都不算载荷。
+func hasPayload(raw json.RawMessage) bool {
+	s := string(raw)
+	return len(raw) > 0 && s != "null" && s != "[]"
+}
 
 // backfill 用 part 级 done 事件携带的完整值补齐缺口，块尚未开时补开。
 // 块已关就不动：再发增量会让下游编码器把内容追加到已定稿的 item 上
@@ -281,6 +291,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			ev.Model = se.Response.Model
 			ev.ServiceTier = se.Response.ServiceTier
 			ev.Created = se.Response.CreatedAt
+			if len(se.Response.Metadata) > 0 && string(se.Response.Metadata) != "null" {
+				ev.Metadata = se.Response.Metadata
+			}
 			d.tier = se.Response.ServiceTier
 		}
 		return []ir.Event{ev}, nil
@@ -335,6 +348,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		_, out := d.assign(k, &ir.Block{Type: typ})
 		return out, nil
 	case "response.output_text.delta":
+		if hasPayload(se.Logprobs) {
+			d.droppedLogprobs++
+		}
 		if se.Delta == "" {
 			return nil, nil
 		}
@@ -342,6 +358,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		d.blockText[i] += se.Delta
 		return append(out, ir.Event{Type: ir.EvTextDelta, Index: i, Text: se.Delta}), nil
 	case "response.output_text.done":
+		if hasPayload(se.Logprobs) {
+			d.droppedLogprobs++
+		}
 		// 完整正文与全量引用都在这一帧。此前整个事件落到 default 被丢掉，
 		// 只发终态不发增量的上游整段正文一个字都到不了客户端。
 		k := partKey{out: oi, content: ci}
@@ -370,6 +389,24 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		k := partKey{out: oi, content: ci, refusal: true}
 		out := d.backfill(k, &ir.Block{Type: ir.BlockRefusal}, se.Refusal, ir.EvTextDelta)
 		return append(out, d.closePart(k)...), nil
+	case "response.audio.transcript.delta":
+		// 音频输出的文字转写：responses 音频流唯一可读通道，不转发客户端就
+		// 什么都看不到。官方事件不带 output/content_index，deref 按 0/0 归位。
+		if se.Delta == "" {
+			return nil, nil
+		}
+		i, out := d.assign(partKey{out: oi, content: ci}, &ir.Block{Type: ir.BlockText})
+		d.blockText[i] += se.Delta
+		return append(out, ir.Event{Type: ir.EvTextDelta, Index: i, Text: se.Delta}), nil
+	case "response.audio.delta":
+		// base64 音频帧没有 IR 槽位（转写文字已走上面通道送达），计数报出。
+		d.droppedAudio++
+		return nil, nil
+	case "response.audio.done", "response.audio.transcript.done", "response.compaction.compacting":
+		// 终态/过程信号：transcript.done 官方只有 sequence_number 没有全量
+		// 转写可回补，compaction 是服务端压缩的过程通知。归进度帧计数。
+		d.droppedProgress++
+		return nil, nil
 	case "response.content_part.done":
 		// part 结束就关块，不等 output_item.done：同一条 message 的多个 part 若
 		// 一起延后关闭，下游会看到 start/start/stop/stop 的交叉嵌套。
@@ -707,7 +744,7 @@ func mapIncompleteReason(r *responseObj) ir.StopReason {
 // 知道输出不完整（对齐 chat 侧把它映射成 length 的判据）。
 func unmapIncompleteReason(s ir.StopReason) string {
 	switch s {
-	case ir.StopMaxTokens, ir.StopPauseTurn, ir.StopAborted:
+	case ir.StopMaxTokens, ir.StopPauseTurn, ir.StopAborted, ir.StopContextWindow:
 		return "max_output_tokens"
 	case ir.StopRefusal:
 		return "content_filter"
@@ -763,6 +800,11 @@ func (d *streamDecoder) Notes() []string {
 	if d.droppedLogprobs > 0 {
 		notes = append(notes, proto.LogProbsDropNote(d.droppedLogprobs))
 		d.droppedLogprobs = 0
+	}
+	if d.droppedAudio > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d audio frame(s): the base64 audio bytes have no counterpart in this conversion, only the transcript text was forwarded", d.droppedAudio))
+		d.droppedAudio = 0
 	}
 	return notes
 }
@@ -854,6 +896,9 @@ func decodeUsage(u *usage) ir.Usage {
 		if out.InputTokens < 0 {
 			out.InputTokens = 0
 		}
+	}
+	if u.InputTokensDetails != nil {
+		out.CacheCreationTokens = u.InputTokensDetails.CacheWriteTokens
 	}
 	return out
 }

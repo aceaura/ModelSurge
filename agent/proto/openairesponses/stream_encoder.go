@@ -46,6 +46,9 @@ type streamEncoder struct {
 	// tier 已映射待回显的档位（response.created 与终止帧都携带）。
 	tier        string
 	droppedTier string
+	// metadata 上游响应的 metadata 回显原文（EvMessageStart 捕获），
+	// response.created 与终止帧的 response 对象原样带回。
+	metadata json.RawMessage
 	// droppedContainer 容器回显（anthropic 专属）被丢标记：Responses 无该槽位。
 	droppedContainer bool
 	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
@@ -77,6 +80,9 @@ type streamEncoder struct {
 	droppedSigs int
 	badToolArgs int
 	completed   bool
+	// frameSeq 帧序号计数：官方全事件 sequence_number api:required，逐帧
+	// 单调递增写在 frame() 里，各发射点不用各自维护。
+	frameSeq int64
 }
 
 type encBlock struct {
@@ -98,6 +104,9 @@ type encBlock struct {
 	wsErrCode string
 	// rawItem 同族不透明 item 的完整线体：added/done 与全量 output 都整块带回。
 	rawItem json.RawMessage
+	// annCount 本块已发的 annotation.added 帧数：annotation_index 的 per-part
+	// 序号源（本编码器 content_index 恒 0，块即 part）。
+	annCount int
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
@@ -134,6 +143,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			e.created = ev.Created
 		}
 		e.mapTier(ev.ServiceTier)
+		if len(ev.Metadata) > 0 {
+			e.metadata = ev.Metadata
+		}
 		if ev.Container != nil {
 			e.droppedContainer = true
 		}
@@ -143,7 +155,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.mergeUsage(ev.Usage)
 		return [][]byte{e.frame(streamEvent{Type: "response.created", Response: &responseObj{
 			ID: e.id, Object: "response", CreatedAt: e.created, Model: e.model, Status: "in_progress",
-			ServiceTier: e.tier,
+			ServiceTier: e.tier, Metadata: e.metadata,
 		}})}, nil
 	case ir.EvBlockStart:
 		return e.blockStart(ev)
@@ -154,9 +166,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}
 		b.text += ev.Text
 		if b.typ == ir.BlockRefusal {
-			return [][]byte{e.frame(streamEvent{Type: "response.refusal.delta", OutputIndex: idx(e.wireOf(ev.Index)), ContentIndex: idx(0), Delta: ev.Text})}, nil
+			return [][]byte{e.frame(streamEvent{Type: "response.refusal.delta", OutputIndex: idx(e.wireOf(ev.Index)), ContentIndex: idx(0), ItemID: b.itemID, Delta: ev.Text})}, nil
 		}
-		return [][]byte{e.frame(streamEvent{Type: "response.output_text.delta", OutputIndex: idx(e.wireOf(ev.Index)), ContentIndex: idx(0), Delta: ev.Text})}, nil
+		return [][]byte{e.frame(streamEvent{Type: "response.output_text.delta", OutputIndex: idx(e.wireOf(ev.Index)), ContentIndex: idx(0), ItemID: b.itemID, Delta: ev.Text})}, nil
 	case ir.EvCitation:
 		b := e.blocks[ev.Index]
 		if b == nil {
@@ -175,8 +187,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			a := as[i]
 			frames = append(frames, e.frame(streamEvent{
 				Type: "response.output_text.annotation.added", OutputIndex: idx(e.wireOf(ev.Index)),
-				ContentIndex: idx(0), Annotation: &a,
+				ContentIndex: idx(0), ItemID: b.itemID, AnnotationIndex: idx(b.annCount), Annotation: &a,
 			}))
+			b.annCount++
 		}
 		return frames, nil
 	case ir.EvThinkingDelta:
@@ -185,7 +198,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return nil, fmt.Errorf("openai-responses: thinking delta for unopened block %d", ev.Index)
 		}
 		b.text += ev.Text
-		return [][]byte{e.frame(streamEvent{Type: "response.reasoning_summary_text.delta", OutputIndex: idx(e.wireOf(ev.Index)), SummaryIndex: idx(0), Delta: ev.Text})}, nil
+		return [][]byte{e.frame(streamEvent{Type: "response.reasoning_summary_text.delta", OutputIndex: idx(e.wireOf(ev.Index)), SummaryIndex: idx(0), ItemID: b.itemID, Delta: ev.Text})}, nil
 	case ir.EvSigDelta:
 		// 签名不进增量事件，随 output_item.done 的 encrypted_content 下发。
 		// 只收本族真签名：外族/合成签名放进 encrypted_content 会被客户端当成
@@ -215,7 +228,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if b.toolKind == ir.ToolCustom {
 			typ = "response.custom_tool_call_input.delta"
 		}
-		return [][]byte{e.frame(streamEvent{Type: typ, OutputIndex: idx(e.wireOf(ev.Index)), Delta: ev.Text})}, nil
+		return [][]byte{e.frame(streamEvent{Type: typ, OutputIndex: idx(e.wireOf(ev.Index)), ItemID: b.itemID, Delta: ev.Text})}, nil
 	case ir.EvBlockStop:
 		return e.blockStop(ev.Index), nil
 	case ir.EvMessageDelta:
@@ -228,6 +241,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		e.mergeUsage(ev.Usage)
 		// 晚到的档位回显还补得上：终止帧的 response 对象也带 service_tier。
 		e.mapTier(ev.ServiceTier)
+		if len(ev.Metadata) > 0 {
+			e.metadata = ev.Metadata
+		}
 		if ev.Container != nil {
 			e.droppedContainer = true
 		}
@@ -295,7 +311,7 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		added := e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
 			Type: "message", ID: b.itemID, Role: "assistant", Content: json.RawMessage(`[]`),
 		}})
-		part := e.frame(streamEvent{Type: "response.content_part.added", OutputIndex: oi, ContentIndex: idx(0), Part: &contentPart{
+		part := e.frame(streamEvent{Type: "response.content_part.added", OutputIndex: oi, ContentIndex: idx(0), ItemID: b.itemID, Part: &contentPart{
 			Type: "refusal",
 		}})
 		return [][]byte{added, part}, nil
@@ -386,7 +402,7 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		added := e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
 			Type: "message", ID: b.itemID, Role: "assistant", Content: json.RawMessage(`[]`),
 		}})
-		part := e.frame(streamEvent{Type: "response.content_part.added", OutputIndex: oi, ContentIndex: idx(0), Part: &contentPart{
+		part := e.frame(streamEvent{Type: "response.content_part.added", OutputIndex: oi, ContentIndex: idx(0), ItemID: b.itemID, Part: &contentPart{
 			Type: "output_text", Text: "",
 		}})
 		return [][]byte{added, part}, nil
@@ -414,7 +430,7 @@ func (e *streamEncoder) blockStop(i int) [][]byte {
 	b.closed = true
 	oi := idx(e.wireOf(i))
 	if b.typ == ir.BlockToolUse {
-		done := streamEvent{OutputIndex: oi}
+		done := streamEvent{OutputIndex: oi, ItemID: b.itemID}
 		if b.toolKind == ir.ToolCustom {
 			done.Type = "response.custom_tool_call_input.done"
 			done.Input = b.text
@@ -444,24 +460,24 @@ func (e *streamEncoder) blockStop(i int) [][]byte {
 	case ir.BlockThinking:
 		out = append(out,
 			e.frame(streamEvent{Type: "response.reasoning_summary_text.done", OutputIndex: oi,
-				SummaryIndex: idx(0), Text: b.text}),
+				SummaryIndex: idx(0), ItemID: b.itemID, Text: b.text}),
 			e.frame(streamEvent{Type: "response.reasoning_summary_part.done", OutputIndex: oi,
-				SummaryIndex: idx(0), Part: &contentPart{Type: "summary_text", Text: b.text}}),
+				SummaryIndex: idx(0), ItemID: b.itemID, Part: &contentPart{Type: "summary_text", Text: b.text}}),
 		)
 	case ir.BlockRefusal:
 		out = append(out,
 			e.frame(streamEvent{Type: "response.refusal.done", OutputIndex: oi, ContentIndex: idx(0),
-				Refusal: b.text}),
+				ItemID: b.itemID, Refusal: b.text}),
 			e.frame(streamEvent{Type: "response.content_part.done", OutputIndex: oi, ContentIndex: idx(0),
-				Part: &contentPart{Type: "refusal", Refusal: b.text}}),
+				ItemID: b.itemID, Part: &contentPart{Type: "refusal", Refusal: b.text}}),
 		)
 	default:
 		as := encodeAnnotations(b.text, b.cites)
 		out = append(out,
 			e.frame(streamEvent{Type: "response.output_text.done", OutputIndex: oi, ContentIndex: idx(0),
-				Text: b.text, Annotations: as}),
+				ItemID: b.itemID, Text: b.text, Annotations: as}),
 			e.frame(streamEvent{Type: "response.content_part.done", OutputIndex: oi, ContentIndex: idx(0),
-				Part: &contentPart{Type: "output_text", Text: b.text, Annotations: as}}),
+				ItemID: b.itemID, Part: &contentPart{Type: "output_text", Text: b.text, Annotations: as}}),
 		)
 	}
 	return append(out, e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: oi, Item: e.doneItem(b)}))
@@ -517,7 +533,7 @@ func (e *streamEncoder) completedFrame() []byte {
 	obj := &responseObj{
 		ID: e.id, Object: "response", CreatedAt: e.created, Model: e.model,
 		Status: "completed", Output: e.fullOutput(), Usage: usageOut,
-		ServiceTier: e.tier,
+		ServiceTier: e.tier, Metadata: e.metadata,
 	}
 	// 事件名也要跟着改。此前恒发 response.completed 只改 status 字段，而本仓的
 	// 解码器（与官方 SDK）是按事件名分支的，completed 分支不看 status——
@@ -651,6 +667,9 @@ func (e *streamEncoder) mapTier(raw string) {
 }
 
 func (e *streamEncoder) frame(ev streamEvent) []byte {
+	// 官方全事件 sequence_number api:required：客户端靠它检测丢帧与重排。
+	ev.SequenceNumber = e.frameSeq
+	e.frameSeq++
 	// 官方 Responses API 每帧都带 event: 行（anthropic 侧 sseFrame 早就有）：
 	// 按 SSE 事件名分发的客户端对只有 data: 的流一个事件都认不出。
 	return []byte("event: " + ev.Type + "\ndata: " + string(marshal(ev)) + "\n\n")
@@ -673,10 +692,11 @@ func encodeUsage(u *ir.Usage) *usage {
 		OutputTokens: u.OutputTokens,
 		TotalTokens:  u.TotalInput() + u.OutputTokens,
 	}
-	if u.CacheReadTokens > 0 {
+	if u.CacheReadTokens > 0 || u.CacheCreationTokens > 0 {
 		out.InputTokensDetails = &struct {
-			CachedTokens int `json:"cached_tokens,omitempty"`
-		}{CachedTokens: u.CacheReadTokens}
+			CachedTokens     int `json:"cached_tokens,omitempty"`
+			CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+		}{CachedTokens: u.CacheReadTokens, CacheWriteTokens: u.CacheCreationTokens}
 	}
 	if u.ReasoningTokens > 0 {
 		out.OutputTokensDetails = &struct {
@@ -709,6 +729,9 @@ func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error
 		return nil, nil, &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream returned non-terminal status " + r.Status, Retryable: true}
 	}
 	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, Created: r.CreatedAt}
+	if len(r.Metadata) > 0 && string(r.Metadata) != "null" {
+		out.Metadata = r.Metadata
+	}
 	// 复用请求解码的 item 逻辑：把 output items 当成一条对话的尾部
 	fake := &ir.Request{}
 	logprobParts := 0
@@ -783,6 +806,7 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	out := responseObj{
 		ID: resp.ID, Object: "response", CreatedAt: created, Model: resp.Model,
 		Status: "completed", Output: rawItems, Usage: encodeUsage(&resp.Usage),
+		Metadata: resp.Metadata,
 	}
 	// 值集装不下的回显（anthropic 的 batch）丢弃，由 ResponseNotes 报出。
 	if tier, ok := proto.MapServiceTierEcho(resp.ServiceTier, Name); ok {

@@ -410,6 +410,7 @@ func encodeUsagePtr(u *ir.Usage) *usage {
 		out.OutputTokensDetails = &outputTokensDetails{ThinkingTokens: u.ReasoningTokens}
 	}
 	out.InferenceGeo = u.InferenceGeo
+	out.Speed = u.Speed
 	return out
 }
 

@@ -19,6 +19,11 @@ func MapStopReason(s string) ir.StopReason {
 		return ir.StopPauseTurn
 	case "max_tokens":
 		return ir.StopMaxTokens
+	case "model_context_window_exceeded":
+		// 官方 beta 档（beta_stop_reason.py）：输入占满窗口挤断输出。兜底成
+		// end_turn 会把截断回答伪装成自然说完，补救动作（压缩输入）与
+		// max_tokens（抬输出配额）相反，须单列。
+		return ir.StopContextWindow
 	case "tool_use":
 		return ir.StopToolUse
 	case "refusal":
@@ -31,6 +36,8 @@ func MapStopReason(s string) ir.StopReason {
 // UnmapStopReason 规范 StopReason -> Anthropic stop_reason。
 func UnmapStopReason(s ir.StopReason) string {
 	switch s {
+	case ir.StopContextWindow:
+		return "model_context_window_exceeded"
 	case ir.StopMaxTokens:
 		return "max_tokens"
 	case ir.StopToolUse:
@@ -236,6 +243,7 @@ func convUsage(u usage) ir.Usage {
 		out.ReasoningTokens = u.OutputTokensDetails.ThinkingTokens
 	}
 	out.InferenceGeo = u.InferenceGeo
+	out.Speed = u.Speed
 	return out
 }
 

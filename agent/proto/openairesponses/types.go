@@ -21,7 +21,7 @@ type request struct {
 	Stream            bool            `json:"stream,omitempty"`
 	Store             *bool           `json:"store,omitempty"`
 	Tools             []tool          `json:"tools,omitempty"`
-	ToolChoice        any             `json:"tool_choice,omitempty"`
+	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"` // string 或 object，原文保留
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
 	Reasoning         *reasoning      `json:"reasoning,omitempty"`
 	Include           []string        `json:"include,omitempty"`
@@ -331,6 +331,20 @@ type streamEvent struct {
 	Text        string       `json:"text,omitempty"`
 	Refusal     string       `json:"refusal,omitempty"`
 	Annotations []annotation `json:"annotations,omitempty"`
+	// Logprobs output_text.delta / done 携带的逐 token 概率（官方两事件均
+	// api:required，但只在客户端 include 了 logprobs 时才给）。没有 IR 槽位，
+	// 解码侧计数经 Notes() 报出。
+	Logprobs json.RawMessage `json:"logprobs,omitempty"`
+	// SequenceNumber 帧序号（官方全事件 api:required）：客户端靠它检测丢帧
+	// 与重排，编码侧逐帧单调递增写。无 omitempty——0 是首帧的合法值。
+	SequenceNumber int64 `json:"sequence_number"`
+	// ItemID 所属 output item 的 id（delta/done/part/annotation 帧均
+	// api:required）：客户端拿它把增量帧关联到 output 数组里的条目，缺了
+	// 只能按 output_index 猜。
+	ItemID string `json:"item_id,omitempty"`
+	// AnnotationIndex 本 part 内的标注序号（annotation.added 上
+	// api:required）。指针：0 是合法值。
+	AnnotationIndex *int `json:"annotation_index,omitempty"`
 }
 
 // MarshalJSON item 走 ItemRaw：编码侧只填 Item（结构体），这里统一落线；
@@ -383,6 +397,9 @@ type responseObj struct {
 	IncompleteDetails *incompleteDetails `json:"incomplete_details,omitempty"`
 	// ServiceTier 实际服务档位回显（chat 值集 + ultrafast）。
 	ServiceTier string `json:"service_tier,omitempty"`
+	// Metadata 官方契约随响应原样回显（required）。客户端的请求-响应关联
+	// 数据，同族往返逐字带回。
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
 // incompleteDetails status=incomplete 时的具体原因：
@@ -397,6 +414,9 @@ type usage struct {
 	TotalTokens        int `json:"total_tokens"`
 	InputTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens,omitempty"`
+		// CacheWriteTokens 缓存写入量（官方 required 细分）。与 anthropic 的
+		// cache_creation_input_tokens 同一位，不读就把对账凭证弄丢。
+		CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 	} `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *struct {
 		ReasoningTokens int `json:"reasoning_tokens,omitempty"`

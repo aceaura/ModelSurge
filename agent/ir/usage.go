@@ -34,7 +34,11 @@ type Usage struct {
 	// InferenceGeo Anthropic 响应侧回显的实际推理区域（usage.inference_geo）。
 	// 请求侧的同名偏好字段在 Request 上；这里只是回执，不参与调度。
 	InferenceGeo string
-	Estimated    bool // 本地估算产生（上游未提供）时为 true
+	// Speed Anthropic beta 响应侧回显的实际推理速度档（usage.speed，
+	// standard/fast）。fast 是溢价计费档，客户端拿它核对上游实际按哪档
+	// 执行；请求侧的声明在 Request.Speed。仅 anthropic 有槽位。
+	Speed     string
+	Estimated bool // 本地估算产生（上游未提供）时为 true
 }
 
 // TotalInput 总输入口径（含 cache），对应 OpenAI prompt_tokens 语义。
@@ -85,6 +89,9 @@ func (u *Usage) MergeNonZero(o Usage) {
 	}
 	if o.InferenceGeo != "" {
 		u.InferenceGeo = o.InferenceGeo
+	}
+	if o.Speed != "" {
+		u.Speed = o.Speed
 	}
 	u.Estimated = u.Estimated || o.Estimated
 }

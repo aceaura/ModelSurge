@@ -71,9 +71,10 @@ func UnmapFinishReason(s ir.StopReason) string {
 		return "tool_calls"
 	case ir.StopRefusal:
 		return "content_filter"
-	case ir.StopPauseTurn, ir.StopAborted:
+	case ir.StopPauseTurn, ir.StopAborted, ir.StopContextWindow:
 		// pause_turn 是「这一轮没做完，回传对话继续」，aborted 是「流断了」，
-		// OpenAI 侧都没有对应值。取 length 而非 stop：三者都表示输出不完整，
+		// context_window 是输入占满窗口挤断输出，OpenAI 侧都没有对应值。
+		// 取 length 而非 stop：三者都表示输出不完整，
 		// 客户端至少不会把半截结果当成最终答案（stop 会）。真正的语义无法
 		// 保留，由诊断告知。
 		return "length"
@@ -103,6 +104,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		LogitBias:        req.LogitBias,
 	}
 	out.MaxTokens = req.MaxCompletionTokens
+	out.MaxCompletionKey = req.MaxCompletionTokens > 0
 	if out.MaxTokens == 0 {
 		out.MaxTokens = req.MaxTokens
 	}
@@ -449,13 +451,60 @@ func decodeToolChoice(v any) *ir.ToolChoice {
 			return &ir.ToolChoice{Mode: ir.ChoiceAny}
 		}
 	case map[string]any:
+		// allowed_tools 是 chat 一族的白名单形态（官方
+		// ChatCompletionAllowedToolChoiceParam）：与 responses 的平铺不同，chat
+		// 是嵌套的 {"type":"allowed_tools","allowed_tools":{"mode":...,"tools":[...]}}。
+		// 此前 map 分支只认 function.name，这个形态整条 tool_choice 被丢掉，连内层
+		// 的 required 也一起没了。
+		if typ, _ := tc["type"].(string); typ == "allowed_tools" {
+			inner, _ := tc["allowed_tools"].(map[string]any)
+			out := &ir.ToolChoice{Mode: ir.ChoiceAuto}
+			if mode, _ := inner["mode"].(string); mode == "required" {
+				out.Mode = ir.ChoiceAny
+			}
+			out.AllowedTools = decodeChatAllowedToolNames(inner["tools"])
+			return out
+		}
 		if fn, ok := tc["function"].(map[string]any); ok {
 			if name, ok := fn["name"].(string); ok {
 				return &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: name}
 			}
 		}
+		// custom 指名（官方 ChatCompletionNamedToolChoiceCustomParam）：
+		// {"type":"custom","custom":{"name":...}}，指名的是 custom 工具不是 function。
+		if cu, ok := tc["custom"].(map[string]any); ok {
+			if name, ok := cu["name"].(string); ok {
+				return &ir.ToolChoice{Mode: ir.ChoiceTool, ToolName: name, ToolKind: ir.ToolCustom}
+			}
+		}
 	}
 	return nil
+}
+
+// decodeChatAllowedToolNames 取 chat allowed_tools.tools 里的工具名。条目是工具
+// 定义（{"type":"function","function":{"name":...}} 或 custom 同形），名字嵌在
+// 子对象里；认不出来的条目跳过，宁可少收窄（由 Diagnose 报出）也不要凭空捏名字。
+func decodeChatAllowedToolNames(v any) []string {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"function", "custom"} {
+			if sub, ok := m[key].(map[string]any); ok {
+				if name, _ := sub["name"].(string); name != "" {
+					names = append(names, name)
+					break
+				}
+			}
+		}
+	}
+	return names
 }
 
 // ---- 请求编码：IR -> OpenAI ----
@@ -472,7 +521,6 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	}
 	out := request{
 		Model:            r.Model,
-		MaxTokens:        r.MaxTokens,
 		Temperature:      r.Temperature,
 		TopP:             r.TopP,
 		Stream:           r.Stream,
@@ -483,6 +531,14 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		LogProbs:         r.LogProbs,
 		TopLogProbs:      r.TopLogProbs,
 		LogitBias:        r.LogitBias,
+	}
+	// 同族往返按来路键名带回：客户端给的现代键 max_completion_tokens 不能
+	// 被换写成官方已废弃的旧键（旧键不兼容 o 系推理模型，openai_chat.go:3826）。
+	// 旧键客户端的 wire 原样保留；跨族投影维持既有形状不额外改形。
+	if r.MaxCompletionKey {
+		out.MaxCompletionTokens = r.MaxTokens
+	} else {
+		out.MaxTokens = r.MaxTokens
 	}
 	if len(r.StopSequences) == 1 {
 		out.Stop = r.StopSequences[0]
@@ -826,6 +882,11 @@ func encodeToolChoice(tc *ir.ToolChoice) any {
 	case ir.ChoiceAny:
 		return "required"
 	case ir.ChoiceTool:
+		if tc.ToolKind == ir.ToolCustom {
+			c := toolChoiceNamedCustom{Type: "custom"}
+			c.Custom.Name = tc.ToolName
+			return c
+		}
 		c := toolChoiceNamed{Type: "function"}
 		c.Function.Name = tc.ToolName
 		return c

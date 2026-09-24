@@ -79,6 +79,9 @@ type outputConfig struct {
 	// Effort 思考档位（low/medium/high/xhigh/max，官方 OutputConfig.effort，
 	// 与 OpenAI reasoning_effort 值集的交集——没有 none/minimal）。
 	Effort string `json:"effort,omitempty"`
+	// TaskBudget beta 的跨 context 总 token 预算（BetaTokenTaskBudgetParam）。
+	// 原文透传：beta 值域在演进，建模会截断新键。
+	TaskBudget json.RawMessage `json:"task_budget,omitempty"`
 }
 
 type jsonOutputFormat struct {
@@ -334,6 +337,9 @@ type usage struct {
 	// 是本仓曾经的伪造。MessageDeltaUsage 没有此键：message_delta 帧编解码
 	// 都不该出现它（编码侧靠调用方只给 message_start/非流式 usage 赋值）。
 	ServiceTier string `json:"service_tier,omitempty"`
+	// Speed 实际推理速度档回显（beta usage.speed，∈ standard/fast）。请求侧
+	// 的 speed 声明经它闭环对账；MessageDeltaUsage 没有此键。
+	Speed string `json:"speed,omitempty"`
 }
 
 type serverToolUsage struct {

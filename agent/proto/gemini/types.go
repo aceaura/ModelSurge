@@ -130,16 +130,27 @@ type thinkingConfig struct {
 
 type toolDef struct {
 	FunctionDeclarations []functionDecl `json:"functionDeclarations,omitempty"`
-	GoogleSearch         *struct{}      `json:"googleSearch,omitempty"`
+	GoogleSearch         *googleSearch  `json:"googleSearch,omitempty"`
 	CodeExecution        *struct{}      `json:"codeExecution,omitempty"`
 	// GoogleSearchRetrieval 旧版托管搜索声明（gemini 1.5 时代形态），语义
 	// 与 googleSearch 相同，归一到同一 canonical。
 	GoogleSearchRetrieval *struct{} `json:"googleSearchRetrieval,omitempty"`
-	// 以下三种托管工具声明没有任何跨族映射：收下只为让出站按「未识别托管
+	// 以下托管工具声明没有任何跨族映射：收下只为让出站按「未识别托管
 	// 工具」丢弃并报诊断，而不是解码即蒸发。
-	URLContext *struct{} `json:"urlContext,omitempty"`
-	FileSearch *struct{} `json:"fileSearch,omitempty"`
-	GoogleMaps *struct{} `json:"googleMaps,omitempty"`
+	URLContext          *struct{}         `json:"urlContext,omitempty"`
+	FileSearch          *struct{}         `json:"fileSearch,omitempty"`
+	GoogleMaps          *struct{}         `json:"googleMaps,omitempty"`
+	ComputerUse         *struct{}         `json:"computerUse,omitempty"`
+	EnterpriseWebSearch *struct{}         `json:"enterpriseWebSearch,omitempty"`
+	ParallelAISearch    *struct{}         `json:"parallelAiSearch,omitempty"`
+	MCPServers          []json.RawMessage `json:"mcpServers,omitempty"`
+}
+
+// googleSearch 托管搜索声明。官方（genai GoogleSearch）还有 searchTypes/
+// blockingConfidence/timeRangeFilter 等键，均标注 Gemini API 不支持或是
+// Vertex 专属，不建模；excludeDomains 与 IR 的域名黑名单同义，收进来。
+type googleSearch struct {
+	ExcludeDomains []string `json:"excludeDomains,omitempty"`
 }
 
 type functionDecl struct {

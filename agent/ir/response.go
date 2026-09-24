@@ -47,6 +47,10 @@ type Response struct {
 	// cache_miss_reason 等）。客户端给了 diagnostics 请求才会出现，同族
 	// 回写让缓存调优闭环；跨族无槽位。
 	AnthropicDiagnostics json.RawMessage `json:",omitempty"`
+	// Metadata OpenAI 两系的响应回显（官方契约随响应原样返回：chat 响应
+	// nullable、responses 响应 required）。客户端拿它做请求-响应关联，
+	// 同族必须逐字带回；anthropic 响应无此槽位，跨族不投影。
+	Metadata json.RawMessage `json:",omitempty"`
 }
 
 // Aggregator 把 IR 事件流聚合成完整 Response。
@@ -83,6 +87,9 @@ func (a *Aggregator) Feed(ev Event) bool {
 		a.resp.Model = ev.Model
 		if ev.ServiceTier != "" {
 			a.resp.ServiceTier = ev.ServiceTier
+		}
+		if len(ev.Metadata) > 0 {
+			a.resp.Metadata = ev.Metadata
 		}
 		if ev.SystemFingerprint != "" {
 			a.resp.SystemFingerprint = ev.SystemFingerprint
@@ -173,6 +180,9 @@ func (a *Aggregator) Feed(ev Event) bool {
 		// 晚到的非空值补上；同值重复无害。
 		if ev.ServiceTier != "" {
 			a.resp.ServiceTier = ev.ServiceTier
+		}
+		if len(ev.Metadata) > 0 {
+			a.resp.Metadata = ev.Metadata
 		}
 		// anthropic 的 container 回显也可能落在 message_delta 上。
 		if ev.Container != nil {

@@ -1,5 +1,7 @@
 package ir
 
+import "encoding/json"
+
 // EventType 流式事件类型。事件词汇以 Anthropic Messages streaming 为超集，
 // 各协议 codec 负责与本协议事件模型互转。
 type EventType string
@@ -42,6 +44,10 @@ type Event struct {
 	// SystemFingerprint Chat 后端配置指纹（EvMessageStart 携带）。仅 chat 族
 	// 有槽位，跨族出站不投影。
 	SystemFingerprint string
+	// Metadata OpenAI 两系响应的 metadata 回显原文（responses 流式
+	// response.created 的 response 对象携带，EvMessageStart 上收）。仅
+	// OpenAI 两系有槽位，跨族出站不投影。
+	Metadata json.RawMessage `json:",omitempty"`
 	// Container 代码执行容器回显（EvMessageStart 首帧携带；anthropic 的
 	// message_delta 也可能晚到，EvMessageDelta 上也收，后值覆盖）。
 	Container *Container
@@ -87,13 +93,18 @@ const (
 	// 各协议按「输出不完整」的最近档表达（max_tokens / length / MAX_TOKENS /
 	// incomplete），语义偏差由诊断说明。
 	StopAborted StopReason = "aborted"
+	// StopContextWindow Anthropic 的 model_context_window_exceeded：输入上下文
+	// 把窗口占满、输出被挤断。与 max_tokens（输出配额耗尽）分开是因为客户端的
+	// 补救动作相反——这里要压缩/截短输入，抬 max_tokens 没有用。塌成 end_turn
+	// 会把截断回答伪装成自然说完。
+	StopContextWindow StopReason = "context_window_exceeded"
 )
 
 // Incomplete 报告该停止原因是否意味着输出不完整——客户端不应把正文当成
 // 最终答案。供编码器与诊断统一判据，避免各处各写一份枚举清单。
 func (s StopReason) Incomplete() bool {
 	switch s {
-	case StopMaxTokens, StopPauseTurn, StopAborted:
+	case StopMaxTokens, StopPauseTurn, StopAborted, StopContextWindow:
 		return true
 	}
 	return false

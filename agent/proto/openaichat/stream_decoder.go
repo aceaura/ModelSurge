@@ -45,6 +45,9 @@ type streamDecoder struct {
 	// droppedLogprobs 携带 logprobs 载荷的 chunk 数：逐 token 概率没有 IR
 	// 槽位，内容带不走，计数经 Notes() 报出，不再静默。
 	droppedLogprobs int
+	// droppedModeration 携带审核结果的 chunk 数：审核结论没有 IR 槽位，
+	// 计数经 Notes() 报出。
+	droppedModeration int
 	// sawError 已下发过 EvError。错误帧是终止帧，Finish() 不得再补
 	// message_delta+message_stop，否则客户端在错误之后又看到一个正常收尾。
 	sawError       bool
@@ -121,6 +124,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	}
 	if chunk.Usage != nil {
 		d.usage.MergeNonZero(decodeUsage(chunk.Usage))
+	}
+	if len(chunk.Moderation) > 0 && string(chunk.Moderation) != "null" {
+		d.droppedModeration++
 	}
 	if !d.choiceSelected && len(chunk.Choices) > 0 {
 		d.primaryChoice = chunk.Choices[0].Index
@@ -364,6 +370,11 @@ func (d *streamDecoder) Notes() []string {
 	if d.droppedLogprobs > 0 {
 		notes = append(notes, proto.LogProbsDropNote(d.droppedLogprobs))
 		d.droppedLogprobs = 0
+	}
+	if d.droppedModeration > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"dropped moderation results on %d chunk(s): the relay has no slot for input/output safety verdicts, moderated-completion clients will not see them", d.droppedModeration))
+		d.droppedModeration = 0
 	}
 	return notes
 }

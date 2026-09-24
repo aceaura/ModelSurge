@@ -309,6 +309,14 @@ type toolChoiceNamed struct {
 	} `json:"function"`
 }
 
+// toolChoiceNamedCustom custom 指名形态 {"type":"custom","custom":{"name":...}}。
+type toolChoiceNamedCustom struct {
+	Type   string `json:"type"` // "custom"
+	Custom struct {
+		Name string `json:"name"`
+	} `json:"custom"`
+}
+
 // ---- 响应 / chunk DTO ----
 
 type response struct {
@@ -326,6 +334,13 @@ type response struct {
 	ServiceTier string `json:"service_tier,omitempty"`
 	// SystemFingerprint 后端配置指纹（系统版本变化信号，排障用）。
 	SystemFingerprint string `json:"system_fingerprint,omitempty"`
+	// Metadata 官方契约随响应原样回显（nullable）。客户端的请求-响应关联
+	// 数据，不读回就是同族往返把它弄丢。
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+	// Moderation 审核结果帧（官方 ChatCompletionChunk.Moderation，nullable，
+	// 只在客户端请求 moderated completions 时出现）。审核结论是上游产品语义，
+	// IR 没有槽位，解码侧计数经 Notes() 报出。
+	Moderation json.RawMessage `json:"moderation,omitempty"`
 }
 
 type choice struct {

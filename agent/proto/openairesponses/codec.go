@@ -659,7 +659,18 @@ func decodeReasoningContent(raw json.RawMessage) string {
 	return sb.String()
 }
 
-func decodeToolChoice(v any) *ir.ToolChoice {
+// decodeToolChoice tool_choice 原文 -> IR。string 形态与三种已建模 object
+// 形态（allowed_tools / function / custom）翻译进结构化字段；其余 typed
+// 变体（mcp/file_search/computer_use/shell 等官方 ToolChoiceTypesParam 与
+// ToolChoiceMcpParam，没有统一建模维度）整个进 Raw 不透明槽，同族原样回写。
+func decodeToolChoice(raw json.RawMessage) *ir.ToolChoice {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil
+	}
 	switch tc := v.(type) {
 	case string:
 		switch tc {
@@ -689,6 +700,12 @@ func decodeToolChoice(v any) *ir.ToolChoice {
 				out.ToolKind = ir.ToolCustom
 			}
 			return out
+		}
+		// typed 变体（{"type":"mcp"/"file_search"/...}）：Mode 留零值，跨族出站
+		// 任何 encodeToolChoice 都编不出东西（tool_choice 缺省），损耗由诊断报出；
+		// 同族出站由 Raw 槽原样回写，一个字节不变。
+		if typ, _ := tc["type"].(string); typ != "" {
+			return &ir.ToolChoice{Raw: append(json.RawMessage(nil), raw...)}
 		}
 	}
 	return nil
@@ -1137,25 +1154,37 @@ func encodeMediaPart(m *ir.Media) contentPart {
 	return p
 }
 
-func encodeToolChoice(tc *ir.ToolChoice) any {
+func encodeToolChoice(tc *ir.ToolChoice) json.RawMessage {
 	if tc == nil {
 		return nil
 	}
+	// typed 变体不透明槽优先：同族往返一个字节不动。
+	if len(tc.Raw) > 0 {
+		return tc.Raw
+	}
+	var v any
 	switch tc.Mode {
 	case ir.ChoiceAuto:
-		return "auto"
+		v = "auto"
 	case ir.ChoiceNone:
-		return "none"
+		v = "none"
 	case ir.ChoiceAny:
-		return "required"
+		v = "required"
 	case ir.ChoiceTool:
 		typ := "function"
 		if tc.ToolKind == ir.ToolCustom {
 			typ = "custom"
 		}
-		return toolChoiceNamed{Type: typ, Name: tc.ToolName}
+		v = toolChoiceNamed{Type: typ, Name: tc.ToolName}
 	}
-	return nil
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // nativeHosted 规范托管工具种类 -> Responses 原生 type。

@@ -25,7 +25,7 @@ func UnmapFinishReason(s ir.StopReason) string {
 		return "MAX_TOKENS"
 	case ir.StopRefusal:
 		return "SAFETY"
-	case ir.StopPauseTurn, ir.StopAborted:
+	case ir.StopPauseTurn, ir.StopAborted, ir.StopContextWindow:
 		// Gemini 既没有续跑也没有中断语义。与 chat 侧同理取 MAX_TOKENS 而非
 		// STOP：宁可让客户端知道输出不完整，也别让它把半截结果当成说完了。
 		return "MAX_TOKENS"
@@ -254,7 +254,13 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			// 原生名进 IR：跨族出站按 HostedTypeFamily 回落目标族默认名，
 			// 不会把 google_search 写进别族的 type 槽位。retrieval 是旧版
 			// 声明形态，语义相同，归一到同一 canonical。
-			out.Tools = append(out.Tools, ir.Tool{Name: "google_search", Hosted: ir.HostedWebSearch, HostedType: "google_search"})
+			gs := ir.Tool{Name: "google_search", Hosted: ir.HostedWebSearch, HostedType: "google_search"}
+			// excludeDomains 与 anthropic blocked_domains 同义：映进
+			// HostedParams 后跨族直通，不再随声明形态蒸发。
+			if t.GoogleSearch != nil && len(t.GoogleSearch.ExcludeDomains) > 0 {
+				gs.HostedParams = &ir.HostedParams{BlockedDomains: t.GoogleSearch.ExcludeDomains}
+			}
+			out.Tools = append(out.Tools, gs)
 		}
 		if t.CodeExecution != nil {
 			out.Tools = append(out.Tools, ir.Tool{Name: "code_execution", Hosted: ir.HostedCodeExecution, HostedType: "code_execution"})
@@ -269,6 +275,18 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		}
 		if t.GoogleMaps != nil {
 			out.Tools = append(out.Tools, ir.Tool{Name: "google_maps", Hosted: "google_maps", HostedType: "googleMaps"})
+		}
+		if t.ComputerUse != nil {
+			out.Tools = append(out.Tools, ir.Tool{Name: "computer_use", Hosted: "computer_use", HostedType: "computerUse"})
+		}
+		if t.EnterpriseWebSearch != nil {
+			out.Tools = append(out.Tools, ir.Tool{Name: "enterprise_web_search", Hosted: "enterprise_web_search", HostedType: "enterpriseWebSearch"})
+		}
+		if t.ParallelAISearch != nil {
+			out.Tools = append(out.Tools, ir.Tool{Name: "parallel_ai_search", Hosted: "parallel_ai_search", HostedType: "parallelAiSearch"})
+		}
+		if len(t.MCPServers) > 0 {
+			out.Tools = append(out.Tools, ir.Tool{Name: "mcp_servers", Hosted: "mcp_servers", HostedType: "mcpServers"})
 		}
 		for _, fd := range t.FunctionDeclarations {
 			out.Tools = append(out.Tools, ir.Tool{Name: fd.Name, Description: fd.Description, InputSchema: fd.Parameters})

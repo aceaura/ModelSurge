@@ -257,6 +257,7 @@ func toolBlock(kind ir.ToolKind, it *inputItem) *ir.Block {
 	tu := &ir.ToolUse{Kind: kind}
 	if it != nil {
 		tu.ID, tu.Name = it.CallID, it.Name
+		tu.ItemID = it.ID
 	}
 	return &ir.Block{Type: ir.BlockToolUse, ToolUse: tu}
 }
@@ -308,7 +309,9 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			i, out := d.assign(partKey{out: oi}, toolBlock(kind, se.Item))
 			return append(out, d.completeToolArgs(i, full)...), nil
 		case "reasoning":
-			_, out := d.assign(partKey{out: oi}, thinkingBlock())
+			th := thinkingBlock()
+			th.Thinking.ItemID = se.Item.ID
+			_, out := d.assign(partKey{out: oi}, th)
 			return out, nil
 		default:
 			// web_search_call 与其它托管 item：added 帧先存原文，完整 item
@@ -499,8 +502,14 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		case "reasoning":
 			// 关 thinking 块前先发 signature_delta（对齐 sub2api :688）
 			full := reasoningSummaryText(se.Item.Summary)
+			if full == "" {
+				// summary 为空时正文在 content 数组（reasoning_text），不读整条丢
+				full = decodeReasoningContent(se.Item.Content)
+			}
 			if full != "" || se.Item.EncryptedContent != "" {
-				i, opened := d.assign(partKey{out: oi}, thinkingBlock())
+				th := thinkingBlock()
+				th.Thinking.ItemID = se.Item.ID
+				i, opened := d.assign(partKey{out: oi}, th)
 				out = append(out, opened...)
 				if d.open[i] {
 					out = append(out, completeValue(d.blockText, i, full, ir.EvThinkingDelta)...)
@@ -580,6 +589,11 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	// done 帧完整到达，进度帧只是过程信号。忽略但分类计数，同族转发丢帧
 	// 与遇到本仓不认识的新事件型，都经 Notes() 报出，不再静默。
 	switch {
+	case se.Type == "response.reasoning_summary_part.added":
+		// 官方事件（openai_responses.go response.reasoning_summary_part.added）：
+		// part 边界标记，正文随 .done 帧 backfill，没有要转的内容——但它不是
+		// 未知事件，计 unknown 会把官方形状报成上游乱发。
+		d.droppedProgress++
 	case isProgressEvent(se.Type):
 		d.droppedProgress++
 	default:

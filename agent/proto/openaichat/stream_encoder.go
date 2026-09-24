@@ -446,10 +446,13 @@ func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error
 			out.Content = append(out.Content, ir.Block{Type: ir.BlockRefusal, Text: m.Refusal})
 		}
 		for _, tc := range m.ToolCalls {
+			out.Content = append(out.Content, ir.Block{Type: ir.BlockToolUse, ToolUse: toolUseFromCall(tc)})
+		}
+		if len(m.ToolCalls) == 0 && m.FunctionCall != nil && m.FunctionCall.Name != "" {
+			// 废弃形态但载荷完整（同请求侧判据）：不读整段调用蒸发
 			out.Content = append(out.Content, ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{
-				ID:    tc.ID,
-				Name:  tc.Function.Name,
-				Input: json.RawMessage(tc.Function.Arguments),
+				Name:  m.FunctionCall.Name,
+				Input: json.RawMessage(m.FunctionCall.Arguments),
 			}})
 		}
 		out.StopReason = MapFinishReason(selected.FinishReason)

@@ -170,6 +170,9 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	// 嵌套工具配置，不展开建模（同 Moderation 的不透明原文口径）。
 	out.Speed = req.Speed
 	out.MCPServers = req.MCPServers
+	out.AnthropicContextMgmt = req.ContextManagement
+	out.AnthropicDiagnostics = req.Diagnostics
+	out.UserProfileID = req.UserProfileID
 	return out, nil
 }
 
@@ -316,7 +319,7 @@ func decodeBlock(b block, raw json.RawMessage) ir.Block {
 		out.Media = decodeDocument(b)
 	case "tool_use":
 		out.Type = ir.BlockToolUse
-		out.ToolUse = &ir.ToolUse{ID: b.ID, Name: b.Name, Input: b.Input}
+		out.ToolUse = &ir.ToolUse{ID: b.ID, Name: b.Name, Input: b.Input, Caller: b.Caller}
 	case "tool_result":
 		out.Type = ir.BlockToolResult
 		out.ToolResult = &ir.ToolResult{ToolUseID: b.ToolUseID, IsError: b.IsError, Content: decodeToolResultContent(b.Content)}
@@ -331,7 +334,7 @@ func decodeBlock(b block, raw json.RawMessage) ir.Block {
 		out.RedactedData = b.Data
 	case "server_tool_use":
 		out.Type = ir.BlockServerToolUse
-		out.ServerToolUse = &ir.ServerToolUse{ID: b.ID, Name: b.Name, Input: b.Input}
+		out.ServerToolUse = &ir.ServerToolUse{ID: b.ID, Name: b.Name, Input: b.Input, Caller: b.Caller}
 	case "web_search_tool_result":
 		out.Type = ir.BlockWebSearchToolResult
 		out.WebSearchToolResult = decodeWebSearchToolResult(b.ToolUseID, b.Caller, b.Content)
@@ -651,6 +654,9 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 	}
 	out.Speed = r.Speed
 	out.MCPServers = r.MCPServers
+	out.ContextManagement = r.AnthropicContextMgmt
+	out.Diagnostics = r.AnthropicDiagnostics
+	out.UserProfileID = r.UserProfileID
 	return json.Marshal(out)
 }
 
@@ -745,6 +751,7 @@ func encodeBlock(b ir.Block) block {
 			out.ID = b.ToolUse.ID
 			out.Name = b.ToolUse.Name
 			out.Input = b.ToolUse.ObjectInput()
+			out.Caller = b.ToolUse.Caller
 		}
 	case ir.BlockToolResult:
 		out.Type = "tool_result"
@@ -772,6 +779,7 @@ func encodeBlock(b ir.Block) block {
 			out.ID = b.ServerToolUse.ID
 			out.Name = b.ServerToolUse.Name
 			out.Input = b.ServerToolUse.Input
+			out.Caller = b.ServerToolUse.Caller
 			if len(out.Input) == 0 {
 				out.Input = json.RawMessage(`{}`)
 			}

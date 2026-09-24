@@ -150,6 +150,24 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 		if gc.MediaResolution != "" {
 			out.GeminiExtras = append(out.GeminiExtras, "mediaResolution")
 		}
+		// 图像生成/音频时间戳/公民问答/模型路由/安全审查：同 labels 一档，
+		// 收键名不建模值（modelArmorConfig 与 safetySettings 官方互斥，
+		// 两个都给了也只报键名，取舍是上游的事）。
+		for _, kv := range []struct {
+			key string
+			raw json.RawMessage
+		}{
+			{"imageConfig", gc.ImageConfig},
+			{"audioTimestamp", gc.AudioTimestamp},
+			{"enableEnhancedCivicAnswers", gc.EnableEnhancedCivicAnswers},
+			{"routingConfig", gc.RoutingConfig},
+			{"modelSelectionConfig", gc.ModelSelectionConfig},
+			{"modelArmorConfig", gc.ModelArmorConfig},
+		} {
+			if len(kv.raw) > 0 && string(kv.raw) != "null" {
+				out.GeminiExtras = append(out.GeminiExtras, kv.key)
+			}
+		}
 	}
 
 	// Gemini 的 functionCall/functionResponse 历史上没有 ID。

@@ -199,6 +199,12 @@ func (d *streamDecoder) feedDelta(m *message) []ir.Event {
 	for _, tc := range m.ToolCalls {
 		out = append(out, d.feedToolCall(tc)...)
 	}
+	if len(m.ToolCalls) == 0 && m.FunctionCall != nil {
+		// 废弃流式形态（delta.function_call）：无 index/id 可带，按 index 0
+		// 并入同一条 pending 轨道，name/arguments 碎片照常用既有逻辑聚合，
+		// id 在收尾由合成逻辑补齐。丢弃等于让旧兼容上游的调用整段蒸发。
+		out = append(out, d.feedToolCall(toolCall{Index: 0, Function: *m.FunctionCall})...)
+	}
 	return out
 }
 

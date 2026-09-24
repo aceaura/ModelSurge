@@ -213,6 +213,8 @@ type ServerToolUse struct {
 	ID    string
 	Name  string
 	Input json.RawMessage `json:",omitempty"`
+	// Caller 同 ToolUse.Caller：server_tool_use 的发起方回执，原样透传。
+	Caller json.RawMessage `json:",omitempty"`
 }
 
 // WebSearchToolResult web_search 服务端工具的结果块（Anthropic 形态）。
@@ -358,6 +360,14 @@ type ToolUse struct {
 	Kind      ToolKind
 	Input     json.RawMessage `json:",omitempty"`
 	InputText string
+	// Caller 发起方回执（Anthropic direct/server_tool caller union，可选）。
+	// 原样透传不展开：同族往返时服务端据它核对程序化调用链，解出来又
+	// 丢掉等于让上游把回传调用当成来历不明。
+	Caller json.RawMessage `json:",omitempty"`
+	// ItemID Responses function_call/custom_tool_call 的 item id（fc_…），
+	// 与 ID（call_id）是两个槽位。同族往返原样带回：store=true 时上游存的
+	// 条目按它索引，换成合成 id 后 item_reference 全部错指。
+	ItemID string `json:",omitempty"`
 }
 
 // ObjectInput 返回对象槽位协议可承载的工具参数。
@@ -396,6 +406,9 @@ type Thinking struct {
 	Text          string
 	Signature     string
 	SignatureFrom string // 空表示无签名
+	// ItemID Responses reasoning item 的 id（rs_…），同族往返原样带回，
+	// 理由同 ToolUse.ItemID。
+	ItemID string `json:",omitempty"`
 }
 
 // Message 一条对话消息。
@@ -409,6 +422,9 @@ type Message struct {
 	// 同族往返原样带回，跨族投影无处安放（与 user 维度的处置不同——那是
 	// 会话级身份，这是消息级身份）。
 	Name string
+	// ItemID Responses message item 的 id（msg_…），同族往返原样带回，
+	// 理由同 ToolUse.ItemID。
+	ItemID string `json:",omitempty"`
 }
 
 // SigFrom 签名非空时返回协议名作为 SignatureFrom，空签名为空串。
@@ -822,6 +838,20 @@ type Request struct {
 	// 含凭据与嵌套工具配置，不展开建模，原样透传；值含敏感凭据，诊断与
 	// 日志一律不回显值本身。外族无对应物，跨族由诊断报出。
 	MCPServers json.RawMessage `json:",omitempty"`
+	// AnthropicContextMgmt anthropic beta 的 context_management（edits 数组装
+	// clear_tool_uses/clear_thinking 策略）。与 responses 一族的 ContextMgmt
+	// 不同形同义，不合并建模，原文透传；外族无对应物，跨族由诊断报出。
+	AnthropicContextMgmt json.RawMessage `json:",omitempty"`
+	// AnthropicDiagnostics anthropic beta 的 diagnostics（目前唯一条目
+	// previous_message_id：上一轮响应 id，用于 prompt-cache 分歧上报）。
+	// 这是缓存诊断的链锚，不是会话链——与 responses 的 previous_response_id
+	// 形似而义异（后者会改变服务端加载的上下文），不并入 PreviousResponseID。
+	// 原文透传；跨族由诊断报出。
+	AnthropicDiagnostics json.RawMessage `json:",omitempty"`
+	// UserProfileID anthropic beta 的 user_profile_id：代第三方发起请求时
+	// 最终用户的归属标识（计费/审计维度），与 metadata.user_id 的滥用追踪
+	// 标识是两回事。只有 anthropic 一族有此参数；跨族由诊断报出。
+	UserProfileID string
 	// Verbosity 输出啰嗦程度档位（low/medium/high）。Chat 是顶层 verbosity，
 	// Responses 是 text.verbosity；其余协议没有输出长度转向这一维。
 	Verbosity string

@@ -39,6 +39,14 @@ type Response struct {
 	// 秒）。零值=上游没给，出站才回退本地钟——否则同族往返会把上游的真实
 	// 创建时间换成代理本地钟，客户端按 created 做幂等/排序会拿到假数据。
 	Created int64
+	// AnthropicContextMgmt 上游实际执行的服务端上下文清理回执（anthropic
+	// beta 响应的 context_management：applied_edits 等）。与请求侧不同键同
+	// 族回写：客户端据此知道哪些历史已被服务端清掉。跨族无槽位。
+	AnthropicContextMgmt json.RawMessage `json:",omitempty"`
+	// AnthropicDiagnostics 缓存分歧回执（beta 响应的 diagnostics：
+	// cache_miss_reason 等）。客户端给了 diagnostics 请求才会出现，同族
+	// 回写让缓存调优闭环；跨族无槽位。
+	AnthropicDiagnostics json.RawMessage `json:",omitempty"`
 }
 
 // Aggregator 把 IR 事件流聚合成完整 Response。

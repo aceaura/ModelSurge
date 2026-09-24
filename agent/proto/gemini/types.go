@@ -107,6 +107,16 @@ type generationConfig struct {
 	// gemini 独有，收下只为诊断可见，不建模值。
 	SpeechConfig    json.RawMessage `json:"speechConfig,omitempty"`
 	MediaResolution string          `json:"mediaResolution,omitempty"`
+	// 以下六键同属「收下只为诊断可见」：imageConfig 图像生成约束（宽高比/
+	// 尺寸/人物生成）、audioTimestamp 音频时间戳、enableEnhancedCivicAnswers
+	// 增强公民问答、routingConfig/modelSelectionConfig 模型路由、
+	// modelArmorConfig 提示词与响应安全审查模板。没有任何出站接得住。
+	ImageConfig                json.RawMessage `json:"imageConfig,omitempty"`
+	AudioTimestamp             json.RawMessage `json:"audioTimestamp,omitempty"`
+	EnableEnhancedCivicAnswers json.RawMessage `json:"enableEnhancedCivicAnswers,omitempty"`
+	RoutingConfig              json.RawMessage `json:"routingConfig,omitempty"`
+	ModelSelectionConfig       json.RawMessage `json:"modelSelectionConfig,omitempty"`
+	ModelArmorConfig           json.RawMessage `json:"modelArmorConfig,omitempty"`
 }
 
 type thinkingConfig struct {

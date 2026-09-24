@@ -59,6 +59,9 @@ type streamDecoder struct {
 	// sawError 已下发过 EvError。error 是终止事件，之后的 message_stop 与
 	// Finish() 的断流兜底都不得再产出收尾事件。
 	sawError bool
+	// droppedUnknown 不认识的事件型/delta 型计数：静默丢弃会让新事件型
+	// （官方加字段或代理上游乱发）完全不可见，经 Notes() 报出。
+	droppedUnknown int
 }
 
 func (codec) NewStreamDecoder() proto.StreamDecoder { return &streamDecoder{} }
@@ -128,6 +131,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			}
 			return []ir.Event{{Type: ir.EvCitation, Index: se.Index, Citations: cs}}, nil
 		}
+		d.droppedUnknown++
 		return nil, nil
 	case "content_block_stop":
 		return []ir.Event{{Type: ir.EvBlockStop, Index: se.Index}}, nil
@@ -142,7 +146,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			ev.StopDetails = decodeStopDetails(se.Delta.StopDetails)
 		}
 		if se.Usage != nil {
-			u := convUsage(*se.Usage)
+			u := convDeltaUsage(*se.Usage)
 			d.usage.MergeNonZero(u)
 			ev.Usage = &u
 		}
@@ -178,7 +182,19 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		e.Retryable = ir.StreamRetryable(e.Type)
 		return []ir.Event{{Type: ir.EvError, Err: e}}, nil
 	}
+	d.droppedUnknown++
 	return nil, nil
+}
+
+// Notes 排干解码损耗注记（未知事件型/delta 型计数）。
+func (d *streamDecoder) Notes() []string {
+	if d.droppedUnknown == 0 {
+		return nil
+	}
+	notes := []string{fmt.Sprintf(
+		"ignored %d stream event(s) or delta(s) of a type this decoder does not know: the wire carried types outside the documented set, their payload was dropped because no mapping exists", d.droppedUnknown)}
+	d.droppedUnknown = 0
+	return notes
 }
 
 // Finish 异常断流兜底：补齐 message_delta + message_stop，
@@ -220,6 +236,26 @@ func convUsage(u usage) ir.Usage {
 		out.ReasoningTokens = u.OutputTokensDetails.ThinkingTokens
 	}
 	out.InferenceGeo = u.InferenceGeo
+	return out
+}
+
+// convDeltaUsage 解 message_delta 的专用 usage。官方 MessageDeltaUsage 没有
+// cache_creation 对象与 inference_geo，这里自然没有来源；5m/1h 明细与地理
+// 回显只会出现在 message_start 与聚合响应里。
+func convDeltaUsage(u messageDeltaUsage) ir.Usage {
+	out := ir.Usage{
+		InputTokens:         u.InputTokens,
+		OutputTokens:        u.OutputTokens,
+		CacheReadTokens:     u.CacheReadInputTokens,
+		CacheCreationTokens: u.CacheCreationInputTokens,
+	}
+	if u.ServerToolUse != nil {
+		out.WebSearchRequests = u.ServerToolUse.WebSearchRequests
+		out.WebFetchRequests = u.ServerToolUse.WebFetchRequests
+	}
+	if u.OutputTokensDetails != nil {
+		out.ReasoningTokens = u.OutputTokensDetails.ThinkingTokens
+	}
 	return out
 }
 

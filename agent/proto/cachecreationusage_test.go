@@ -34,13 +34,16 @@ func TestAnthropicDerivesAggregateFromNestedCacheCreation(t *testing.T) {
 	assertCacheCreationUsage(t, resp.Usage, 30, 20, 10)
 }
 
-func TestAnthropicStreamCacheCreationDetailsAreAuthoritative(t *testing.T) {
+func TestAnthropicStreamCacheCreationAggregateFromDelta(t *testing.T) {
+	// 官方 MessageDeltaUsage 只有六个键：cache_creation 对象只会出现在
+	// message_start 与聚合响应里。delta 的官方聚合值覆盖聚合，5m/1h 明细
+	// 保持 message_start 带来的值。
 	got := streamUsage(t, "anthropic", [][2]string{
 		{"message_start", `{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":100,"cache_creation_input_tokens":30,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":10}}}}`},
-		{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"cache_creation_input_tokens":25,"cache_creation":{"ephemeral_5m_input_tokens":25,"ephemeral_1h_input_tokens":0}}}`},
+		{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"cache_creation_input_tokens":25}}`},
 		{"message_stop", `{"type":"message_stop"}`},
 	})
-	assertCacheCreationUsage(t, got, 25, 25, 0)
+	assertCacheCreationUsage(t, got, 25, 20, 10)
 	if got.OutputTokens != 5 {
 		t.Errorf("OutputTokens = %d, want 5", got.OutputTokens)
 	}

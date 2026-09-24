@@ -734,6 +734,25 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 			notes = append(notes,
 				"dropped mcp_servers: the target protocol has no MCP connector, none of the tools hosted on the declared servers are available to the model")
 		}
+		// anthropic beta 的 context_management 与 responses 一族的不同形：
+		// 跨族时既不映射（形状对不上）也不塞进 IR.ContextMgmt（会编出非法
+		// 形状），照实报出。responses 一族的形态走 ResponseChain 门控。
+		if len(req.AnthropicContextMgmt) > 0 {
+			notes = append(notes,
+				"dropped context_management edits: the target protocol has no server-side context-clearing strategy of this form, long conversations keep their full history")
+		}
+		// diagnostics 的 previous_message_id 是缓存分歧上报的链锚：跨族后
+		// 上游无从对比 prompt 指纹，cache_miss_reason 回执不会发生。
+		if len(req.AnthropicDiagnostics) > 0 {
+			notes = append(notes,
+				"dropped diagnostics: the target protocol has no prompt-cache divergence reporting, cache miss reasons will not come back")
+		}
+		// user_profile_id 是代第三方发起的归属标识：丢了计费/审计口径归到
+		// 调用方而不是最终用户。
+		if req.UserProfileID != "" {
+			notes = append(notes,
+				"dropped user_profile_id: the target protocol has no end-user attribution parameter, billing and audit trail attribute the call to the API account instead")
+		}
 	}
 	if !caps.ToolStrict {
 		n := 0

@@ -93,6 +93,9 @@ type encBlock struct {
 	wsSeeded string
 	// wsSources 结果块配对成功后带回的 sources（web_search_call 专用）。
 	wsSources []ir.WebSearchResult
+	// wsErrCode 配对结果块的 ErrorCode：done 帧的 status 据此回写
+	// failed/incomplete，恒写 completed 会把失败搜索伪造成成功。
+	wsErrCode string
 	// rawItem 同族不透明 item 的完整线体：added/done 与全量 output 都整块带回。
 	rawItem json.RawMessage
 }
@@ -254,6 +257,9 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 	switch b.typ {
 	case ir.BlockThinking:
 		b.itemID = e.nextID("rs")
+		if ev.Block.Thinking != nil && ev.Block.Thinking.ItemID != "" {
+			b.itemID = ev.Block.Thinking.ItemID // 同族往返原号带回
+		}
 		e.register(ev.Index, b)
 		oi := idx(e.wireOf(ev.Index))
 		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
@@ -272,6 +278,9 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 			typ = "custom_tool_call"
 		}
 		b.itemID = e.nextID(prefix)
+		if ev.Block.ToolUse != nil && ev.Block.ToolUse.ItemID != "" {
+			b.itemID = ev.Block.ToolUse.ItemID // 同族往返原号带回
+		}
 		e.register(ev.Index, b)
 		oi := idx(e.wireOf(ev.Index))
 		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: oi, Item: &inputItem{
@@ -318,6 +327,7 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 				delete(e.wsOpen, r.ToolUseID)
 				if wb := e.blocks[wi]; wb != nil && !wb.closed {
 					wb.wsSources = r.Results
+					wb.wsErrCode = r.ErrorCode
 					return [][]byte{e.wsDoneFrame(wi)}, nil
 				}
 			}
@@ -473,7 +483,7 @@ func (e *streamEncoder) doneItem(b *encBlock) *inputItem {
 		if input == "" {
 			input = b.wsSeeded
 		}
-		return &inputItem{Type: "web_search_call", ID: b.itemID, Status: "completed",
+		return &inputItem{Type: "web_search_call", ID: b.itemID, Status: wsStatusFromErrCode(b.wsErrCode),
 			Action: wsActionFromInput(input, b.wsSources)}
 	case ir.BlockThinking:
 		it := &inputItem{Type: "reasoning", ID: b.itemID, EncryptedContent: b.sig}

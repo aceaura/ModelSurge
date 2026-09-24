@@ -109,11 +109,15 @@ type message struct {
 	Annotations []annotation `json:"annotations,omitempty"`
 	// Audio 的请求与响应形状不同：assistant 历史只允许 {id}，完整响应则
 	// 必须包含 id/data/expires_at/transcript，因此延迟到各方向按专用 DTO 解码。
-	Audio      json.RawMessage `json:"audio,omitempty"`
-	ToolCalls  []toolCall      `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	Name       string          `json:"name,omitempty"`
-	media      bool            // 出站内部标记：tool 结果抽出的图片块消息（不参与 JSON）
+	Audio     json.RawMessage `json:"audio,omitempty"`
+	ToolCalls []toolCall      `json:"tool_calls,omitempty"`
+	// FunctionCall 是 tool_calls 的废弃前身（官方标 Deprecated，请求助手参数、
+	// 流式 delta、非流式响应三处都还可能携它）。没有建模时 json.Unmarshal
+	// 静默吞掉，旧兼容上游的函数调用整段蒸发。
+	FunctionCall *functionCall `json:"function_call,omitempty"`
+	ToolCallID   string        `json:"tool_call_id,omitempty"`
+	Name         string        `json:"name,omitempty"`
+	media        bool          // 出站内部标记：tool 结果抽出的图片块消息（不参与 JSON）
 }
 
 type part struct {
@@ -206,8 +210,31 @@ type urlCitation struct {
 type toolCall struct {
 	Index    int          `json:"index"` // 不可 omitempty：index=0 是合法值，严格客户端（Qoder）强校验该字段存在
 	ID       string       `json:"id,omitempty"`
-	Type     string       `json:"type"` // "function"
+	Type     string       `json:"type"` // "function" / "custom"
 	Function functionCall `json:"function"`
+	// Custom type=custom 的原生载荷（openai_chat.go ChatCompletionMessageCustomToolCall：
+	// custom{name,input}）。没有它时 custom 调用会被解成空名函数调用。
+	Custom *customCall `json:"custom,omitempty"`
+}
+
+type customCall struct {
+	Name  string `json:"name"`
+	Input string `json:"input"` // 自由文本，非 JSON 字符串
+}
+
+// MarshalJSON custom 调用不带 function 键：值形态的 Function 没有 omitempty
+// 可言，序列化出 {"name":"","arguments":""} 会被严格校验的上游拒掉。
+func (tc toolCall) MarshalJSON() ([]byte, error) {
+	if tc.Type == "custom" {
+		return json.Marshal(struct {
+			Index  int         `json:"index"`
+			ID     string      `json:"id,omitempty"`
+			Type   string      `json:"type"`
+			Custom *customCall `json:"custom"`
+		}{Index: tc.Index, ID: tc.ID, Type: tc.Type, Custom: tc.Custom})
+	}
+	type plain toolCall
+	return json.Marshal(plain(tc))
 }
 
 type functionCall struct {

@@ -267,10 +267,13 @@ func decodeMessage(req *ir.Request, m message) {
 			msg.Content = append([]ir.Block{{Type: ir.BlockThinking, Thinking: &ir.Thinking{Text: m.ReasoningContent}}}, msg.Content...)
 		}
 		for _, tc := range m.ToolCalls {
+			msg.Content = append(msg.Content, ir.Block{Type: ir.BlockToolUse, ToolUse: toolUseFromCall(tc)})
+		}
+		if len(m.ToolCalls) == 0 && m.FunctionCall != nil && m.FunctionCall.Name != "" {
+			// 废弃形态但载荷完整：name+arguments 直接进 IR（无 id 可带）
 			msg.Content = append(msg.Content, ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{
-				ID:    tc.ID,
-				Name:  tc.Function.Name,
-				Input: json.RawMessage(tc.Function.Arguments),
+				Name:  m.FunctionCall.Name,
+				Input: json.RawMessage(m.FunctionCall.Arguments),
 			}})
 		}
 		req.Messages = append(req.Messages, msg)
@@ -284,6 +287,22 @@ func decodeMessage(req *ir.Request, m message) {
 		}}})
 	default: // function 等未知角色归一为 user
 		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: contentBlocks(m.Content), Name: m.Name})
+	}
+}
+
+// toolUseFromCall wire 工具调用 -> IR。type=custom 是原生形态
+// （openai_chat.go ChatCompletionMessageCustomToolCall）：此前只读 function
+// 槽位，custom 调用被伪造成空名函数调用，客户端按函数名路由必然落空。
+func toolUseFromCall(tc toolCall) *ir.ToolUse {
+	if tc.Type == "custom" && tc.Custom != nil {
+		t := &ir.ToolUse{ID: tc.ID, Name: tc.Custom.Name, Kind: ir.ToolCustom, InputText: tc.Custom.Input}
+		t.Input = t.ObjectInput()
+		return t
+	}
+	return &ir.ToolUse{
+		ID:    tc.ID,
+		Name:  tc.Function.Name,
+		Input: json.RawMessage(tc.Function.Arguments),
 	}
 }
 
@@ -615,10 +634,18 @@ func encodeMessages(m ir.Message) []message {
 				}
 			case ir.BlockToolUse:
 				if b.ToolUse != nil {
-					args := string(b.ToolUse.Input)
 					if b.ToolUse.Kind == ir.ToolCustom {
-						args = string(b.ToolUse.ObjectInput())
-					} else if args == "" {
+						// 本族原生形态（custom{name,input}），不再投影成函数
+						msg.ToolCalls = append(msg.ToolCalls, toolCall{
+							Index:  len(msg.ToolCalls),
+							ID:     b.ToolUse.ID,
+							Type:   "custom",
+							Custom: &customCall{Name: b.ToolUse.Name, Input: b.ToolUse.InputText},
+						})
+						continue
+					}
+					args := string(b.ToolUse.Input)
+					if args == "" {
 						args = "{}"
 					}
 					msg.ToolCalls = append(msg.ToolCalls, toolCall{

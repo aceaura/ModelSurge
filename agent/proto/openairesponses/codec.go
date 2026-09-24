@@ -281,16 +281,16 @@ func decodeItem(req *ir.Request, it inputItem, raw json.RawMessage) {
 		case "system", "developer":
 			req.System = append(req.System, decodeParts(it.Content)...)
 		case "assistant":
-			req.Messages = append(req.Messages, ir.Message{Role: ir.RoleAssistant, Content: decodeParts(it.Content)})
+			req.Messages = append(req.Messages, ir.Message{Role: ir.RoleAssistant, Content: decodeParts(it.Content), ItemID: it.ID})
 		default:
-			req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: decodeParts(it.Content)})
+			req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: decodeParts(it.Content), ItemID: it.ID})
 		}
 	case "function_call":
 		// function_call 属于 assistant 消息：并入上一条 assistant 或新建
-		b := ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: it.CallID, Name: it.Name, Input: json.RawMessage(it.Arguments)}}
+		b := ir.Block{Type: ir.BlockToolUse, ToolUse: &ir.ToolUse{ID: it.CallID, Name: it.Name, Input: json.RawMessage(it.Arguments), ItemID: it.ID}}
 		appendAssistantBlock(req, b)
 	case "custom_tool_call":
-		t := &ir.ToolUse{ID: it.CallID, Name: it.Name, Kind: ir.ToolCustom, InputText: it.Input}
+		t := &ir.ToolUse{ID: it.CallID, Name: it.Name, Kind: ir.ToolCustom, InputText: it.Input, ItemID: it.ID}
 		t.Input = t.ObjectInput()
 		appendAssistantBlock(req, ir.Block{Type: ir.BlockToolUse, ToolUse: t})
 	case "function_call_output", "custom_tool_call_output":
@@ -304,8 +304,14 @@ func decodeItem(req *ir.Request, it inputItem, raw json.RawMessage) {
 				Content: decodeToolCallOutput(it.Output)},
 		}}})
 	case "reasoning":
-		th := &ir.Thinking{Signature: it.EncryptedContent, SignatureFrom: ir.SigFrom(Name, it.EncryptedContent)}
+		th := &ir.Thinking{Signature: it.EncryptedContent, SignatureFrom: ir.SigFrom(Name, it.EncryptedContent), ItemID: it.ID}
 		th.Text = decodeSummary(it.Summary)
+		if th.Text == "" {
+			// 官方 reasoning item 还有 content 数组形态（reasoning_text，
+			// openai_responses.go ResponseReasoningItem.Content）：summary 为空
+			// 时正文在这里，不读等于把整条思考静默丢掉。
+			th.Text = decodeReasoningContent(it.Content)
+		}
 		if th.Text == "" && th.Signature == "" {
 			return
 		}
@@ -375,6 +381,14 @@ func serverBlocksFromWebSearch(it *inputItem) []ir.Block {
 	result := ir.Block{Type: ir.BlockWebSearchToolResult, WebSearchToolResult: &ir.WebSearchToolResult{
 		ToolUseID: it.ID, Results: wsResultsFromAction(it.Action),
 	}}
+	// status 是 web_search_call 的必填键：failed/incomplete 时 action.sources
+	// 恒为空，按结果数组解会落成「搜索成功但没找到东西」——与 R106 修的
+	// anthropic 错误形态同病。映射到 ErrorCode 保失败信号；原值保留，
+	// 同族回写时 status 才能回到 failed/incomplete 而不是一律 failed。
+	if it.Status == "failed" || it.Status == "incomplete" {
+		result.WebSearchToolResult.Results = nil
+		result.WebSearchToolResult.ErrorCode = it.Status
+	}
 	return []ir.Block{call, result}
 }
 
@@ -455,16 +469,32 @@ func wsActionFromInput(input string, results []ir.WebSearchResult) *webSearchAct
 // 收好：编码时结果块要与 assistant 回合的 server_tool_use 并成同一个
 // web_search_call item（结果块在 IR 里单独占一条 user 消息，跨消息配对）。
 // 消费方配对成功后从 map 里删掉；剩在里面的就是找不到调用的孤儿结果块。
-func collectWSResults(msgs []ir.Message) map[string][]ir.WebSearchResult {
-	out := map[string][]ir.WebSearchResult{}
+// 整块带回（不只剩 Results）：ErrorCode 决定回写 item 的 status，
+// 只带 Results 会把失败搜索编码成恒 completed。
+func collectWSResults(msgs []ir.Message) map[string]ir.WebSearchToolResult {
+	out := map[string]ir.WebSearchToolResult{}
 	for _, m := range msgs {
 		for _, b := range m.Content {
 			if b.Type == ir.BlockWebSearchToolResult && b.WebSearchToolResult != nil {
-				out[b.WebSearchToolResult.ToolUseID] = b.WebSearchToolResult.Results
+				out[b.WebSearchToolResult.ToolUseID] = *b.WebSearchToolResult
 			}
 		}
 	}
 	return out
+}
+
+// wsStatusFromErrCode 结果块的 ErrorCode -> web_search_call.status。
+// 同族往返的 failed/incomplete 原值回写；外族错误码（max_uses_exceeded
+// 等）没有对应枚举值，归 failed——恒写 completed 是把失败搜索伪造成成功。
+func wsStatusFromErrCode(code string) string {
+	switch code {
+	case "":
+		return "completed"
+	case "failed", "incomplete":
+		return code
+	default:
+		return "failed"
+	}
 }
 
 // appendAssistantBlock 把块并入最后一条 assistant 消息（不存在则新建）。
@@ -606,6 +636,25 @@ func decodeSummary(raw json.RawMessage) string {
 	var sb strings.Builder
 	for _, p := range parts {
 		sb.WriteString(p.Text)
+	}
+	return sb.String()
+}
+
+// decodeReasoningContent reasoning item 的 content 数组（reasoning_text parts）
+// 拼成正文。summary 为空时的唯一正文来源。
+func decodeReasoningContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var parts []contentPart
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, p := range parts {
+		if p.Type == "reasoning_text" {
+			sb.WriteString(p.Text)
+		}
 	}
 	return sb.String()
 }
@@ -867,14 +916,14 @@ func joinSystem(blocks []ir.Block) string {
 // tool_result 内嵌的图片提取为独立 user message（function_call_output 不能挂图片）。
 // wsResults 承载跨消息配对：assistant 的 server_tool_use 编码成 web_search_call
 // 时从这里取回 sources 并消费掉对应条目。
-func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string][]ir.WebSearchResult) []inputItem {
+func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string]ir.WebSearchToolResult) []inputItem {
 	var out []inputItem
 	switch m.Role {
 	case ir.RoleAssistant:
 		var parts []contentPart
 		flush := func() {
 			if len(parts) > 0 {
-				out = append(out, inputItem{Type: "message", Role: "assistant", Content: marshal(parts)})
+				out = append(out, inputItem{Type: "message", Role: "assistant", Content: marshal(parts), ID: m.ItemID})
 				parts = nil
 			}
 		}
@@ -920,6 +969,7 @@ func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string][]ir
 				flush()
 				it := inputItem{
 					Type:    "reasoning",
+					ID:      b.Thinking.ItemID,
 					Summary: marshal([]summaryPart{{Type: "summary_text", Text: b.Thinking.Text}}),
 				}
 				if genuine {
@@ -930,14 +980,14 @@ func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string][]ir
 				flush()
 				if b.ToolUse != nil {
 					if b.ToolUse.Kind == ir.ToolCustom {
-						out = append(out, inputItem{Type: "custom_tool_call", CallID: b.ToolUse.ID, Name: b.ToolUse.Name, Input: b.ToolUse.InputText})
+						out = append(out, inputItem{Type: "custom_tool_call", ID: b.ToolUse.ItemID, CallID: b.ToolUse.ID, Name: b.ToolUse.Name, Input: b.ToolUse.InputText})
 						continue
 					}
 					args := string(b.ToolUse.Input)
 					if args == "" {
 						args = "{}"
 					}
-					out = append(out, inputItem{Type: "function_call", CallID: b.ToolUse.ID, Name: b.ToolUse.Name, Arguments: args})
+					out = append(out, inputItem{Type: "function_call", ID: b.ToolUse.ItemID, CallID: b.ToolUse.ID, Name: b.ToolUse.Name, Arguments: args})
 				}
 			case ir.BlockServerToolUse:
 				// 托管搜索调用 -> web_search_call item：sources 从结果块配对取回
@@ -948,11 +998,11 @@ func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string][]ir
 					continue
 				}
 				flush()
-				results := wsResults[b.ServerToolUse.ID]
+				res := wsResults[b.ServerToolUse.ID]
 				delete(wsResults, b.ServerToolUse.ID)
 				out = append(out, inputItem{
-					Type: "web_search_call", ID: b.ServerToolUse.ID, Status: "completed",
-					Action: wsActionFromInput(string(b.ServerToolUse.Input), results),
+					Type: "web_search_call", ID: b.ServerToolUse.ID, Status: wsStatusFromErrCode(res.ErrorCode),
+					Action: wsActionFromInput(string(b.ServerToolUse.Input), res.Results),
 				})
 			case ir.BlockWebSearchToolResult:
 				// 成对的结果块在 server_tool_use 处已被消费；走到这里的是找不到
@@ -973,7 +1023,7 @@ func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string][]ir
 		var parts []contentPart
 		flush := func() {
 			if len(parts) > 0 {
-				out = append(out, inputItem{Type: "message", Role: "user", Content: marshal(parts)})
+				out = append(out, inputItem{Type: "message", Role: "user", Content: marshal(parts), ID: m.ItemID})
 				parts = nil
 			}
 		}

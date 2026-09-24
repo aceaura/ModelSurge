@@ -40,6 +40,16 @@ type request struct {
 	// {type:"url",name,url,authorization_token?,tool_configuration?}）。
 	// 含凭据与嵌套工具配置，不展开建模，原样透传。
 	MCPServers json.RawMessage `json:"mcp_servers,omitempty"`
+	// ContextManagement beta 的服务端上下文压缩策略（edits 数组装
+	// clear_tool_uses/clear_thinking），与 responses 的 context_management
+	// 不同形。不展开建模，原样透传。
+	ContextManagement json.RawMessage `json:"context_management,omitempty"`
+	// Diagnostics beta 的请求级诊断开关（{previous_message_id}：上一轮响应
+	// id，服务端据此回执 cache_miss_reason）。原样透传。
+	Diagnostics json.RawMessage `json:"diagnostics,omitempty"`
+	// UserProfileID beta 的最终用户归属标识（代第三方发起时的计费/审计
+	// 维度），与 metadata.user_id 的滥用追踪标识不是一回事。
+	UserProfileID string `json:"user_profile_id,omitempty"`
 }
 
 // containerParams 请求侧 container 的对象形态（官方 ContainerParams）。
@@ -265,10 +275,10 @@ type streamEvent struct {
 	Message *eventMessage `json:"message,omitempty"` // message_start
 	// ContentBlock 存 raw 而不是 *block：块体里出现 block 没建模的字段形态时，
 	// 整个 SSE 事件的 json.Unmarshal 会失败并把流打断；逐块解析才能只降级那一个块。
-	ContentBlock json.RawMessage `json:"content_block,omitempty"` // content_block_start
-	Delta        *delta          `json:"delta,omitempty"`         // content_block_delta / message_delta
-	Usage        *usage          `json:"usage,omitempty"`         // message_delta
-	Error        *errorBody      `json:"error,omitempty"`         // error
+	ContentBlock json.RawMessage    `json:"content_block,omitempty"` // content_block_start
+	Delta        *delta             `json:"delta,omitempty"`         // content_block_delta / message_delta
+	Usage        *messageDeltaUsage `json:"usage,omitempty"`         // message_delta
+	Error        *errorBody         `json:"error,omitempty"`         // error
 }
 
 type eventMessage struct {
@@ -340,6 +350,19 @@ type cacheCreationUsage struct {
 	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
 }
 
+// messageDeltaUsage message_delta 帧的专用 usage（官方 MessageDeltaUsage）：
+// 只有六个键，没有 cache_creation 对象、inference_geo、service_tier——
+// 那三个只属于 message_start / 非流式响应的完整 Usage。此前 message_delta
+// 复用完整 usage DTO，同族「上游非流式→客户端流式」路径会把非法键写进帧里。
+type messageDeltaUsage struct {
+	InputTokens              int                  `json:"input_tokens,omitempty"`
+	OutputTokens             int                  `json:"output_tokens"`
+	CacheReadInputTokens     int                  `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int                  `json:"cache_creation_input_tokens,omitempty"`
+	ServerToolUse            *serverToolUsage     `json:"server_tool_use,omitempty"`
+	OutputTokensDetails      *outputTokensDetails `json:"output_tokens_details,omitempty"`
+}
+
 type errorBody struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
@@ -362,6 +385,10 @@ type response struct {
 	Usage       usage        `json:"usage"`
 	// Container 代码执行容器回显（按需出场，缺键与 null 同义）。
 	Container *container `json:"container,omitempty"`
+	// ContextManagement / Diagnostics beta 回执：实际执行的上下文清理
+	// （applied_edits）与缓存分歧原因（cache_miss_reason）。原样透传。
+	ContextManagement json.RawMessage `json:"context_management,omitempty"`
+	Diagnostics       json.RawMessage `json:"diagnostics,omitempty"`
 }
 
 // errorResponse 是 Anthropic 错误外形：{"type":"error","error":{...}}。

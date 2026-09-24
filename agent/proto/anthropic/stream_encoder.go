@@ -28,19 +28,19 @@ type streamEncoder struct {
 	droppedOpaque int
 	// droppedTier 没能下发的档位回显原值：越集、或到得太晚（message_delta
 	// 没有 service_tier 槽位，chat 系上游的晚到回显送不出去）。
-	droppedTier      string
-	droppedAudio     bool
-	badToolArgs      int
-	customTools      int
+	droppedTier  string
+	droppedAudio bool
+	badToolArgs  int
+	customTools  int
 	// droppedCites 先于正文块到达而被丢弃的引用条数。块内偏移相对累积正文
 	// 计算，块没开时引用无处可贴，只能丢——但要报出来。
 	droppedCites int
 	// droppedCitesUnresolved cited_text 反推失败被丢弃的引用条数（跨族投影
 	// 的标注缺有效区间）。丢弃避免整轮 400，但必须报出来。
 	droppedCitesUnresolved int
-	tierSent                 bool
-	messageDeltaSent         bool
-	stopped                  bool
+	tierSent               bool
+	messageDeltaSent       bool
+	stopped                bool
 	// usage 逐事件累计的响应用量：Notes() 按本族槽位算出被丢的细分维度
 	// （音频/预测 token 等 anthropic 无对应字段的项）。
 	usage ir.Usage
@@ -162,7 +162,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		return [][]byte{sseFrame("message_delta", marshal(streamEvent{
 			Type:  "message_delta",
 			Delta: &delta{StopReason: UnmapStopReason(ev.StopReason), StopSequence: ev.StopSequence, Container: encodeContainerInfo(ev.Container), StopDetails: encodeStopDetails(ev.StopDetails)},
-			Usage: encodeUsagePtr(ev.Usage),
+			Usage: encodeDeltaUsagePtr(ev.Usage),
 		}))}, nil
 	case ir.EvMessageStop:
 		if e.sawError {
@@ -413,6 +413,33 @@ func encodeUsagePtr(u *ir.Usage) *usage {
 	return out
 }
 
+// encodeDeltaUsagePtr 编 message_delta 的专用 usage。官方 MessageDeltaUsage
+// 没有 cache_creation 对象 / inference_geo / service_tier，这里不编——
+// 编了就是往帧里写官方 schema 没有的键（同族非流式→流式转换必然触发：
+// 聚合 usage 带着明细整体落进 EvMessageDelta）。明细与地理回显由
+// message_start 与聚合响应承担，delta 帧不丢可送达的信息。
+func encodeDeltaUsagePtr(u *ir.Usage) *messageDeltaUsage {
+	if u == nil {
+		return nil
+	}
+	out := &messageDeltaUsage{
+		InputTokens:              u.InputTokens,
+		OutputTokens:             u.OutputTokens,
+		CacheReadInputTokens:     u.CacheReadTokens,
+		CacheCreationInputTokens: u.CacheCreationTokens,
+	}
+	if u.WebSearchRequests > 0 || u.WebFetchRequests > 0 {
+		out.ServerToolUse = &serverToolUsage{
+			WebSearchRequests: u.WebSearchRequests,
+			WebFetchRequests:  u.WebFetchRequests,
+		}
+	}
+	if u.ReasoningTokens > 0 {
+		out.OutputTokensDetails = &outputTokensDetails{ThinkingTokens: u.ReasoningTokens}
+	}
+	return out
+}
+
 // encodeStopDetails 拒绝分类回写。空字段省略：上游显式 null 与缺省语义相同，
 // IR 不保留二者之别。
 func encodeStopDetails(sd *ir.StopDetails) *stopDetails {
@@ -442,15 +469,17 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 		return nil, fmt.Errorf("anthropic: decode response: %w", err)
 	}
 	return &ir.Response{
-		ID:           r.ID,
-		Model:        r.Model,
-		Content:      decodeBlocks(r.Content),
-		StopReason:   MapStopReason(r.StopReason),
-		StopSequence: r.StopSequence,
-		StopDetails:  decodeStopDetails(r.StopDetails),
-		Usage:        convUsage(r.Usage),
-		ServiceTier:  r.Usage.ServiceTier,
-		Container:    decodeContainer(r.Container),
+		ID:                   r.ID,
+		Model:                r.Model,
+		Content:              decodeBlocks(r.Content),
+		StopReason:           MapStopReason(r.StopReason),
+		StopSequence:         r.StopSequence,
+		StopDetails:          decodeStopDetails(r.StopDetails),
+		Usage:                convUsage(r.Usage),
+		ServiceTier:          r.Usage.ServiceTier,
+		Container:            decodeContainer(r.Container),
+		AnthropicContextMgmt: r.ContextManagement,
+		AnthropicDiagnostics: r.Diagnostics,
 	}, nil
 }
 
@@ -472,6 +501,8 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		out.Usage.ServiceTier = tier
 	}
 	out.Container = encodeContainerInfo(resp.Container)
+	out.ContextManagement = resp.AnthropicContextMgmt
+	out.Diagnostics = resp.AnthropicDiagnostics
 	return json.Marshal(out)
 }
 

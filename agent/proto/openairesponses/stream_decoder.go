@@ -3,6 +3,7 @@ package openairesponses
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
@@ -47,6 +48,13 @@ type streamDecoder struct {
 	open  map[int]bool
 	order []int
 	next  int
+	// pendingItems added 帧先到、done 帧才完整的 item 原文（web_search_call
+	// 的 sources、未映射托管 item 的全量字段都在 done）。done 始终不来的由
+	// terminalEvents 用 added 帧的原文兜底合成，不让这次托管调用凭空消失。
+	pendingItems map[int]json.RawMessage // output_index -> item 原文
+	// hostedOpaque 归不透明块的未映射托管 item 数（file_search_call 等），
+	// Notes() 收尾时报出。
+	hostedOpaque int
 }
 
 // partKey content part 的寻址键。refusal 单独占一位：上游漏发 content_part.added
@@ -60,12 +68,13 @@ type partKey struct {
 
 func (codec) NewStreamDecoder() proto.StreamDecoder {
 	return &streamDecoder{
-		toolArgs:  map[int]string{},
-		blockText: map[int]string{},
-		cites:     map[int]int{},
-		parts:     map[partKey]int{},
-		itemParts: map[int][]int{},
-		open:      map[int]bool{},
+		toolArgs:     map[int]string{},
+		blockText:    map[int]string{},
+		cites:        map[int]int{},
+		parts:        map[partKey]int{},
+		itemParts:    map[int][]int{},
+		open:         map[int]bool{},
+		pendingItems: map[int]json.RawMessage{},
 	}
 }
 
@@ -265,8 +274,14 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		case "reasoning":
 			_, out := d.assign(partKey{out: oi}, thinkingBlock())
 			return out, nil
+		default:
+			// web_search_call 与其它托管 item：added 帧先存原文，完整 item
+			// 在 done 帧（sources / 全量字段），合成与归 opaque 都在 done 做。
+			if len(se.ItemRaw) > 0 {
+				d.pendingItems[oi] = se.ItemRaw
+			}
+			return nil, nil
 		}
-		return nil, nil
 	case "response.content_part.added":
 		// part 类型只在这一帧给出。refusal 与 output_text 是两种块：并入同一条
 		// 通道会让客户端把拒绝渲染成普通回答。
@@ -393,6 +408,21 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 						out = append(out, ir.Event{Type: ir.EvSigDelta, Index: i, Text: se.Item.EncryptedContent,
 							SignatureFrom: ir.SigFrom(Name, se.Item.EncryptedContent)})
 					}
+				}
+			case "web_search_call":
+				delete(d.pendingItems, oi)
+				// 托管搜索 -> server_tool_use + web_search_tool_result 配平块：
+				// 客户端看得到网关代执行了哪次搜索、搜回了哪些页面。
+				out = append(out, d.emitWebSearchPair(oi, se.Item)...)
+			default:
+				delete(d.pendingItems, oi)
+				// 未映射的托管 item（file_search_call 等）：整块留成不透明块，
+				// 同族编码器原样带回，外族跳过并报损耗；计数经 Notes() 报出。
+				if len(se.ItemRaw) > 0 {
+					d.hostedOpaque++
+					_, opened := d.assign(partKey{out: oi}, &ir.Block{Type: ir.BlockOpaque,
+						Opaque: &ir.Opaque{WireType: se.Item.Type, Body: se.ItemRaw, From: Name}})
+					out = append(out, opened...)
 				}
 			}
 		}
@@ -533,12 +563,70 @@ func unmapIncompleteReason(s ir.StopReason) string {
 	}
 }
 
+// emitWebSearchPair 合成 server_tool_use + web_search_tool_result 配平块
+// 事件。调用块的 input 走 EvToolInput 增量通道（与 anthropic 流式 tool_use
+// 同款形态：开块不带 input，参数经增量下发），聚合与跨族编码都吃这一条路。
+func (d *streamDecoder) emitWebSearchPair(oi int, it *inputItem) []ir.Event {
+	blocks := serverBlocksFromWebSearch(it)
+	if len(blocks) == 0 {
+		return nil
+	}
+	call := blocks[0]
+	input := string(call.ServerToolUse.Input)
+	call.ServerToolUse.Input = nil
+	i, out := d.assign(partKey{out: oi, content: 0}, &call)
+	if input != "" {
+		out = append(out, ir.Event{Type: ir.EvToolInput, Index: i, Text: input})
+	}
+	out = append(out, d.close(i)...)
+	r, opened := d.assign(partKey{out: oi, content: 1}, &blocks[1])
+	out = append(out, opened...)
+	return append(out, d.close(r)...)
+}
+
+// Notes 排干解码损耗注记（归不透明块的未映射托管 item 数）。
+func (d *streamDecoder) Notes() []string {
+	if d.hostedOpaque == 0 {
+		return nil
+	}
+	n := d.hostedOpaque
+	d.hostedOpaque = 0
+	return []string{fmt.Sprintf(
+		"kept %d hosted output item(s) as opaque blocks: this conversion has no mapping for their item type, only the openai-responses family can carry them back verbatim, other protocols drop them and report the loss", n)}
+}
+
 func (d *streamDecoder) terminalEvents() []ir.Event {
 	var out []ir.Event
 	// 未收到 part/item 终止帧就直接结束时补关全部仍开着的块：不补会让下游编码器
 	// 认为块还开着，正文卡在缓冲里发不出去。按开块顺序关，避免 start/stop 交叉。
 	for _, i := range d.order {
 		out = append(out, d.close(i)...)
+	}
+	// added 到了 done 没到的托管 item 用 added 帧原文兜底合成：web_search_call
+	// 至少查询已知；未映射托管 item 至少整块 opaque 保住。
+	if len(d.pendingItems) > 0 {
+		ois := make([]int, 0, len(d.pendingItems))
+		for oi := range d.pendingItems {
+			ois = append(ois, oi)
+		}
+		sort.Ints(ois)
+		for _, oi := range ois {
+			raw := d.pendingItems[oi]
+			delete(d.pendingItems, oi)
+			var it inputItem
+			if err := json.Unmarshal(raw, &it); err != nil {
+				continue
+			}
+			if it.Type == "web_search_call" {
+				out = append(out, d.emitWebSearchPair(oi, &it)...)
+				continue
+			}
+			d.hostedOpaque++
+			i, opened := d.assign(partKey{out: oi}, &ir.Block{Type: ir.BlockOpaque,
+				Opaque: &ir.Opaque{WireType: it.Type, Body: raw, From: Name}})
+			out = append(out, opened...)
+			out = append(out, d.close(i)...)
+		}
 	}
 	u := d.usage
 	return append(out,

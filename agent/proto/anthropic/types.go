@@ -265,6 +265,16 @@ type delta struct {
 	Citation json.RawMessage `json:"citation,omitempty"`
 	// Container message_delta 上晚到的容器回显（官方 Delta.container）。
 	Container *container `json:"container,omitempty"`
+	// StopDetails message_delta 上拒绝档的结构化分类（官方 Delta.stop_details）。
+	StopDetails *stopDetails `json:"stop_details,omitempty"`
+}
+
+// stopDetails 拒绝的结构化信息（官方 RefusalStopDetails）。category/explanation
+// 官方可显式 null，指针保留「给了 null」与「没给」之别，回写时原样吐出。
+type stopDetails struct {
+	Type        string          `json:"type"`
+	Category    json.RawMessage `json:"category,omitempty"`
+	Explanation json.RawMessage `json:"explanation,omitempty"`
 }
 
 type usage struct {
@@ -273,6 +283,22 @@ type usage struct {
 	CacheReadInputTokens     int                 `json:"cache_read_input_tokens,omitempty"`
 	CacheCreationInputTokens int                 `json:"cache_creation_input_tokens,omitempty"`
 	CacheCreation            *cacheCreationUsage `json:"cache_creation,omitempty"`
+	// ServerToolUse 服务端托管工具执行次数（官方 usage.server_tool_use）。
+	ServerToolUse *serverToolUsage `json:"server_tool_use,omitempty"`
+	// OutputTokensDetails 输出 token 分解（官方 usage.output_tokens_details，
+	// 目前唯一条目 thinking_tokens）。
+	OutputTokensDetails *outputTokensDetails `json:"output_tokens_details,omitempty"`
+	// InferenceGeo 实际推理区域回显（官方 usage.inference_geo）。
+	InferenceGeo string `json:"inference_geo,omitempty"`
+}
+
+type serverToolUsage struct {
+	WebSearchRequests int `json:"web_search_requests"`
+	WebFetchRequests  int `json:"web_fetch_requests"`
+}
+
+type outputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens,omitempty"`
 }
 
 type cacheCreationUsage struct {
@@ -297,8 +323,10 @@ type response struct {
 	Content      json.RawMessage `json:"content"`
 	StopReason   string          `json:"stop_reason"`
 	StopSequence string          `json:"stop_sequence,omitempty"`
-	Usage        usage           `json:"usage"`
-	ServiceTier  string          `json:"service_tier,omitempty"`
+	// StopDetails 拒绝档的结构化分类（官方 response.stop_details）。
+	StopDetails *stopDetails `json:"stop_details,omitempty"`
+	Usage       usage        `json:"usage"`
+	ServiceTier string       `json:"service_tier,omitempty"`
 	// Container 代码执行容器回显（按需出场，缺键与 null 同义）。
 	Container *container `json:"container,omitempty"`
 }

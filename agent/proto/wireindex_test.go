@@ -57,9 +57,10 @@ func assertDenseOutputIndex(t *testing.T, out string) []int {
 }
 
 // 被跳过的服务端工具块不得烧掉序号：此前唯一的正文块拿到 output_index=2，
-// 而全量 output 只有 1 条。
+// 而全量 output 只有 1 条。夹具用 web_fetch：web_search 在 responses 族
+// 已映射成 web_search_call（自己就是合法 item），web_fetch 仍是纯跳过路径。
 func TestSkippedBlocksDoNotBurnOutputIndex(t *testing.T) {
-	seen := assertDenseOutputIndex(t, streamOut(t, "openai-responses", serverToolStream()))
+	seen := assertDenseOutputIndex(t, streamOut(t, "openai-responses", serverToolStreamNamed("web_fetch")))
 	if len(seen) != 1 {
 		t.Errorf("应只开出一个 item，实得 %d：%v", len(seen), seen)
 	}
@@ -75,7 +76,7 @@ func TestOutputIndexStaysDenseAcrossMidStreamSkips(t *testing.T) {
 		{Type: ir.EvBlockStart, Index: 1, Block: &ir.Block{Type: ir.BlockRedactedThinking, RedactedData: "CIPHER"}},
 		{Type: ir.EvBlockStop, Index: 1},
 		{Type: ir.EvBlockStart, Index: 2, Block: &ir.Block{Type: ir.BlockServerToolUse,
-			ServerToolUse: &ir.ServerToolUse{ID: "srvtoolu_1", Name: "web_search"}}},
+			ServerToolUse: &ir.ServerToolUse{ID: "srvtoolu_1", Name: "web_fetch"}}},
 		{Type: ir.EvBlockStop, Index: 2},
 		// 四类被跳过的块型都要在夹具里出现一次：漏掉哪一类，那一类的「跳过前
 		// 先烧序号」变异就没有夹具能走到，会存活。

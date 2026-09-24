@@ -48,7 +48,7 @@ func (codec) NewStreamEncoder() proto.StreamEncoder {
 func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	switch ev.Type {
 	case ir.EvMessageStart:
-		em := &eventMessage{ID: ev.MessageID, Model: ev.Model, Usage: encodeUsagePtr(ev.Usage)}
+		em := encodeMessageStart(ev)
 		if ev.ServiceTier != "" {
 			if tier, ok := proto.MapServiceTierEcho(ev.ServiceTier, Name); ok {
 				em.ServiceTier = tier
@@ -62,10 +62,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Audio != nil {
 			e.droppedAudio = true
 		}
-		return [][]byte{sseFrame("message_start", marshal(streamEvent{
-			Type:    "message_start",
-			Message: em,
-		}))}, nil
+		return [][]byte{sseFrame("message_start", marshal(struct {
+			Type    string            `json:"type"`
+			Message *messageStartBody `json:"message"`
+		}{Type: "message_start", Message: em}))}, nil
 	case ir.EvBlockStart:
 		if ev.Block != nil && !encodableBlock(*ev.Block) {
 			// 外族来源的不透明块：不开块，只计数。逐字下发就是一个客户端不认识
@@ -137,7 +137,7 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}
 		return [][]byte{sseFrame("message_delta", marshal(streamEvent{
 			Type:  "message_delta",
-			Delta: &delta{StopReason: UnmapStopReason(ev.StopReason), StopSequence: ev.StopSequence, Container: encodeContainerInfo(ev.Container)},
+			Delta: &delta{StopReason: UnmapStopReason(ev.StopReason), StopSequence: ev.StopSequence, Container: encodeContainerInfo(ev.Container), StopDetails: encodeStopDetails(ev.StopDetails)},
 			Usage: encodeUsagePtr(ev.Usage),
 		}))}, nil
 	case ir.EvMessageStop:
@@ -281,6 +281,59 @@ func blockTypeOf(b *ir.Block) ir.BlockType {
 	return b.Type
 }
 
+// messageStartBody message_start 的 message 载荷。官方 Message 的 type/role/
+// content/usage 都是必填、usage.input_tokens/output_tokens 是必填整数：严格
+// SDK 缺键即 ValidationError。chat/gemini 源的 usage 尾到，首帧只能先填 0，
+// 由随后的 message_delta 权威修正（new-api 同款处置）。stop_reason/
+// stop_sequence 官方首帧为 null，原样照发。
+type messageStartBody struct {
+	ID           string            `json:"id"`
+	Type         string            `json:"type"`
+	Role         string            `json:"role"`
+	Model        string            `json:"model"`
+	Content      []json.RawMessage `json:"content"`
+	StopReason   *string           `json:"stop_reason"`
+	StopSequence *string           `json:"stop_sequence"`
+	Usage        messageStartUsage `json:"usage"`
+	ServiceTier  string            `json:"service_tier,omitempty"`
+	Container    *container        `json:"container,omitempty"`
+}
+
+// messageStartUsage 首帧 usage：两个总量必填不省，明细有值才带。
+type messageStartUsage struct {
+	InputTokens              int                 `json:"input_tokens"`
+	OutputTokens             int                 `json:"output_tokens"`
+	CacheReadInputTokens     int                 `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int                 `json:"cache_creation_input_tokens,omitempty"`
+	CacheCreation            *cacheCreationUsage `json:"cache_creation,omitempty"`
+	ServerToolUse            *serverToolUsage    `json:"server_tool_use,omitempty"`
+	InferenceGeo             string              `json:"inference_geo,omitempty"`
+}
+
+// encodeMessageStart 构造 message_start 的完整 message 信封。Content 必须是
+// 空数组而非 null（官方首帧无内容）。
+func encodeMessageStart(ev ir.Event) *messageStartBody {
+	mb := &messageStartBody{
+		ID:      ev.MessageID,
+		Type:    "message",
+		Role:    "assistant",
+		Model:   ev.Model,
+		Content: []json.RawMessage{},
+	}
+	if u := encodeUsagePtr(ev.Usage); u != nil {
+		mb.Usage = messageStartUsage{
+			InputTokens:              u.InputTokens,
+			OutputTokens:             u.OutputTokens,
+			CacheReadInputTokens:     u.CacheReadInputTokens,
+			CacheCreationInputTokens: u.CacheCreationInputTokens,
+			CacheCreation:            u.CacheCreation,
+			ServerToolUse:            u.ServerToolUse,
+			InferenceGeo:             u.InferenceGeo,
+		}
+	}
+	return mb
+}
+
 func encodeUsagePtr(u *ir.Usage) *usage {
 	if u == nil {
 		return nil
@@ -297,7 +350,38 @@ func encodeUsagePtr(u *ir.Usage) *usage {
 			Ephemeral1hInputTokens: u.CacheCreation1hTokens,
 		}
 	}
+	if u.WebSearchRequests > 0 || u.WebFetchRequests > 0 {
+		out.ServerToolUse = &serverToolUsage{
+			WebSearchRequests: u.WebSearchRequests,
+			WebFetchRequests:  u.WebFetchRequests,
+		}
+	}
+	if u.ReasoningTokens > 0 {
+		out.OutputTokensDetails = &outputTokensDetails{ThinkingTokens: u.ReasoningTokens}
+	}
+	out.InferenceGeo = u.InferenceGeo
 	return out
+}
+
+// encodeStopDetails 拒绝分类回写。空字段省略：上游显式 null 与缺省语义相同，
+// IR 不保留二者之别。
+func encodeStopDetails(sd *ir.StopDetails) *stopDetails {
+	if sd == nil {
+		return nil
+	}
+	return &stopDetails{
+		Type:        "refusal",
+		Category:    rawStringOrNil(sd.Category),
+		Explanation: rawStringOrNil(sd.Explanation),
+	}
+}
+
+func rawStringOrNil(s string) json.RawMessage {
+	if s == "" {
+		return nil
+	}
+	b, _ := json.Marshal(s)
+	return b
 }
 
 // ---- 非流式响应 ----
@@ -313,6 +397,7 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 		Content:      decodeBlocks(r.Content),
 		StopReason:   MapStopReason(r.StopReason),
 		StopSequence: r.StopSequence,
+		StopDetails:  decodeStopDetails(r.StopDetails),
 		Usage:        convUsage(r.Usage),
 		ServiceTier:  r.ServiceTier,
 		Container:    decodeContainer(r.Container),
@@ -328,6 +413,7 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		Content:      marshal(encodeBlocks(resp.Content)),
 		StopReason:   UnmapStopReason(resp.StopReason),
 		StopSequence: resp.StopSequence,
+		StopDetails:  encodeStopDetails(resp.StopDetails),
 		Usage:        *encodeUsagePtr(&resp.Usage),
 	}
 	// 值集装不下的回显（OpenAI 的 flex/fast 等）丢弃，由 ResponseNotes 报出。

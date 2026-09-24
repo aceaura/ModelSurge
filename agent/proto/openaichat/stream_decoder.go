@@ -3,6 +3,7 @@ package openaichat
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
 	"github.com/aceaura/ModelSurge/agent/proto"
@@ -20,6 +21,8 @@ type streamDecoder struct {
 	// tier 档位回显：chunk 都可能携带，首帧没带上时后续帧补上，
 	// 随 Finish 的 message_delta 事件交付。
 	tier string
+	// fingerprint 后端配置指纹：同 tier 的到达规律，随首帧与收尾交付。
+	fingerprint string
 
 	nextBlock  int
 	textIdx    int
@@ -33,6 +36,10 @@ type streamDecoder struct {
 	finishReason string
 	gotFinish    bool
 	done         bool
+	// synthIDs 收尾时为「只给了 name 没给 id」的工具调用合成 id 的数量。
+	synthIDs int
+	// droppedTools 既没名字也没 id、无从还原的工具调用碎片数量。
+	droppedTools int
 	// sawError 已下发过 EvError。错误帧是终止帧，Finish() 不得再补
 	// message_delta+message_stop，否则客户端在错误之后又看到一个正常收尾。
 	sawError       bool
@@ -91,9 +98,12 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	if chunk.ServiceTier != "" {
 		d.tier = chunk.ServiceTier
 	}
+	if chunk.SystemFingerprint != "" {
+		d.fingerprint = chunk.SystemFingerprint
+	}
 	if !d.started {
 		d.started = true
-		out = append(out, ir.Event{Type: ir.EvMessageStart, MessageID: d.id, Model: d.model, ServiceTier: d.tier})
+		out = append(out, ir.Event{Type: ir.EvMessageStart, MessageID: d.id, Model: d.model, ServiceTier: d.tier, SystemFingerprint: d.fingerprint})
 	}
 	if chunk.Usage != nil {
 		d.usage.MergeNonZero(decodeUsage(chunk.Usage))
@@ -256,6 +266,34 @@ func (d *streamDecoder) Finish() []ir.Event {
 		return nil
 	}
 	var out []ir.Event
+	// 身份始终没齐的待开工具先补齐再关。整条流只给 name 不给 id 时（部分国产
+	// 兼容端形态），合成 id 保住调用——不补的话模型发起的工具调用随块关闭
+	// 无声蒸发（对照 new-api 缺 id 时合成 toolu_<uuid>）。只有参数碎片、连
+	// 名字都没有的无从还原：不开块、不发幻影 block_stop，计数报损耗。
+	var pending []*pendingTool
+	for _, pt := range d.tools {
+		if !pt.started {
+			pending = append(pending, pt)
+		}
+	}
+	sort.Slice(pending, func(i, j int) bool { return pending[i].blockIdx < pending[j].blockIdx })
+	for _, pt := range pending {
+		if pt.name == "" {
+			d.droppedTools++
+			d.dropOpen(pt.blockIdx)
+			continue
+		}
+		pt.id = fmt.Sprintf("call_%s_%d", pt.name, pt.blockIdx)
+		d.synthIDs++
+		out = append(out, ir.Event{Type: ir.EvBlockStart, Index: pt.blockIdx, Block: &ir.Block{
+			Type:    ir.BlockToolUse,
+			ToolUse: &ir.ToolUse{ID: pt.id, Name: pt.name},
+		}})
+		for _, frag := range pt.pendingArgs {
+			out = append(out, ir.Event{Type: ir.EvToolInput, Index: pt.blockIdx, Text: frag})
+		}
+		pt.pendingArgs = nil
+	}
 	// 未宣告完成的工具调用也要关闭
 	for _, idx := range d.openBlocks {
 		out = append(out, ir.Event{Type: ir.EvBlockStop, Index: idx})
@@ -280,12 +318,22 @@ func (d *streamDecoder) Finish() []ir.Event {
 }
 
 func (d *streamDecoder) Notes() []string {
-	if len(d.droppedChoices) == 0 {
-		return nil
+	var notes []string
+	if len(d.droppedChoices) > 0 {
+		notes = append(notes, proto.AdditionalChoicesDropNote(len(d.droppedChoices)))
+		d.droppedChoices = map[int]struct{}{}
 	}
-	n := len(d.droppedChoices)
-	d.droppedChoices = map[int]struct{}{}
-	return []string{proto.AdditionalChoicesDropNote(n)}
+	if d.synthIDs > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"synthesized an id for %d streamed tool call(s) that ended without one: the upstream never sent an id, and the call would otherwise have been dropped", d.synthIDs))
+		d.synthIDs = 0
+	}
+	if d.droppedTools > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d streamed tool call fragment(s) that ended with neither a name nor an id: the call cannot be reconstructed", d.droppedTools))
+		d.droppedTools = 0
+	}
+	return notes
 }
 
 // decodeUsage OpenAI usage -> IR（input 口径换算：prompt 含 cached，需拆出）。
@@ -294,16 +342,22 @@ func decodeUsage(u *usage) ir.Usage {
 		InputTokens:  u.PromptTokens,
 		OutputTokens: u.CompletionTokens,
 	}
-	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
-		out.CacheReadTokens = u.PromptTokensDetails.CachedTokens
-		out.InputTokens -= u.PromptTokensDetails.CachedTokens
-		if out.InputTokens < 0 {
-			out.InputTokens = 0
+	if u.PromptTokensDetails != nil {
+		if u.PromptTokensDetails.CachedTokens > 0 {
+			out.CacheReadTokens = u.PromptTokensDetails.CachedTokens
+			out.InputTokens -= u.PromptTokensDetails.CachedTokens
+			if out.InputTokens < 0 {
+				out.InputTokens = 0
+			}
 		}
+		out.PromptAudioTokens = u.PromptTokensDetails.AudioTokens
 	}
 	if u.CompletionTokensDetails != nil {
 		// 思考消耗是 completion 的子集，不从 OutputTokens 里减。
 		out.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+		out.CompletionAudioTokens = u.CompletionTokensDetails.AudioTokens
+		out.AcceptedPredictionTokens = u.CompletionTokensDetails.AcceptedPredictionTokens
+		out.RejectedPredictionTokens = u.CompletionTokensDetails.RejectedPredictionTokens
 	}
 	return out
 }

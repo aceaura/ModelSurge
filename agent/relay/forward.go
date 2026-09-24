@@ -952,13 +952,26 @@ func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, req *i
 func EventsFromResponse(resp *ir.Response) []ir.Event {
 	events := []ir.Event{{
 		Type: ir.EvMessageStart, MessageID: resp.ID, Model: resp.Model,
-		ServiceTier: resp.ServiceTier, Container: resp.Container, Audio: resp.Audio,
+		ServiceTier: resp.ServiceTier, SystemFingerprint: resp.SystemFingerprint,
+		Container: resp.Container, Audio: resp.Audio,
 	}}
 	for i, b := range resp.Content {
 		blk := b
 		if blk.Type == ir.BlockToolUse && blk.ToolUse != nil {
 			input := string(blk.ToolUse.Input)
 			blk.ToolUse.Input = nil
+			events = append(events,
+				ir.Event{Type: ir.EvBlockStart, Index: i, Block: &blk},
+				ir.Event{Type: ir.EvToolInput, Index: i, Text: input},
+				ir.Event{Type: ir.EvBlockStop, Index: i})
+			continue
+		}
+		// server_tool_use 同拆：anthropic 编码器开块恒写 input {}，查询串只认
+		// input_json_delta；不拆的话「上游非流式、客户端流式」路径下发的调用
+		// 块永远带着空查询。
+		if blk.Type == ir.BlockServerToolUse && blk.ServerToolUse != nil && len(blk.ServerToolUse.Input) > 0 {
+			input := string(blk.ServerToolUse.Input)
+			blk.ServerToolUse.Input = nil
 			events = append(events,
 				ir.Event{Type: ir.EvBlockStart, Index: i, Block: &blk},
 				ir.Event{Type: ir.EvToolInput, Index: i, Text: input},
@@ -999,7 +1012,7 @@ func EventsFromResponse(resp *ir.Response) []ir.Event {
 	}
 	u := resp.Usage
 	events = append(events,
-		ir.Event{Type: ir.EvMessageDelta, StopReason: resp.StopReason, StopSequence: resp.StopSequence, Usage: &u},
+		ir.Event{Type: ir.EvMessageDelta, StopReason: resp.StopReason, StopSequence: resp.StopSequence, StopDetails: resp.StopDetails, Usage: &u},
 		ir.Event{Type: ir.EvMessageStop})
 	return events
 }

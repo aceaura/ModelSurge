@@ -81,20 +81,24 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	if req.Instructions != nil && *req.Instructions != "" {
 		out.System = append(out.System, ir.Block{Type: ir.BlockText, Text: *req.Instructions})
 	}
-	var items []inputItem
+	var raws []json.RawMessage
 	if len(req.Input) > 0 {
 		var s string
 		if err := json.Unmarshal(req.Input, &s); err == nil {
 			// 官方 API 允许 input 为纯字符串（最简形态），等价单条 user message
 			if strings.TrimSpace(s) != "" {
-				items = append(items, inputItem{Type: "message", Role: "user", Content: json.RawMessage(marshal(s))})
+				raws = append(raws, marshal(inputItem{Type: "message", Role: "user", Content: json.RawMessage(marshal(s))}))
 			}
-		} else if err := json.Unmarshal(req.Input, &items); err != nil {
+		} else if err := json.Unmarshal(req.Input, &raws); err != nil {
 			return nil, fmt.Errorf("openai-responses: decode input items: %w", err)
 		}
 	}
-	for _, it := range items {
-		decodeItem(out, it)
+	for _, raw := range raws {
+		var it inputItem
+		if err := json.Unmarshal(raw, &it); err != nil {
+			return nil, fmt.Errorf("openai-responses: decode input item: %w", err)
+		}
+		decodeItem(out, it, raw)
 	}
 	for _, t := range req.Tools {
 		switch t.Type {
@@ -243,7 +247,7 @@ func encodeResponseFormat(f *ir.ResponseFormat) *textConfig {
 	return &textConfig{Format: out}
 }
 
-func decodeItem(req *ir.Request, it inputItem) {
+func decodeItem(req *ir.Request, it inputItem, raw json.RawMessage) {
 	if it.Type == "" && it.Role != "" {
 		it.Type = "message" // 官方 API 允许 message item 省略 type
 	}
@@ -291,7 +295,138 @@ func decodeItem(req *ir.Request, it inputItem) {
 		// 仅置 Compact 供 relay 压缩回退识别。其余字段透传语义由
 		// compact 路径承担。
 		req.Compact = true
+	case "web_search_call":
+		// 托管搜索输出项 -> server_tool_use + web_search_tool_result 配平块
+		// （与 anthropic 的本家块型对齐）。此前三路径（流式 added/done、非流式
+		// output、请求历史）都落进这个 default 被静默丢掉：客户端看不到网关
+		// 代执行了哪次搜索，搜回来的页面也一并蒸发。
+		blocks := serverBlocksFromWebSearch(&it)
+		if len(blocks) == 0 {
+			return
+		}
+		appendAssistantBlock(req, blocks[0])
+		if len(blocks) > 1 {
+			// 结果块在 anthropic 语义里属 user 回合（同 tool_result 的落位），
+			// 单独立一条 user 消息承载。
+			req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: blocks[1:]})
+		}
+	case "":
+		// 连 type 都读不出来的 item：丢弃（同 decodeParts 空 type 的口径）。
+	default:
+		// 其它托管 item（file_search_call / code_interpreter_call / mcp_call /
+		// image_generation_call / computer_call / local_shell_call 等）与未来的
+		// 未知 item 型：整块留成不透明块。静默丢掉会让模型以为上一轮没有这次
+		// 托管调用，客户端还拿不到注记；逐字段猜则必丢内容。同族原样带回无损，
+		// 外族整块跳过并由 relay.Diagnose 报损耗。
+		appendAssistantBlock(req, ir.Block{Type: ir.BlockOpaque,
+			Opaque: &ir.Opaque{WireType: it.Type, Body: raw, From: Name}})
 	}
+}
+
+// serverBlocksFromWebSearch web_search_call item -> server_tool_use +
+// web_search_tool_result 块对。action.sources 只带 URL（官方形态没有标题与
+// 摘要），投到 anthropic 时那两个字段只能留空。item 连 id 都没有时配平无从
+// 谈起，返回空让调用方整体跳过。
+func serverBlocksFromWebSearch(it *inputItem) []ir.Block {
+	if it == nil || it.ID == "" {
+		return nil
+	}
+	call := ir.Block{Type: ir.BlockServerToolUse, ServerToolUse: &ir.ServerToolUse{
+		ID: it.ID, Name: "web_search", Input: wsInputFromAction(it.Action),
+	}}
+	result := ir.Block{Type: ir.BlockWebSearchToolResult, WebSearchToolResult: &ir.WebSearchToolResult{
+		ToolUseID: it.ID, Results: wsResultsFromAction(it.Action),
+	}}
+	return []ir.Block{call, result}
+}
+
+// wsInputFromAction action -> anthropic 形态的 server_tool_use input。
+// search 单查询归 {"query":...}（anthropic 本家形状），多查询保留数组；
+// open_page / find_in_page 按各自字段集还原。
+func wsInputFromAction(a *webSearchAction) json.RawMessage {
+	if a == nil {
+		return nil
+	}
+	switch a.Type {
+	case "open_page":
+		return marshal(map[string]string{"url": a.URL})
+	case "find_in_page":
+		return marshal(map[string]string{"url": a.URL, "pattern": a.Pattern})
+	default: // "search" 及未标注形态按搜索处理
+		queries := a.Queries
+		if len(queries) == 0 && a.Query != "" {
+			queries = []string{a.Query}
+		}
+		if len(queries) == 1 {
+			return marshal(map[string]string{"query": queries[0]})
+		}
+		return marshal(map[string][]string{"queries": queries})
+	}
+}
+
+// wsResultsFromAction action.sources -> IR 结果条目（URL 是唯一可得字段）。
+func wsResultsFromAction(a *webSearchAction) []ir.WebSearchResult {
+	if a == nil || len(a.Sources) == 0 {
+		return nil
+	}
+	out := make([]ir.WebSearchResult, 0, len(a.Sources))
+	for _, s := range a.Sources {
+		if s.URL != "" {
+			out = append(out, ir.WebSearchResult{URL: s.URL})
+		}
+	}
+	return out
+}
+
+// wsActionFromInput IR server_tool_use input + 结果块 -> web_search_call 的
+// action。wsInputFromAction 的逆变换：按 input 的键位还原动作类型。
+func wsActionFromInput(input string, results []ir.WebSearchResult) *webSearchAction {
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(input), &m) != nil {
+		m = nil
+	}
+	str := func(k string) string {
+		var s string
+		if raw, ok := m[k]; ok {
+			_ = json.Unmarshal(raw, &s)
+		}
+		return s
+	}
+	a := &webSearchAction{Type: "search"}
+	switch {
+	case m["pattern"] != nil:
+		a = &webSearchAction{Type: "find_in_page", URL: str("url"), Pattern: str("pattern")}
+	case m["url"] != nil:
+		a = &webSearchAction{Type: "open_page", URL: str("url")}
+	case m["queries"] != nil:
+		_ = json.Unmarshal(m["queries"], &a.Queries)
+	case m["query"] != nil:
+		a.Queries = []string{str("query")}
+	}
+	if a.Type == "search" {
+		for _, r := range results {
+			if r.URL != "" {
+				a.Sources = append(a.Sources, webSearchSource{Type: "url", URL: r.URL})
+			}
+		}
+	}
+	return a
+}
+
+// collectWSResults 扫一遍消息流，把 web_search_tool_result 块按 ToolUseID
+// 收好：编码时结果块要与 assistant 回合的 server_tool_use 并成同一个
+// web_search_call item（结果块在 IR 里单独占一条 user 消息，跨消息配对）。
+// 消费方配对成功后从 map 里删掉；剩在里面的就是找不到调用的孤儿结果块。
+func collectWSResults(msgs []ir.Message) map[string][]ir.WebSearchResult {
+	out := map[string][]ir.WebSearchResult{}
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Type == ir.BlockWebSearchToolResult && b.WebSearchToolResult != nil {
+				out[b.WebSearchToolResult.ToolUseID] = b.WebSearchToolResult.Results
+			}
+		}
+	}
+	return out
 }
 
 // appendAssistantBlock 把块并入最后一条 assistant 消息（不存在则新建）。
@@ -532,8 +667,9 @@ func (c codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.Instructions = &sys
 	}
 	var items []inputItem
+	wsResults := collectWSResults(r.Messages)
 	for _, m := range r.Messages {
-		items = append(items, encodeMessageItems(m, true)...)
+		items = append(items, encodeMessageItems(m, true, wsResults)...)
 	}
 	if len(items) > 0 {
 		out.Input = marshal(items)
@@ -673,7 +809,9 @@ func joinSystem(blocks []ir.Block) string {
 // 构造不出合法形态（OpenAI 会拒），整块跳过；响应方向是给客户端看的，
 // 思考正文必须留下，只是签名位留空。
 // tool_result 内嵌的图片提取为独立 user message（function_call_output 不能挂图片）。
-func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
+// wsResults 承载跨消息配对：assistant 的 server_tool_use 编码成 web_search_call
+// 时从这里取回 sources 并消费掉对应条目。
+func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string][]ir.WebSearchResult) []inputItem {
 	var out []inputItem
 	switch m.Role {
 	case ir.RoleAssistant:
@@ -696,8 +834,16 @@ func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 				// 历史里抹掉，模型看不到它，客户端也拿不到任何注记。外族来源的整块
 				// 跳过（损耗由 relay.Diagnose 报出）——逐字写进本族的 part 数组就是
 				// 一个本族上游不认识的 part 型，会被按 part 型校验直接 400。
+				// 例外：以 _call 结尾的是 item 级不透明块（decodeItem 归进来的未知
+				// 托管 item，如 file_search_call），线体是完整 item，必须作为独立
+				// item 回吐——塞进 part 数组同样必 400。
 				if proto.OpaqueVerbatimFor(b.Opaque, Name) {
-					parts = append(parts, contentPart{Raw: b.Opaque.Body})
+					if strings.HasSuffix(b.Opaque.WireType, "_call") {
+						flush()
+						out = append(out, inputItem{Raw: b.Opaque.Body})
+					} else {
+						parts = append(parts, contentPart{Raw: b.Opaque.Body})
+					}
 				}
 			case ir.BlockThinking:
 				if b.Thinking == nil {
@@ -729,11 +875,37 @@ func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 					}
 					out = append(out, inputItem{Type: "function_call", CallID: b.ToolUse.ID, Name: b.ToolUse.Name, Arguments: args})
 				}
+			case ir.BlockServerToolUse:
+				// 托管搜索调用 -> web_search_call item：sources 从结果块配对取回
+				// （结果块在 IR 里单独占一条 user 消息，见 collectWSResults）。
+				// 非 web_search 的托管调用（web_fetch / code_execution）没有本族
+				// item 形态，整块跳过，损耗由 ResponseNotes / Diagnose 报出。
+				if b.ServerToolUse == nil || b.ServerToolUse.Name != "web_search" {
+					continue
+				}
+				flush()
+				results := wsResults[b.ServerToolUse.ID]
+				delete(wsResults, b.ServerToolUse.ID)
+				out = append(out, inputItem{
+					Type: "web_search_call", ID: b.ServerToolUse.ID, Status: "completed",
+					Action: wsActionFromInput(string(b.ServerToolUse.Input), results),
+				})
+			case ir.BlockWebSearchToolResult:
+				// 成对的结果块在 server_tool_use 处已被消费；走到这里的是找不到
+				// 调用的孤儿结果块：web_search_call 必须以调用为主体，没有调用
+				// 单发结果构造不出合法 item，跳过（编码器 Notes 无请求侧通道，
+				// 由 Diagnose 报出）。
+				if b.WebSearchToolResult != nil {
+					delete(wsResults, b.WebSearchToolResult.ToolUseID)
+				}
 			}
 		}
 		flush()
 	case ir.RoleUser:
 		start := len(out)
+		// consumed 已并入 web_search_call 的结果块数：一条消息若只载着这类块，
+		// 内容没有丢（进了 call 的 action.sources），不该触发空消息占位。
+		consumed := 0
 		var parts []contentPart
 		flush := func() {
 			if len(parts) > 0 {
@@ -769,10 +941,21 @@ func encodeMessageItems(m ir.Message, forRequest bool) []inputItem {
 						out = append(out, inputItem{Type: "message", Role: "user", Content: marshal(images)})
 					}
 				}
+			case ir.BlockWebSearchToolResult:
+				// 内容已并入对应 web_search_call 的 action.sources（assistant
+				// 回合编码时消费），这里不再产出任何 item。还在 wsResults 里的
+				// 是孤儿结果块：没有调用可配，只能丢弃（Diagnose 报出）。
+				if b.WebSearchToolResult != nil {
+					if _, ok := wsResults[b.WebSearchToolResult.ToolUseID]; ok {
+						delete(wsResults, b.WebSearchToolResult.ToolUseID)
+					} else {
+						consumed++
+					}
+				}
 			}
 		}
 		flush()
-		if len(out) == start {
+		if len(out) == start && consumed == 0 {
 			// 这条消息的部件被编码器全丢了（外族来源的不透明块，或一张没有可投递
 			// 载荷的图片），于是整条从 input 里消失。这比留一个空 content 更糟：
 			// 若它是唯一的一条，input 会连键都没有，而上游把 input 当必填字段，

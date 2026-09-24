@@ -385,6 +385,7 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	serverCalls, serverResults := 0, 0
 	docCtx, docCites := 0, 0
 	images, files := 0, 0
+	wsCallIDs := map[string]bool{}
 	for _, b := range resp.Content {
 		switch b.Type {
 		case ir.BlockThinking:
@@ -411,9 +412,16 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 				opaque++
 			}
 		case ir.BlockServerToolUse:
-			serverCalls++
+			if b.ServerToolUse != nil && b.ServerToolUse.Name == "web_search" {
+				wsCallIDs[b.ServerToolUse.ID] = true
+			}
+			if !ServerToolMappable(b, protoName, wsCallIDs) {
+				serverCalls++
+			}
 		case ir.BlockWebSearchToolResult:
-			serverResults++
+			if !ServerToolMappable(b, protoName, wsCallIDs) {
+				serverResults++
+			}
 		case ir.BlockToolUse:
 			if b.ToolUse != nil {
 				if b.ToolUse.Kind == ir.ToolCustom {
@@ -469,7 +477,7 @@ func ScanResponseLosses(resp *ir.Response, protoName string, sigSlotless, objArg
 	if opaque > 0 {
 		notes = append(notes, OpaqueDropNote(opaque))
 	}
-	if (serverCalls > 0 || serverResults > 0) && protoName != "anthropic" {
+	if serverCalls > 0 || serverResults > 0 {
 		notes = append(notes, ServerToolDropNote(serverCalls, serverResults))
 	}
 	if (docCtx > 0 || docCites > 0) && protoName != "anthropic" {
@@ -545,6 +553,26 @@ func WireFamily(protoName string) string {
 		return "openai-responses"
 	}
 	return protoName
+}
+
+// ServerToolMappable 报告目标族能否承载这个托管工具块。anthropic 是本家，
+// 两种块型都能带；responses 一族有 web_search_call item 形态，web_search
+// 调用与配对上的结果块能带（wsCallIDs 由调用方按迭代顺序维护：见到
+// web_search 调用就登记，结果块按 ToolUseID 查对）。其余族一概带不了。
+// 请求侧诊断与响应侧扫描共用这一判定，与各 codec 的实编行为同源。
+func ServerToolMappable(b ir.Block, protoName string, wsCallIDs map[string]bool) bool {
+	switch WireFamily(protoName) {
+	case "anthropic":
+		return true
+	case "openai-responses":
+		switch b.Type {
+		case ir.BlockServerToolUse:
+			return b.ServerToolUse != nil && b.ServerToolUse.Name == "web_search"
+		case ir.BlockWebSearchToolResult:
+			return b.WebSearchToolResult != nil && wsCallIDs[b.WebSearchToolResult.ToolUseID]
+		}
+	}
+	return false
 }
 
 // OpaqueVerbatimFor 报告不透明块能否在 protoName 的线上原样回吐：只有解码出它的

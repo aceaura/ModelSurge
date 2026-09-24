@@ -27,13 +27,18 @@ type Event struct {
 	Text         string     // 各 delta
 	StopReason   StopReason // EvMessageDelta
 	StopSequence string     // EvMessageDelta，StopSequence 档命中的那条序列原文
-	Usage        *Usage     // EvMessageStart / EvMessageDelta
-	MessageID    string     // EvMessageStart
-	Model        string     // EvMessageStart
+	// StopDetails EvMessageDelta，拒绝档的结构化分类（仅 anthropic 有槽位）。
+	StopDetails *StopDetails
+	Usage       *Usage // EvMessageStart / EvMessageDelta
+	MessageID   string // EvMessageStart
+	Model       string // EvMessageStart
 	// ServiceTier 上游回显的实际服务档位（EvMessageStart 携带；chat chunk
 	// 可能到得比首帧晚，EvMessageDelta 上也收）。保留原值不规整：跨族映射
 	// 在出站编码按目标协议回显值集进行（proto.MapServiceTierEcho）。
 	ServiceTier string
+	// SystemFingerprint Chat 后端配置指纹（EvMessageStart 携带）。仅 chat 族
+	// 有槽位，跨族出站不投影。
+	SystemFingerprint string
 	// Container 代码执行容器回显（EvMessageStart 首帧携带；anthropic 的
 	// message_delta 也可能晚到，EvMessageDelta 上也收，后值覆盖）。
 	Container *Container

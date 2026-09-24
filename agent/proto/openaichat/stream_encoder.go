@@ -19,6 +19,7 @@ type streamEncoder struct {
 	created     int64
 	tier        string // 已映射待回显的档位（chunk 逐帧携带）
 	droppedTier string
+	fingerprint string // 后端配置指纹（首帧带上后逐帧回显）
 	// droppedContainer 容器回显（anthropic 专属）被丢标记：Chat 无该槽位。
 	droppedContainer bool
 	// droppedUploads 被跳过的 container_upload 块数，Notes() 收尾时报出。
@@ -86,6 +87,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			e.model = ev.Model
 		}
 		e.mapTier(ev.ServiceTier)
+		if ev.SystemFingerprint != "" && e.fingerprint == "" {
+			e.fingerprint = ev.SystemFingerprint
+		}
 		if ev.Container != nil {
 			e.droppedContainer = true
 		}
@@ -331,24 +335,26 @@ func (e *streamEncoder) mapTier(raw string) {
 
 func (e *streamEncoder) chunk(delta *message, finishReason string) []byte {
 	return []byte("data: " + string(marshal(response{
-		ID:          e.id,
-		Object:      "chat.completion.chunk",
-		Created:     e.created,
-		Model:       e.model,
-		Choices:     []choice{{Index: 0, Delta: delta, FinishReason: finishReason}},
-		ServiceTier: e.tier,
+		ID:                e.id,
+		Object:            "chat.completion.chunk",
+		Created:           e.created,
+		Model:             e.model,
+		Choices:           []choice{{Index: 0, Delta: delta, FinishReason: finishReason}},
+		ServiceTier:       e.tier,
+		SystemFingerprint: e.fingerprint,
 	})) + "\n\n")
 }
 
 func (e *streamEncoder) usageChunk(u *ir.Usage) []byte {
 	return []byte("data: " + string(marshal(response{
-		ID:          e.id,
-		Object:      "chat.completion.chunk",
-		Created:     e.created,
-		Model:       e.model,
-		Choices:     []choice{},
-		Usage:       encodeUsage(u),
-		ServiceTier: e.tier,
+		ID:                e.id,
+		Object:            "chat.completion.chunk",
+		Created:           e.created,
+		Model:             e.model,
+		Choices:           []choice{},
+		Usage:             encodeUsage(u),
+		ServiceTier:       e.tier,
+		SystemFingerprint: e.fingerprint,
 	})) + "\n\n")
 }
 
@@ -362,11 +368,16 @@ func encodeUsage(u *ir.Usage) *usage {
 		CompletionTokens: u.OutputTokens,
 		TotalTokens:      u.TotalInput() + u.OutputTokens,
 	}
-	if u.CacheReadTokens > 0 {
-		out.PromptTokensDetails = &promptDetails{CachedTokens: u.CacheReadTokens}
+	if u.CacheReadTokens > 0 || u.PromptAudioTokens > 0 {
+		out.PromptTokensDetails = &promptDetails{CachedTokens: u.CacheReadTokens, AudioTokens: u.PromptAudioTokens}
 	}
-	if u.ReasoningTokens > 0 {
-		out.CompletionTokensDetails = &completionDetails{ReasoningTokens: u.ReasoningTokens}
+	if u.ReasoningTokens > 0 || u.CompletionAudioTokens > 0 || u.AcceptedPredictionTokens > 0 || u.RejectedPredictionTokens > 0 {
+		out.CompletionTokensDetails = &completionDetails{
+			ReasoningTokens:          u.ReasoningTokens,
+			AudioTokens:              u.CompletionAudioTokens,
+			AcceptedPredictionTokens: u.AcceptedPredictionTokens,
+			RejectedPredictionTokens: u.RejectedPredictionTokens,
+		}
 	}
 	return out
 }
@@ -383,7 +394,7 @@ func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, nil, fmt.Errorf("openai-chat: decode response: %w", err)
 	}
-	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier}
+	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, SystemFingerprint: r.SystemFingerprint}
 	selected := primaryChoice(r.Choices)
 	if selected != nil && selected.Message != nil {
 		m := selected.Message
@@ -487,6 +498,7 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	if tier, ok := proto.MapServiceTierEcho(resp.ServiceTier, Name); ok {
 		out.ServiceTier = tier
 	}
+	out.SystemFingerprint = resp.SystemFingerprint
 	return json.Marshal(out)
 }
 

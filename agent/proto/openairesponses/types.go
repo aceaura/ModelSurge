@@ -111,6 +111,39 @@ type inputItem struct {
 	ID               string          `json:"id,omitempty"`
 	Summary          json.RawMessage `json:"summary,omitempty"` // []summaryPart
 	EncryptedContent string          `json:"encrypted_content,omitempty"`
+	// web_search_call（托管搜索输出项）：status 与 action 只在这类 item 上出现。
+	Status string           `json:"status,omitempty"`
+	Action *webSearchAction `json:"action,omitempty"`
+	// Raw 整块原样线体（同族未知托管 item 的回吐通道）。标 json:"-" 不参与
+	// 逐字段序列化：MarshalJSON 优先整块吐出它（同 contentPart.Raw 的做法）。
+	Raw json.RawMessage `json:"-"`
+}
+
+func (it inputItem) MarshalJSON() ([]byte, error) {
+	if len(it.Raw) > 0 {
+		return it.Raw, nil
+	}
+	type plain inputItem
+	return json.Marshal(plain(it))
+}
+
+// webSearchAction web_search_call 的 action 子对象（官方 ResponseFunctionWebSearch）。
+// search 带 queries（旧形态是单数 query）与 sources；open_page 带 url；
+// find_in_page 带 url+pattern。三形态字段平铺，按 type 区分。
+type webSearchAction struct {
+	Type    string            `json:"type"`
+	Query   string            `json:"query,omitempty"`
+	Queries []string          `json:"queries,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Pattern string            `json:"pattern,omitempty"`
+	Sources []webSearchSource `json:"sources,omitempty"`
+}
+
+// webSearchSource search 动作的来源条目。官方只有 {type:"url", url} 一形，
+// 没有标题与摘要——跨族投到 anthropic 的结果块时那两个字段只能留空。
+type webSearchSource struct {
+	Type string `json:"type,omitempty"`
+	URL  string `json:"url"`
 }
 
 type contentPart struct {
@@ -233,16 +266,17 @@ type toolChoiceNamed struct {
 // omitempty 会把 output_index:0 整个抹掉——官方 SDK 拿它去索引 response.output[]，
 // 缺字段直接读成 undefined。不携带索引的事件（response.created / error）留 nil。
 type streamEvent struct {
-	Type         string       `json:"type"`
-	OutputIndex  *int         `json:"output_index,omitempty"`
-	ContentIndex *int         `json:"content_index,omitempty"`
-	SummaryIndex *int         `json:"summary_index,omitempty"`
-	Item         *inputItem   `json:"item,omitempty"`      // output_item.added / done
-	Part         *contentPart `json:"part,omitempty"`      // content_part.added
-	Delta        string       `json:"delta,omitempty"`     // *.delta
-	Arguments    string       `json:"arguments,omitempty"` // function_call_arguments.done
-	Input        string       `json:"input,omitempty"`     // custom_tool_call_input.done
-	Response     *responseObj `json:"response,omitempty"`  // response.created / completed / incomplete / failed
+	Type         string          `json:"type"`
+	OutputIndex  *int            `json:"output_index,omitempty"`
+	ContentIndex *int            `json:"content_index,omitempty"`
+	SummaryIndex *int            `json:"summary_index,omitempty"`
+	Item         *inputItem      `json:"-"`                   // output_item.added / done（由 ItemRaw 解出，见 UnmarshalJSON）
+	ItemRaw      json.RawMessage `json:"-"`                   // item 的原始线体：未知托管 item 归不透明块时要整块带回
+	Part         *contentPart    `json:"part,omitempty"`      // content_part.added
+	Delta        string          `json:"delta,omitempty"`     // *.delta
+	Arguments    string          `json:"arguments,omitempty"` // function_call_arguments.done
+	Input        string          `json:"input,omitempty"`     // custom_tool_call_input.done
+	Response     *responseObj    `json:"response,omitempty"`  // response.created / completed / incomplete / failed
 	// Error 裸 error 事件携带的错误体。官方 wire 把它放在顶层
 	// （{"type":"error","error":{...}}），不是 response.error 下；此前只读后者，
 	// 于是上游给的 type/code/message 三个字段全部丢失，风控拦截被当成可重试的
@@ -261,13 +295,51 @@ type streamEvent struct {
 	Annotations []annotation `json:"annotations,omitempty"`
 }
 
+// MarshalJSON item 走 ItemRaw：编码侧只填 Item（结构体），这里统一落线；
+// 解码侧捕获的原文在同族回吐时一字不差。
+func (se streamEvent) MarshalJSON() ([]byte, error) {
+	type plain streamEvent
+	raw := se.ItemRaw
+	if len(raw) == 0 && se.Item != nil {
+		raw = marshal(se.Item)
+	}
+	return json.Marshal(struct {
+		plain
+		Item json.RawMessage `json:"item,omitempty"`
+	}{plain: plain(se), Item: raw})
+}
+
+// UnmarshalJSON item 双形态收下：Item 供已知类型的逐字段分派，ItemRaw 供
+// 未知托管 item 整块归不透明块（逐字段重建必丢没建模的键）。
+func (se *streamEvent) UnmarshalJSON(data []byte) error {
+	type plain streamEvent
+	var sh struct {
+		plain
+		Item json.RawMessage `json:"item"`
+	}
+	if err := json.Unmarshal(data, &sh); err != nil {
+		return err
+	}
+	*se = streamEvent(sh.plain)
+	se.ItemRaw = sh.Item
+	if len(sh.Item) > 0 {
+		var it inputItem
+		if err := json.Unmarshal(sh.Item, &it); err == nil {
+			se.Item = &it
+		}
+	}
+	return nil
+}
+
 type responseObj struct {
-	ID                string             `json:"id"`
-	Object            string             `json:"object,omitempty"`
-	CreatedAt         int64              `json:"created_at,omitempty"`
-	Model             string             `json:"model"`
-	Status            string             `json:"status,omitempty"` // completed / incomplete / failed / in_progress
-	Output            []inputItem        `json:"output,omitempty"`
+	ID        string `json:"id"`
+	Object    string `json:"object,omitempty"`
+	CreatedAt int64  `json:"created_at,omitempty"`
+	Model     string `json:"model"`
+	Status    string `json:"status,omitempty"` // completed / incomplete / failed / in_progress
+	// Output 保持原始线体数组：解码侧要按 item 原文把未知托管 item 归不透明块，
+	// 编码侧每条在落线前才 marshal（fullOutput / EncodeResponse）。
+	Output            []json.RawMessage  `json:"output,omitempty"`
 	Usage             *usage             `json:"usage,omitempty"`
 	Error             *errorBody         `json:"error,omitempty"`
 	IncompleteDetails *incompleteDetails `json:"incomplete_details,omitempty"`

@@ -76,10 +76,10 @@ func TestReasoningItemDirectionalRules(t *testing.T) {
 	msg := ir.Message{Role: ir.RoleAssistant, Content: []ir.Block{
 		{Type: ir.BlockThinking, Thinking: &ir.Thinking{Text: "想", Signature: "SIGVALUE", SignatureFrom: "gemini"}},
 	}}
-	if items := encodeMessageItems(msg, true); len(items) != 0 {
+	if items := encodeMessageItems(msg, true, nil); len(items) != 0 {
 		t.Errorf("请求方向外族签名的 reasoning 应整块跳过：%+v", items)
 	}
-	items := encodeMessageItems(msg, false)
+	items := encodeMessageItems(msg, false, nil)
 	if len(items) != 1 {
 		t.Fatalf("响应方向应保留 reasoning 块：%+v", items)
 	}
@@ -91,7 +91,7 @@ func TestReasoningItemDirectionalRules(t *testing.T) {
 	}
 	msg.Content[0].Thinking.SignatureFrom = Name
 	for _, forRequest := range []bool{true, false} {
-		items := encodeMessageItems(msg, forRequest)
+		items := encodeMessageItems(msg, forRequest, nil)
 		if len(items) != 1 || items[0].EncryptedContent != "SIGVALUE" {
 			t.Errorf("forRequest=%v 本族真签名没带上：%+v", forRequest, items)
 		}

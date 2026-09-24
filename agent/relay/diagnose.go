@@ -89,6 +89,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 	sigs, foreign, images, urlImages, errResults, refusals, badArgs := 0, 0, 0, 0, 0, 0, 0
 	uploads, audioRefs, customCalls, customResults, redacted, opaque := 0, 0, 0, 0, 0, 0
 	serverCalls, serverResults := 0, 0
+	wsCallIDs := map[string]bool{}
 	docCtx, docCites := 0, 0
 	noPayload, details, fileRefs := 0, 0, 0
 	media := map[ir.MediaKind]int{}
@@ -156,9 +157,16 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 					opaque++
 				}
 			case ir.BlockServerToolUse:
-				serverCalls++
+				if b.ServerToolUse != nil && b.ServerToolUse.Name == "web_search" {
+					wsCallIDs[b.ServerToolUse.ID] = true
+				}
+				if !proto.ServerToolMappable(b, protoName, wsCallIDs) {
+					serverCalls++
+				}
 			case ir.BlockWebSearchToolResult:
-				serverResults++
+				if !proto.ServerToolMappable(b, protoName, wsCallIDs) {
+					serverResults++
+				}
 			case ir.BlockThinking:
 				if b.Thinking != nil && b.Thinking.Signature != "" {
 					sigs++
@@ -288,7 +296,7 @@ func Diagnose(req *ir.Request, protoName string, caps proto.Capabilities) []stri
 		notes = append(notes, fmt.Sprintf(
 			"dropped %d opaque content block(s): the block type is only defined in the protocol that produced it, the target has no slot for its payload, so the model cannot see the content the client put in that block in earlier turns", opaque))
 	}
-	if (serverCalls > 0 || serverResults > 0) && protoName != "anthropic" {
+	if serverCalls > 0 || serverResults > 0 {
 		// 历史里的托管工具块：两种块型成对出现（调用 + 结果），一起丢反而不会
 		// 撕毁 tool_use/tool_result 配平，上游不会拒——但模型看不到自己上一轮
 		// 让网关搜了什么、搜回了哪些页面，只能重新搜一遍。搜索结果的标题/URL/

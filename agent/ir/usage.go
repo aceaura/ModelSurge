@@ -15,9 +15,26 @@ type Usage struct {
 	// ReasoningTokens 思考消耗，是 OutputTokens 的子集而非另一项，
 	// 因此不参与任何合计——加进去会把输出算两遍。
 	// 上游字段：Responses 的 output_tokens_details.reasoning_tokens、
-	// Gemini 的 thoughtsTokenCount、Chat 的 completion_tokens_details。
+	// Gemini 的 thoughtsTokenCount、Chat 的 completion_tokens_details、
+	// Anthropic 的 output_tokens_details.thinking_tokens。
 	ReasoningTokens int
-	Estimated       bool // 本地估算产生（上游未提供）时为 true
+	// WebSearchRequests / WebFetchRequests 服务端托管工具执行次数
+	// （Anthropic usage.server_tool_use）。是次数不是 token，不进任何合计。
+	WebSearchRequests int
+	WebFetchRequests  int
+	// PromptAudioTokens / CompletionAudioTokens Chat 音频 token 明细
+	// （prompt_tokens_details / completion_tokens_details 的 audio_tokens），
+	// 各自是所在总量的子集，不参与合计。
+	PromptAudioTokens     int
+	CompletionAudioTokens int
+	// AcceptedPredictionTokens / RejectedPredictionTokens Chat 预测加速
+	// （completion_tokens_details 的 accepted/rejected_prediction_tokens）。
+	AcceptedPredictionTokens int
+	RejectedPredictionTokens int
+	// InferenceGeo Anthropic 响应侧回显的实际推理区域（usage.inference_geo）。
+	// 请求侧的同名偏好字段在 Request 上；这里只是回执，不参与调度。
+	InferenceGeo string
+	Estimated    bool // 本地估算产生（上游未提供）时为 true
 }
 
 // TotalInput 总输入口径（含 cache），对应 OpenAI prompt_tokens 语义。
@@ -47,6 +64,27 @@ func (u *Usage) MergeNonZero(o Usage) {
 	}
 	if o.ReasoningTokens != 0 {
 		u.ReasoningTokens = o.ReasoningTokens
+	}
+	if o.WebSearchRequests != 0 {
+		u.WebSearchRequests = o.WebSearchRequests
+	}
+	if o.WebFetchRequests != 0 {
+		u.WebFetchRequests = o.WebFetchRequests
+	}
+	if o.PromptAudioTokens != 0 {
+		u.PromptAudioTokens = o.PromptAudioTokens
+	}
+	if o.CompletionAudioTokens != 0 {
+		u.CompletionAudioTokens = o.CompletionAudioTokens
+	}
+	if o.AcceptedPredictionTokens != 0 {
+		u.AcceptedPredictionTokens = o.AcceptedPredictionTokens
+	}
+	if o.RejectedPredictionTokens != 0 {
+		u.RejectedPredictionTokens = o.RejectedPredictionTokens
+	}
+	if o.InferenceGeo != "" {
+		u.InferenceGeo = o.InferenceGeo
 	}
 	u.Estimated = u.Estimated || o.Estimated
 }

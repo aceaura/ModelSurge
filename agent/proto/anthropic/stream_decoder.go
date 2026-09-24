@@ -99,6 +99,12 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		if b.Type == ir.BlockToolUse && b.ToolUse != nil {
 			b.ToolUse.Input = nil
 		}
+		// server_tool_use 同款：流式开块的 input 是 {}，查询串经 input_json_delta
+		// 续传。不清掉的话聚合器把开块的 {} 当完整值，增量事件无处落脚，
+		// 聚合结果里查询串整段蒸发。
+		if b.Type == ir.BlockServerToolUse && b.ServerToolUse != nil {
+			b.ServerToolUse.Input = nil
+		}
 		return []ir.Event{{Type: ir.EvBlockStart, Index: se.Index, Block: &b}}, nil
 	case "content_block_delta":
 		if se.Delta == nil {
@@ -132,6 +138,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			ev.StopSequence = se.Delta.StopSequence
 			// 容器回显也可能落在 message_delta 上（官方 Delta.container）。
 			ev.Container = decodeContainer(se.Delta.Container)
+			ev.StopDetails = decodeStopDetails(se.Delta.StopDetails)
 		}
 		if se.Usage != nil {
 			u := convUsage(*se.Usage)
@@ -204,5 +211,25 @@ func convUsage(u usage) ir.Usage {
 			out.CacheCreationTokens = out.CacheCreation5mTokens + out.CacheCreation1hTokens
 		}
 	}
+	if u.ServerToolUse != nil {
+		out.WebSearchRequests = u.ServerToolUse.WebSearchRequests
+		out.WebFetchRequests = u.ServerToolUse.WebFetchRequests
+	}
+	if u.OutputTokensDetails != nil {
+		out.ReasoningTokens = u.OutputTokensDetails.ThinkingTokens
+	}
+	out.InferenceGeo = u.InferenceGeo
+	return out
+}
+
+// decodeStopDetails 拒绝分类进 IR。category/explanation 官方可显式 null，
+// null 与缺省同归空串（官方注明二者语义相同，见 RefusalStopDetails）。
+func decodeStopDetails(sd *stopDetails) *ir.StopDetails {
+	if sd == nil {
+		return nil
+	}
+	out := &ir.StopDetails{}
+	_ = json.Unmarshal(sd.Category, &out.Category)
+	_ = json.Unmarshal(sd.Explanation, &out.Explanation)
 	return out
 }

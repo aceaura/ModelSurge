@@ -4,6 +4,15 @@ import (
 	"encoding/json"
 )
 
+// StopDetails 拒绝停止的结构化分类（仅 anthropic：message_delta/响应的
+// stop_details，type 恒 "refusal"）。其余协议无槽位，跨族出站不投影。
+type StopDetails struct {
+	// Category 触发拒绝的策略分类（cyber/bio）；上游显式 null 与缺省同归空串。
+	Category string
+	// Explanation 人类可读解释，官方注明文本不稳定。
+	Explanation string
+}
+
 // Response 非流式完整响应（由事件流聚合而成）。
 type Response struct {
 	ID         string
@@ -12,10 +21,14 @@ type Response struct {
 	StopReason StopReason
 	// StopSequence StopStopSequence 档命中的那条序列原文；其余档为空。
 	StopSequence string
-	Usage        Usage
+	// StopDetails 拒绝档的结构化分类；非拒绝或上游未给为 nil。
+	StopDetails *StopDetails
+	Usage       Usage
 	// ServiceTier 上游回显的实际服务档位原值（anthropic standard/priority/
 	// batch；OpenAI auto/default/flex/scale/priority/fast/ultrafast）。
 	ServiceTier string
+	// SystemFingerprint Chat 后端配置指纹回显。仅 chat 族有槽位。
+	SystemFingerprint string
 	// Container 实际使用的代码执行容器回显（仅 anthropic：id/expires_at/
 	// 已加载技能）。nil = 上游没用容器。客户端要靠它复用容器续话。
 	Container *Container
@@ -59,6 +72,9 @@ func (a *Aggregator) Feed(ev Event) bool {
 		if ev.ServiceTier != "" {
 			a.resp.ServiceTier = ev.ServiceTier
 		}
+		if ev.SystemFingerprint != "" {
+			a.resp.SystemFingerprint = ev.SystemFingerprint
+		}
 		if ev.Container != nil {
 			a.resp.Container = ev.Container
 		}
@@ -76,6 +92,13 @@ func (a *Aggregator) Feed(ev Event) bool {
 		if b.Type == BlockToolUse && b.ToolUse != nil {
 			a.rawJSON[ev.Index] = &jsonRawBuilder{}
 			b.ToolUse.Input = nil
+		}
+		// server_tool_use 的查询串同样走 EvToolInput 增量通道（anthropic 流式
+		// 与 responses 合成的都是这个形态）：开块没带 input 时登记累积器，
+		// 否则聚合结果里查询串整段蒸发。开块已带完整 input（非流式回放）
+		// 的保持原样，不登记。
+		if b.Type == BlockServerToolUse && b.ServerToolUse != nil && len(b.ServerToolUse.Input) == 0 {
+			a.rawJSON[ev.Index] = &jsonRawBuilder{}
 		}
 		a.open[ev.Index] = &b
 	case EvTextDelta:
@@ -117,6 +140,11 @@ func (a *Aggregator) Feed(ev Event) bool {
 					b.ToolUse.Input = a.normalizeArgs(rb.buf)
 				}
 			}
+			// 托管调用的查询串是服务端产出的原文，不做参数规整（normalizeArgs
+			// 面向客户端可执行的 function 参数；查询串原样保留才是保真）。
+			if rb := a.rawJSON[ev.Index]; rb != nil && b.ServerToolUse != nil && len(rb.buf) > 0 {
+				b.ServerToolUse.Input = json.RawMessage(rb.buf)
+			}
 			a.resp.Content = append(a.resp.Content, *b)
 			delete(a.open, ev.Index)
 			delete(a.rawJSON, ev.Index)
@@ -125,6 +153,9 @@ func (a *Aggregator) Feed(ev Event) bool {
 		a.resp.StopReason = ev.StopReason
 		if ev.StopSequence != "" {
 			a.resp.StopSequence = ev.StopSequence
+		}
+		if ev.StopDetails != nil {
+			a.resp.StopDetails = ev.StopDetails
 		}
 		// chat 的 service_tier 可能到得比首帧晚（后续 chunk 才带），
 		// 晚到的非空值补上；同值重复无害。

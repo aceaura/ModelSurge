@@ -3,6 +3,7 @@ package openairesponses
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
@@ -31,7 +32,13 @@ type streamEncoder struct {
 	// Responses 协议里没有对应 item 类型：它们是上游自己执行的搜索，客户端既
 	// 不需要回传也无法回传。落进 text 分支会把查询 JSON 拼进 output_text，
 	// 正文里凭空多出一段参数串——宁可不出现。
+	// 注意：web_search 一家的调用/结果块不走这里——本族有 web_search_call
+	// item 形态，blockStart 里直接映射，wsOpen 负责调用与结果的跨块配对。
 	skip map[int]bool
+	// wsOpen 待配对结果的 web_search 调用：toolUseID -> IR 块序号。结果块
+	// （web_search_tool_result）与调用块在 IR 里是两个独立块，sources 要等
+	// 结果块到达才能填进 web_search_call 的 action。
+	wsOpen map[string]int
 
 	stopReason          ir.StopReason
 	usage               ir.Usage
@@ -82,10 +89,17 @@ type encBlock struct {
 	sig              string
 	cites            []ir.Citation
 	closed           bool
+	// wsSeeded 开块时 server_tool_use 自带的完整 input（非流式回放路径）。
+	// 流式路径 input 经 EvToolInput 增量进 text；最终取 text，空则退回 wsSeeded。
+	wsSeeded string
+	// wsSources 结果块配对成功后带回的 sources（web_search_call 专用）。
+	wsSources []ir.WebSearchResult
+	// rawItem 同族不透明 item 的完整线体：added/done 与全量 output 都整块带回。
+	rawItem json.RawMessage
 }
 
 func (codec) NewStreamEncoder() proto.StreamEncoder {
-	return &streamEncoder{created: time.Now().Unix(), blocks: map[int]*encBlock{}, wire: map[int]int{}, skip: map[int]bool{}}
+	return &streamEncoder{created: time.Now().Unix(), blocks: map[int]*encBlock{}, wire: map[int]int{}, skip: map[int]bool{}, wsOpen: map[string]int{}}
 }
 
 // wireOf IR 块序号 -> 稠密 wire output_index，首次见到时分配。
@@ -180,13 +194,17 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		return nil, nil
 	case ir.EvToolInput:
 		if e.skip[ev.Index] {
-			return nil, nil // 服务端工具块的查询参数无 Responses 形态
+			return nil, nil // 未映射的服务端工具块的查询参数无 Responses 形态
 		}
 		b := e.blocks[ev.Index]
 		if b == nil {
 			return nil, fmt.Errorf("openai-responses: tool input for unopened block %d", ev.Index)
 		}
 		b.text += ev.Text
+		if b.typ == ir.BlockServerToolUse {
+			// web_search_call 没有参数增量事件：查询串只随 done 帧的 action 下发
+			return nil, nil
+		}
 		typ := "response.function_call_arguments.delta"
 		if b.toolKind == ir.ToolCustom {
 			typ = "response.custom_tool_call_input.delta"
@@ -265,14 +283,37 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		}})
 		return [][]byte{added, part}, nil
 	case ir.BlockServerToolUse:
-		// 托管工具调用没有本族输出形态（官方虽有 web_search_call item，本仓
-		// 未实现映射）。必须显式拦住，否则会落进 default(text) 分支凭空多出一个
-		// 空 output_text 条目。
-		e.skip[ev.Index] = true
-		e.droppedServerCalls++
-		return nil, nil
+		// web_search 一家映射成本族的 web_search_call item：sources 等结果块
+		// 配对（wsOpen），done 帧在配对成功或 Finish 时发。其它托管调用
+		// （web_fetch / code_execution）没有本族输出形态，必须显式拦住，
+		// 否则会落进 default(text) 分支凭空多出一个空 output_text 条目。
+		stu := ev.Block.ServerToolUse
+		if stu == nil || stu.Name != "web_search" || stu.ID == "" {
+			e.skip[ev.Index] = true
+			e.droppedServerCalls++
+			return nil, nil
+		}
+		b.toolID = stu.ID
+		b.toolName = stu.Name
+		b.itemID = stu.ID // item id 沿用调用 id：同族往返时 ws_ 原号带回
+		b.wsSeeded = string(stu.Input)
+		e.register(ev.Index, b)
+		e.wsOpen[stu.ID] = ev.Index
+		return [][]byte{e.frame(streamEvent{Type: "response.output_item.added", OutputIndex: idx(e.wireOf(ev.Index)), Item: &inputItem{
+			Type: "web_search_call", ID: b.itemID, Status: "in_progress",
+		}})}, nil
 	case ir.BlockWebSearchToolResult:
-		// 搜回来的页面同理：整块跳过但计数，Notes() 报出。
+		// 结果块本身没有 item 形态：sources 填进已开着的 web_search_call
+		// 并补发它的 done 帧。找不到待配对的调用（孤儿结果）整块跳过但计数。
+		if r := ev.Block.WebSearchToolResult; r != nil {
+			if wi, ok := e.wsOpen[r.ToolUseID]; ok {
+				delete(e.wsOpen, r.ToolUseID)
+				if wb := e.blocks[wi]; wb != nil && !wb.closed {
+					wb.wsSources = r.Results
+					return [][]byte{e.wsDoneFrame(wi)}, nil
+				}
+			}
+		}
 		e.skip[ev.Index] = true
 		e.droppedServerResults++
 		return nil, nil
@@ -289,8 +330,21 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		e.droppedRedacted++
 		return nil, nil
 	case ir.BlockOpaque:
-		// 源协议专属的服务端工具载荷没有 Responses 形态。同样必须显式拦住，
-		// 否则会落进 default(text) 分支凭空多出一个空 output_text 条目。
+		// 同族的 item 级不透明块（file_search_call 等未知托管 item，线体是完整
+		// item）：added/done 与全量 output 都按原文整块带回，一字不改。
+		// 其余（源协议专属的 part 级/块级载荷）没有 Responses 形态，必须显式
+		// 拦住，否则会落进 default(text) 分支凭空多出一个空 output_text 条目。
+		if proto.OpaqueVerbatimFor(ev.Block.Opaque, Name) && strings.HasSuffix(ev.Block.Opaque.WireType, "_call") {
+			b.rawItem = ev.Block.Opaque.Body
+			b.itemID = e.nextID("item")
+			e.register(ev.Index, b)
+			done := streamEvent{OutputIndex: idx(e.wireOf(ev.Index)), ItemRaw: b.rawItem}
+			added := done
+			added.Type = "response.output_item.added"
+			done.Type = "response.output_item.done"
+			b.closed = true // 内容全量随开块下发，blockStop 不再补帧
+			return [][]byte{e.frame(added), e.frame(done)}, nil
+		}
 		e.skip[ev.Index] = true
 		e.droppedOpaque++
 		return nil, nil
@@ -330,6 +384,11 @@ func (e *streamEncoder) register(i int, b *encBlock) {
 func (e *streamEncoder) blockStop(i int) [][]byte {
 	b := e.blocks[i]
 	if b == nil || b.closed {
+		return nil
+	}
+	if b.typ == ir.BlockServerToolUse {
+		// web_search_call 的 done 帧等结果块配对（sources 在结果块上）；
+		// 结果块始终不来的由 Finish 兜底补发。
 		return nil
 	}
 	b.closed = true
@@ -382,9 +441,24 @@ func (e *streamEncoder) blockStop(i int) [][]byte {
 	return append(out, e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: oi, Item: e.doneItem(b)}))
 }
 
+// wsDoneFrame web_search_call 的 output_item.done：配对到结果块或 Finish
+// 兜底时调用。幂等靠 b.closed。
+func (e *streamEncoder) wsDoneFrame(i int) []byte {
+	b := e.blocks[i]
+	b.closed = true
+	return e.frame(streamEvent{Type: "response.output_item.done", OutputIndex: idx(e.wireOf(i)), Item: e.doneItem(b)})
+}
+
 // doneItem 由累积状态构造完整 item。
 func (e *streamEncoder) doneItem(b *encBlock) *inputItem {
 	switch b.typ {
+	case ir.BlockServerToolUse:
+		input := b.text
+		if input == "" {
+			input = b.wsSeeded
+		}
+		return &inputItem{Type: "web_search_call", ID: b.itemID, Status: "completed",
+			Action: wsActionFromInput(input, b.wsSources)}
 	case ir.BlockThinking:
 		it := &inputItem{Type: "reasoning", ID: b.itemID, EncryptedContent: b.sig}
 		it.Summary = marshal([]summaryPart{{Type: "summary_text", Text: b.text}})
@@ -434,10 +508,15 @@ func (e *streamEncoder) completedFrame() []byte {
 // fullOutput 按序输出所有块的完整 item（SDK get_final_response 依赖）。
 // 顺序必须是 wire output_index 的顺序（即开块顺序），不能按 IR 序号排：
 // 客户端是拿 output_index 去索引这个数组的，两者错位就等于指向别的 item。
-func (e *streamEncoder) fullOutput() []inputItem {
-	out := make([]inputItem, 0, len(e.order))
+func (e *streamEncoder) fullOutput() []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(e.order))
 	for _, i := range e.order {
-		out = append(out, *e.doneItem(e.blocks[i]))
+		b := e.blocks[i]
+		if len(b.rawItem) > 0 {
+			out = append(out, b.rawItem) // 同族不透明 item：整块原文带回
+			continue
+		}
+		out = append(out, marshal(e.doneItem(b)))
 	}
 	return out
 }
@@ -447,6 +526,11 @@ func (e *streamEncoder) Finish() [][]byte {
 	var out [][]byte
 	for _, idx := range e.order {
 		out = append(out, e.blockStop(idx)...)
+		// 结果块始终没到的 web_search_call：补发 done（action 里没有 sources），
+		// 不留一个永远 in_progress 的 item 给客户端。
+		if b := e.blocks[idx]; b != nil && b.typ == ir.BlockServerToolUse && !b.closed {
+			out = append(out, e.wsDoneFrame(idx))
+		}
 	}
 	if !e.completed {
 		// 唯一置 stopReason 的地方是 EvMessageDelta，而它同时发出终止帧置
@@ -580,8 +664,12 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier}
 	// 复用请求解码的 item 逻辑：把 output items 当成一条对话的尾部
 	fake := &ir.Request{}
-	for _, it := range r.Output {
-		decodeItem(fake, it)
+	for _, raw := range r.Output {
+		var it inputItem
+		if err := json.Unmarshal(raw, &it); err != nil {
+			continue // 单条形状冲突只丢它自己，兄弟 item 照常解出
+		}
+		decodeItem(fake, it, raw)
 	}
 	for _, m := range fake.Messages {
 		out.Content = append(out.Content, m.Content...)
@@ -605,12 +693,17 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	fake := &ir.Request{Messages: []ir.Message{{Role: ir.RoleAssistant, Content: resp.Content}}}
 	var items []inputItem
+	wsResults := collectWSResults(fake.Messages)
 	for _, m := range fake.Messages {
-		items = append(items, encodeMessageItems(m, false)...)
+		items = append(items, encodeMessageItems(m, false, wsResults)...)
+	}
+	rawItems := make([]json.RawMessage, 0, len(items))
+	for i := range items {
+		rawItems = append(rawItems, marshal(items[i]))
 	}
 	out := responseObj{
 		ID: resp.ID, Object: "response", CreatedAt: time.Now().Unix(), Model: resp.Model,
-		Status: "completed", Output: items, Usage: encodeUsage(&resp.Usage),
+		Status: "completed", Output: rawItems, Usage: encodeUsage(&resp.Usage),
 	}
 	// 值集装不下的回显（anthropic 的 batch）丢弃，由 ResponseNotes 报出。
 	if tier, ok := proto.MapServiceTierEcho(resp.ServiceTier, Name); ok {

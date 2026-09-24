@@ -278,6 +278,8 @@ type response struct {
 	Error *errorBody `json:"error,omitempty"`
 	// ServiceTier 实际服务档位回显（auto/default/flex/scale/priority/fast）。
 	ServiceTier string `json:"service_tier,omitempty"`
+	// SystemFingerprint 后端配置指纹（系统版本变化信号，排障用）。
+	SystemFingerprint string `json:"system_fingerprint,omitempty"`
 }
 
 type choice struct {
@@ -297,10 +299,16 @@ type usage struct {
 
 type promptDetails struct {
 	CachedTokens int `json:"cached_tokens,omitempty"`
+	AudioTokens  int `json:"audio_tokens,omitempty"`
 }
 
 type completionDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	AudioTokens     int `json:"audio_tokens,omitempty"`
+	// AcceptedPredictionTokens / RejectedPredictionTokens 预测加速
+	// （speculative decoding）的命中与拒绝数。
+	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
+	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
 }
 
 // errorResponse OpenAI 错误外形：{"error":{...}}。

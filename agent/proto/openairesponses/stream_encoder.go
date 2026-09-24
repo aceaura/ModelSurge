@@ -3,7 +3,6 @@ package openairesponses
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
@@ -330,11 +329,13 @@ func (e *streamEncoder) blockStart(ev ir.Event) ([][]byte, error) {
 		e.droppedRedacted++
 		return nil, nil
 	case ir.BlockOpaque:
-		// 同族的 item 级不透明块（file_search_call 等未知托管 item，线体是完整
-		// item）：added/done 与全量 output 都按原文整块带回，一字不改。
+		// 同族的 item 级不透明块（Item 标记，未知托管 item，线体是完整
+		// item）：added/done 与全量 output 都按原文整块带回，一字不改。判别按
+		// 捕获位置而不是名字——官方 item 型并不都以 _call 结尾
+		// （computer_call_output、mcp_list_tools 等）。
 		// 其余（源协议专属的 part 级/块级载荷）没有 Responses 形态，必须显式
 		// 拦住，否则会落进 default(text) 分支凭空多出一个空 output_text 条目。
-		if proto.OpaqueVerbatimFor(ev.Block.Opaque, Name) && strings.HasSuffix(ev.Block.Opaque.WireType, "_call") {
+		if proto.OpaqueVerbatimFor(ev.Block.Opaque, Name) && ev.Block.Opaque.Item {
 			b.rawItem = ev.Block.Opaque.Body
 			b.itemID = e.nextID("item")
 			e.register(ev.Index, b)
@@ -403,7 +404,13 @@ func (e *streamEncoder) blockStop(i int) [][]byte {
 				e.badToolArgs++
 			}
 			done.Type = "response.function_call_arguments.done"
+			// 零增量工具块的累积串是空：空串不是合法 JSON，与同帧
+			// output_item.done 里 doneItem 归一出的 "{}" 自相矛盾（客户端按
+			// done 帧取参数会拿到两种值）。与 doneItem 同口径归一。
 			done.Arguments = b.text
+			if done.Arguments == "" {
+				done.Arguments = "{}"
+			}
 		}
 		return [][]byte{
 			e.frame(done),
@@ -661,14 +668,16 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("openai-responses: decode response: %w", err)
 	}
-	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier}
+	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, Created: r.CreatedAt}
 	// 复用请求解码的 item 逻辑：把 output items 当成一条对话的尾部
 	fake := &ir.Request{}
 	for _, raw := range r.Output {
 		var it inputItem
-		if err := json.Unmarshal(raw, &it); err != nil {
-			continue // 单条形状冲突只丢它自己，兄弟 item 照常解出
-		}
+		// raw 已是合法 JSON，这里只可能报字段类型不匹配；Unmarshal 会跳过
+		// 冲突字段继续解完其余键。continue 等于让单字段形状冲突销毁整条
+		// item（连 default 的不透明块兜底都进不去），改成降级解出——冲突
+		// 字段缺省，其余键与原文（opaque 捕获用）都还在（R92a 同款证据）。
+		_ = json.Unmarshal(raw, &it)
 		decodeItem(fake, it, raw)
 	}
 	for _, m := range fake.Messages {
@@ -701,8 +710,13 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	for i := range items {
 		rawItems = append(rawItems, marshal(items[i]))
 	}
+	// 上游给过创建时间就原值回写；没给才回退本地钟（同 chat 侧口径）。
+	created := resp.Created
+	if created == 0 {
+		created = time.Now().Unix()
+	}
 	out := responseObj{
-		ID: resp.ID, Object: "response", CreatedAt: time.Now().Unix(), Model: resp.Model,
+		ID: resp.ID, Object: "response", CreatedAt: created, Model: resp.Model,
 		Status: "completed", Output: rawItems, Usage: encodeUsage(&resp.Usage),
 	}
 	// 值集装不下的回显（anthropic 的 batch）丢弃，由 ResponseNotes 报出。

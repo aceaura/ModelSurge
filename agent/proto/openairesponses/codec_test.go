@@ -11,7 +11,7 @@ import (
 )
 
 // 请求方向：仅本族形态签名可还原 reasoning item（encrypted_content）；
-// 外族/来源不明的签名跳过，避免构造上游无法解密的 item。
+// 外族/来源不明的签名不落线体，思考正文降级成 output_text 文本保住。
 func TestEncodeRequest_ReasoningItem(t *testing.T) {
 	mk := func(sig, from string) *ir.Request {
 		return &ir.Request{
@@ -42,6 +42,9 @@ func TestEncodeRequest_ReasoningItem(t *testing.T) {
 		}
 		if strings.Contains(string(out), `"encrypted_content"`) {
 			t.Errorf("foreign signature (from=%q) must not become a reasoning item: %s", from, out)
+		}
+		if !strings.Contains(string(out), "hmm") {
+			t.Errorf("外族签名的思考正文应降级成文本保住 (from=%q)：%s", from, out)
 		}
 	}
 }

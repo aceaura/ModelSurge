@@ -169,9 +169,14 @@ func (d *streamDecoder) feedDelta(m *message) []ir.Event {
 			out = append(out, ir.Event{Type: ir.EvTextDelta, Index: d.textIdx, Text: text})
 		}
 	}
-	// 标注在正文之后到达，落到已开的 text 块上。text 块还没开时丢弃：
-	// 为标注开一个空文本块会让客户端多出一段空正文，而偏移量也无从对应。
-	if cs := decodeAnnotations(m.Annotations); len(cs) > 0 && d.textIdx != -1 {
+	// 标注落到 text 块上。先于正文到达的标注不能丢：引用的偏移量相对块内
+	// 累积正文计算，先开块再贴标注偏移依然对齐（new-api 的
+	// appendAnnotationDelta 同款：先 startText 再发标注）。丢掉则这段出处
+	// 信息静默蒸发且无人报得出。
+	if cs := decodeAnnotations(m.Annotations); len(cs) > 0 {
+		if d.textIdx == -1 {
+			out = append(out, d.openBlock(ir.BlockText, &d.textIdx)...)
+		}
 		out = append(out, ir.Event{Type: ir.EvCitation, Index: d.textIdx, Citations: cs})
 	}
 	for _, tc := range m.ToolCalls {

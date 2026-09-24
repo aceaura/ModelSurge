@@ -137,6 +137,14 @@ type Opaque struct {
 	// 不认识的块型/part 型，被按块型校验直接 400 拒整轮。空值表示来源不明，
 	// 按外族处理（宁丢不伪造）。
 	From string
+	// Item 记录捕获位置：true=从 responses 族 output/input 数组的 item 位
+	// 捕获（线体是完整 item，回吐时必须作为独立 item 写回数组）；false=
+	// part/块位捕获（回吐进消息的 content part 数组）。官方 item 型并不都
+	// 以 _call 结尾（computer_call_output、mcp_list_tools、mcp_approval_request、
+	// compaction、program 等，见 SDK response_output_item 的 union），按名字
+	// 判型会把这些 item 级载荷错塞进 part 数组——那是一个本族上游不认识的
+	// part 型，必 400。判别只能在捕获时做，编码侧读这个标记。
+	Item bool `json:",omitempty"`
 }
 
 // AudioOutParam Chat 音频输出配置。Format 是 wav/aac/mp3/flac/opus/pcm16；

@@ -523,7 +523,7 @@ func CountNonPortableCitations(cs []ir.Citation) int {
 // 共用同一措辞。引用的正文与文档标题属会话内容，不进注记。
 func CitationDropNote(n int) string {
 	return fmt.Sprintf(
-		"dropped %d document citation(s): this protocol identifies an annotation source by URL, and these citations point at a document index with page/block/character offsets instead, so the client cannot see which passage was cited", n)
+		"dropped %d document citation(s): this protocol identifies an annotation source by URL, and these citations point at a document index with page/block/character offsets instead, so the receiving side cannot see which passage was cited", n)
 }
 
 // ContainerDropNote 容器回显丢失注记：外族无 container 槽位时共用。

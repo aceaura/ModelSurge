@@ -95,9 +95,12 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	}
 	for _, raw := range raws {
 		var it inputItem
-		if err := json.Unmarshal(raw, &it); err != nil {
-			return nil, fmt.Errorf("openai-responses: decode input item: %w", err)
-		}
+		// raw 已由外层数组解析确认是合法 JSON，这里只可能报字段类型不匹配的
+		// UnmarshalTypeError，而 json.Unmarshal 会跳过冲突字段继续解完其余键。
+		// 拿 err 当门硬退等于让任一字段的形状冲突（如某个 item 的 output 是
+		// 数组）把整单请求连同用户正文一起拒掉——降级解出（冲突字段缺省）
+		// 才是「单条冲突只丢它自己那一字段」的口径（R92a 同款证据）。
+		_ = json.Unmarshal(raw, &it)
 		decodeItem(out, it, raw)
 	}
 	for _, t := range req.Tools {
@@ -277,7 +280,7 @@ func decodeItem(req *ir.Request, it inputItem, raw json.RawMessage) {
 		req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Content: []ir.Block{{
 			Type: ir.BlockToolResult,
 			ToolResult: &ir.ToolResult{ToolUseID: it.CallID, Kind: kind,
-				Content: []ir.Block{{Type: ir.BlockText, Text: it.Output}}},
+				Content: decodeToolCallOutput(it.Output)},
 		}}})
 	case "reasoning":
 		th := &ir.Thinking{Signature: it.EncryptedContent, SignatureFrom: ir.SigFrom(Name, it.EncryptedContent)}
@@ -319,8 +322,22 @@ func decodeItem(req *ir.Request, it inputItem, raw json.RawMessage) {
 		// 托管调用，客户端还拿不到注记；逐字段猜则必丢内容。同族原样带回无损，
 		// 外族整块跳过并由 relay.Diagnose 报损耗。
 		appendAssistantBlock(req, ir.Block{Type: ir.BlockOpaque,
-			Opaque: &ir.Opaque{WireType: it.Type, Body: raw, From: Name}})
+			Opaque: &ir.Opaque{WireType: it.Type, Body: raw, From: Name, Item: true}})
 	}
+}
+
+// decodeToolCallOutput function_call_output.output 双形态 -> 工具结果内容块。
+// 字符串形态最常见，直接落成文本块；数组形态（output_text / input_image 等
+// part）走与消息 content 同款的逐 part 解析（decodeParts 自身也认字符串，
+// 但这里先显式判字符串，空串也要保住一个文本块——结果块的内容全丢会让
+// 配平的 tool_use 读到空结果）。缺省或数组解不出同样落空文本块占位。
+func decodeToolCallOutput(raw json.RawMessage) []ir.Block {
+	if len(raw) > 0 {
+		if blocks := decodeParts(raw); len(blocks) > 0 {
+			return blocks
+		}
+	}
+	return []ir.Block{{Type: ir.BlockText}}
 }
 
 // serverBlocksFromWebSearch web_search_call item -> server_tool_use +
@@ -834,11 +851,13 @@ func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string][]ir
 				// 历史里抹掉，模型看不到它，客户端也拿不到任何注记。外族来源的整块
 				// 跳过（损耗由 relay.Diagnose 报出）——逐字写进本族的 part 数组就是
 				// 一个本族上游不认识的 part 型，会被按 part 型校验直接 400。
-				// 例外：以 _call 结尾的是 item 级不透明块（decodeItem 归进来的未知
-				// 托管 item，如 file_search_call），线体是完整 item，必须作为独立
-				// item 回吐——塞进 part 数组同样必 400。
+				// 例外：Item 标记的 item 级不透明块（decodeItem 归进来的未知托管
+				// item），线体是完整 item，必须作为独立 item 回吐——塞进 part 数组
+				// 同样必 400。判别按捕获位置而不是名字：官方 item 型并不都以 _call
+				// 结尾（computer_call_output、mcp_list_tools、mcp_approval_request、
+				// compaction 等，见 SDK response_output_item 的 union）。
 				if proto.OpaqueVerbatimFor(b.Opaque, Name) {
-					if strings.HasSuffix(b.Opaque.WireType, "_call") {
+					if b.Opaque.Item {
 						flush()
 						out = append(out, inputItem{Raw: b.Opaque.Body})
 					} else {
@@ -851,6 +870,12 @@ func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string][]ir
 				}
 				genuine := b.Thinking.SignatureGenuineFor(Name)
 				if forRequest && !genuine {
+					// 签名装不下时正文不再跟着丢：降级成正文文本（anthropic
+					// degradeThinking 同款判据），模型至少看得到自己上一轮
+					// 想过什么。签名本身的损耗由 relay.Diagnose 报出。
+					if b.Thinking.Text != "" {
+						parts = append(parts, contentPart{Type: "output_text", Text: b.Thinking.Text})
+					}
 					continue
 				}
 				flush()
@@ -936,7 +961,11 @@ func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string][]ir
 					if b.ToolResult.Kind == ir.ToolCustom {
 						typ = "custom_tool_call_output"
 					}
-					out = append(out, inputItem{Type: typ, CallID: b.ToolResult.ToolUseID, Output: text})
+					item := inputItem{Type: typ, CallID: b.ToolResult.ToolUseID}
+					if text != "" {
+						item.Output = json.RawMessage(marshal(text))
+					}
+					out = append(out, item)
 					if len(images) > 0 {
 						out = append(out, inputItem{Type: "message", Role: "user", Content: marshal(images)})
 					}

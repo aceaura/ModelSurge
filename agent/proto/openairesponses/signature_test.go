@@ -70,16 +70,24 @@ func TestStreamEncodeEncryptedContentGatedByOrigin(t *testing.T) {
 	}
 }
 
-// 请求方向：无本族真签名的 reasoning item 构造不出合法形态，整块跳过；
-// 响应方向必须保留思考正文，只把签名位留空。
+// 请求方向：签名装不下（外族/无签名）时 reasoning item 构造不出合法形态，
+// 正文降级成 output_text 保住（anthropic degradeThinking 同款判据），签名位
+// 不落线体；响应方向保留思考正文，只把签名位留空。
 func TestReasoningItemDirectionalRules(t *testing.T) {
 	msg := ir.Message{Role: ir.RoleAssistant, Content: []ir.Block{
 		{Type: ir.BlockThinking, Thinking: &ir.Thinking{Text: "想", Signature: "SIGVALUE", SignatureFrom: "gemini"}},
 	}}
-	if items := encodeMessageItems(msg, true, nil); len(items) != 0 {
-		t.Errorf("请求方向外族签名的 reasoning 应整块跳过：%+v", items)
+	items := encodeMessageItems(msg, true, nil)
+	if len(items) != 1 || items[0].Type != "message" {
+		t.Fatalf("请求方向外族签名的思考应降级成文本消息：%+v", items)
 	}
-	items := encodeMessageItems(msg, false, nil)
+	if !strings.Contains(string(items[0].Content), "想") {
+		t.Errorf("降级后思考正文被丢了：%s", items[0].Content)
+	}
+	if strings.Contains(string(items[0].Content), "SIGVALUE") {
+		t.Errorf("外族签名进了请求线体：%s", items[0].Content)
+	}
+	items = encodeMessageItems(msg, false, nil)
 	if len(items) != 1 {
 		t.Fatalf("响应方向应保留 reasoning 块：%+v", items)
 	}

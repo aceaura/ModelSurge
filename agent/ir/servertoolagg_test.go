@@ -42,6 +42,33 @@ func TestAggregatorServerToolInputAccumulates(t *testing.T) {
 	}
 }
 
+// R103-3 异常断流（块只开未关）时 Finish 冲刷：已累积的查询串必须随块带出，
+// 与 EvBlockStop 路径同口径。漏掉这一支，断流聚合出的托管调用块 Input 恒
+// 为 nil——调用事实还在，查询内容蒸发。
+func TestAggregatorServerToolInputSurvivesTruncatedStream(t *testing.T) {
+	a := NewAggregator()
+	for _, ev := range []Event{
+		{Type: EvMessageStart, MessageID: "m1", Model: "m"},
+		{Type: EvBlockStart, Index: 0, Block: &Block{
+			Type:          BlockServerToolUse,
+			ServerToolUse: &ServerToolUse{ID: "srvtoolu_1", Name: "web_search"},
+		}},
+		{Type: EvToolInput, Index: 0, Text: `{"query":"weather in `},
+		{Type: EvToolInput, Index: 0, Text: `Paris"}`},
+		// 无 EvBlockStop：上游断流
+	} {
+		a.Feed(ev)
+	}
+	resp, _ := a.Finish()
+	if len(resp.Content) != 1 || resp.Content[0].ServerToolUse == nil {
+		t.Fatalf("断流冲刷丢了托管调用块：%+v", resp.Content)
+	}
+	got := string(resp.Content[0].ServerToolUse.Input)
+	if got != `{"query":"weather in Paris"}` {
+		t.Errorf("断流冲刷丢了已累积的查询串：%q", got)
+	}
+}
+
 // 开块已带完整 input（非流式回放）时不登记累积器：后来的 EvToolInput 不得
 // 覆盖或追加，否则同一段查询会被拼两遍。
 func TestAggregatorServerToolSeededInputNotDoubled(t *testing.T) {

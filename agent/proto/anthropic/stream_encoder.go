@@ -32,6 +32,9 @@ type streamEncoder struct {
 	droppedAudio     bool
 	badToolArgs      int
 	customTools      int
+	// droppedCites 先于正文块到达而被丢弃的引用条数。块内偏移相对累积正文
+	// 计算，块没开时引用无处可贴，只能丢——但要报出来。
+	droppedCites     int
 	tierSent         bool
 	messageDeltaSent bool
 	stopped          bool
@@ -91,8 +94,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		return append(frames, e.deltaFrame(ev.Index, delta{Type: "text_delta", Text: ev.Text})), nil
 	case ir.EvCitation:
 		// 不调 ensureOpen：引用不是正文，凭它开一个新块会在客户端多出一个空
-		// 文本块，而引用本身要贴的那段正文根本不在里面。
+		// 文本块，而引用本身要贴的那段正文根本不在里面。块还没开时丢弃——但
+		// 必须计数报出（R95 判据：跳过分支无人报等于给静默丢失背书）。
 		if _, ok := e.open[ev.Index]; !ok {
+			e.droppedCites += len(ev.Citations)
 			return nil, nil
 		}
 		var frames [][]byte
@@ -212,6 +217,11 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, proto.CustomToolDowngradeNote(e.customTools))
 		e.customTools = 0
 	}
+	if e.droppedCites > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d citation(s) that arrived before their text block opened: the receiving side cannot see those sources", e.droppedCites))
+		e.droppedCites = 0
+	}
 	return notes
 }
 
@@ -229,6 +239,13 @@ func (e *streamEncoder) finishToolArgs(index int) [][]byte {
 	}
 	if _, valid := ir.NormalizeToolInput(raw); !valid {
 		e.badToolArgs++
+	}
+	if len(raw) == 0 {
+		// 零增量工具块：客户端（含官方 SDK）只从 input_json_delta 拼参数，
+		// 一个 delta 都不发就等于参数是空串——拼出来不是合法 JSON。关块前
+		// 补一个 "{}" delta（sub2api 同款：clients assemble tool input
+		// exclusively from deltas）。
+		return [][]byte{e.deltaFrame(index, delta{Type: "input_json_delta", PartialJSON: "{}"})}
 	}
 	return nil
 }

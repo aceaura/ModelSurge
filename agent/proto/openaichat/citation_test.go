@@ -183,7 +183,9 @@ func TestStreamDecodeAnnotations(t *testing.T) {
 	}
 }
 
-// text 块还没开时的标注只能丢：为它开一个空文本块会让客户端多出一段空正文。
+// 先于正文到达的标注不再丢弃（R103-8）：先开 text 块再贴引用，偏移相对块内
+// 累积正文计算依然对齐（new-api appendAnnotationDelta 同款）。随后到达的正文
+// 与引用同块。旧契约（块未开就丢标注）让出处信息静默蒸发且无人报得出。
 func TestStreamDecodeAnnotationsWithoutTextBlock(t *testing.T) {
 	dec := codec{}.NewStreamDecoder()
 	evs, err := dec.Feed("data", `{"id":"c1","choices":[{"index":0,"delta":{"annotations":[
@@ -191,10 +193,14 @@ func TestStreamDecodeAnnotationsWithoutTextBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var got []ir.Citation
 	for _, ev := range evs {
 		if ev.Type == ir.EvCitation {
-			t.Fatalf("块未开却产出了引用事件：%+v", evs)
+			got = append(got, ev.Citations...)
 		}
+	}
+	if len(got) != 1 || got[0].URL != "https://w" {
+		t.Fatalf("先于正文的标注被丢弃：%+v", evs)
 	}
 }
 

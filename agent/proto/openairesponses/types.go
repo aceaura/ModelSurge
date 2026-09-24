@@ -105,8 +105,13 @@ type inputItem struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	Input     string `json:"input,omitempty"`
-	// function_call_output / custom_tool_call_output
-	Output string `json:"output,omitempty"`
+	// function_call_output / custom_tool_call_output。官方允许两种形态：
+	// 字符串，或 content part 数组（[{"type":"output_text",...},...]）。
+	// 声明成 string 时数组形态会让 item 级 Unmarshal 报类型错误——请求侧
+	// 整单 400（合法请求被硬拒），响应侧整条 item 静默蒸发（连 default 的
+	// 不透明块兜底都进不去，computer_call_output 这类兄弟 item 同病）。
+	// RawMessage 双形态兜底，逐 part 解析在 decodeItem 做。
+	Output json.RawMessage `json:"output,omitempty"`
 	// reasoning
 	ID               string          `json:"id,omitempty"`
 	Summary          json.RawMessage `json:"summary,omitempty"` // []summaryPart

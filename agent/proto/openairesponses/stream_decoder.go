@@ -55,6 +55,21 @@ type streamDecoder struct {
 	// hostedOpaque 归不透明块的未映射托管 item 数（file_search_call 等），
 	// Notes() 收尾时报出。
 	hostedOpaque int
+	// pendingToolArgs 身份未明（output_item.added 漏发）时缓存的工具参数
+	// 碎片。身份随 done 帧到达再开块回放；身份始终不到的由 terminalEvents
+	// 合成 id 开块保住参数。立即开块的旧行为会让块 id/name 恒空：done 帧
+	// 带身份回来时 assign 复用同一块，身份永远补不上（chat 解码器同款
+	// 延迟开块判据）。
+	pendingToolArgs map[int]*pendingToolCall // output_index -> 缓存的参数
+	// synthTools 身份全程未到、合成 id 开块的工具调用数，Notes() 报出。
+	synthTools int
+}
+
+// pendingToolCall 漏发 added 帧的工具调用缓存：参数碎片加上调用种类
+// （custom 与 function 的终态通道不同，开块时要用回同一种）。
+type pendingToolCall struct {
+	kind  ir.ToolKind
+	frags []string
 }
 
 // partKey content part 的寻址键。refusal 单独占一位：上游漏发 content_part.added
@@ -68,13 +83,14 @@ type partKey struct {
 
 func (codec) NewStreamDecoder() proto.StreamDecoder {
 	return &streamDecoder{
-		toolArgs:     map[int]string{},
-		blockText:    map[int]string{},
-		cites:        map[int]int{},
-		parts:        map[partKey]int{},
-		itemParts:    map[int][]int{},
-		open:         map[int]bool{},
-		pendingItems: map[int]json.RawMessage{},
+		toolArgs:        map[int]string{},
+		blockText:       map[int]string{},
+		cites:           map[int]int{},
+		parts:           map[partKey]int{},
+		itemParts:       map[int][]int{},
+		open:            map[int]bool{},
+		pendingItems:    map[int]json.RawMessage{},
+		pendingToolArgs: map[int]*pendingToolCall{},
 	}
 }
 
@@ -368,13 +384,53 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		if se.Type == "response.custom_tool_call_input.delta" {
 			kind = ir.ToolCustom
 		}
-		i, out := d.assign(partKey{out: oi}, toolBlock(kind, nil))
+		d.sawToolCall = true
+		k := partKey{out: oi}
+		if _, ok := d.parts[k]; !ok {
+			// added 帧漏发的畸形流：身份未明先缓存碎片，不开块。立即开块会让
+			// assign 记下这个 partKey，done 帧带身份回来时复用同一块，
+			// id/name 永远补不上（chat 解码器同款延迟开块判据）。
+			p := d.pendingToolArgs[oi]
+			if p == nil {
+				p = &pendingToolCall{kind: kind}
+				d.pendingToolArgs[oi] = p
+			}
+			p.frags = append(p.frags, se.Delta)
+			return nil, nil
+		}
+		i, out := d.assign(k, toolBlock(kind, nil))
 		d.toolArgs[i] += se.Delta
 		return append(out, ir.Event{Type: ir.EvToolInput, Index: i, Text: se.Delta}), nil
 	case "response.function_call_arguments.done":
+		d.sawToolCall = true
+		if _, ok := d.parts[partKey{out: oi}]; !ok {
+			// done 携带的是完整值而非新碎片：覆盖已缓存的增量（判据同
+			// completeValue，完整值以增量为前缀）。
+			p := d.pendingToolArgs[oi]
+			if p == nil {
+				p = &pendingToolCall{kind: ir.ToolFunction}
+				d.pendingToolArgs[oi] = p
+			}
+			if se.Arguments != "" {
+				p.frags = []string{se.Arguments}
+			}
+			return nil, nil
+		}
 		i, out := d.assign(partKey{out: oi}, toolBlock(ir.ToolFunction, nil))
 		return append(out, d.completeToolArgs(i, se.Arguments)...), nil
 	case "response.custom_tool_call_input.done":
+		d.sawToolCall = true
+		if _, ok := d.parts[partKey{out: oi}]; !ok {
+			p := d.pendingToolArgs[oi]
+			if p == nil {
+				p = &pendingToolCall{kind: ir.ToolCustom}
+				d.pendingToolArgs[oi] = p
+			}
+			if se.Input != "" {
+				p.frags = []string{se.Input}
+			}
+			return nil, nil
+		}
 		i, out := d.assign(partKey{out: oi}, toolBlock(ir.ToolCustom, nil))
 		return append(out, d.completeToolArgs(i, se.Input)...), nil
 	case "response.output_item.done":
@@ -390,6 +446,15 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 				}
 				i, opened := d.assign(partKey{out: oi}, toolBlock(kind, se.Item))
 				out = append(out, opened...)
+				// added 漏发的畸形流：先回放缓存的参数碎片，再补 done 携带的
+				// 完整值后缀（completeToolArgs 按前缀判据去重）。
+				if p := d.pendingToolArgs[oi]; p != nil {
+					delete(d.pendingToolArgs, oi)
+					for _, frag := range p.frags {
+						d.toolArgs[i] += frag
+						out = append(out, ir.Event{Type: ir.EvToolInput, Index: i, Text: frag})
+					}
+				}
 				out = append(out, d.completeToolArgs(i, full)...)
 				delete(d.toolArgs, i)
 			case "message":
@@ -421,7 +486,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 				if len(se.ItemRaw) > 0 {
 					d.hostedOpaque++
 					_, opened := d.assign(partKey{out: oi}, &ir.Block{Type: ir.BlockOpaque,
-						Opaque: &ir.Opaque{WireType: se.Item.Type, Body: se.ItemRaw, From: Name}})
+						Opaque: &ir.Opaque{WireType: se.Item.Type, Body: se.ItemRaw, From: Name, Item: true}})
 					out = append(out, opened...)
 				}
 			}
@@ -584,15 +649,20 @@ func (d *streamDecoder) emitWebSearchPair(oi int, it *inputItem) []ir.Event {
 	return append(out, d.close(r)...)
 }
 
-// Notes 排干解码损耗注记（归不透明块的未映射托管 item 数）。
+// Notes 排干解码损耗注记（归不透明块的未映射托管 item 数、合成 id 的工具调用数）。
 func (d *streamDecoder) Notes() []string {
-	if d.hostedOpaque == 0 {
-		return nil
+	var notes []string
+	if d.hostedOpaque > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"kept %d hosted output item(s) as opaque blocks: this conversion has no mapping for their item type, only the openai-responses family can carry them back verbatim, other protocols drop them and report the loss", d.hostedOpaque))
+		d.hostedOpaque = 0
 	}
-	n := d.hostedOpaque
-	d.hostedOpaque = 0
-	return []string{fmt.Sprintf(
-		"kept %d hosted output item(s) as opaque blocks: this conversion has no mapping for their item type, only the openai-responses family can carry them back verbatim, other protocols drop them and report the loss", n)}
+	if d.synthTools > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"synthesized an id for %d streamed tool call(s) that ended without one: the upstream never sent an item frame carrying the call's identity, and the call would otherwise have been dropped", d.synthTools))
+		d.synthTools = 0
+	}
+	return notes
 }
 
 func (d *streamDecoder) terminalEvents() []ir.Event {
@@ -623,8 +693,30 @@ func (d *streamDecoder) terminalEvents() []ir.Event {
 			}
 			d.hostedOpaque++
 			i, opened := d.assign(partKey{out: oi}, &ir.Block{Type: ir.BlockOpaque,
-				Opaque: &ir.Opaque{WireType: it.Type, Body: raw, From: Name}})
+				Opaque: &ir.Opaque{WireType: it.Type, Body: raw, From: Name, Item: true}})
 			out = append(out, opened...)
+			out = append(out, d.close(i)...)
+		}
+	}
+	// 身份全程未到的工具调用（added 与 output_item.done 都缺）：合成 id 开块
+	// 保住已收到的参数——不补的话模型发起的工具调用随流结束无声蒸发
+	// （chat 解码器 Finish 同款判据，对照 new-api 缺 id 时合成 toolu_<uuid>）。
+	if len(d.pendingToolArgs) > 0 {
+		ois := make([]int, 0, len(d.pendingToolArgs))
+		for oi := range d.pendingToolArgs {
+			ois = append(ois, oi)
+		}
+		sort.Ints(ois)
+		for _, oi := range ois {
+			p := d.pendingToolArgs[oi]
+			delete(d.pendingToolArgs, oi)
+			d.synthTools++
+			i, opened := d.assign(partKey{out: oi}, &ir.Block{Type: ir.BlockToolUse,
+				ToolUse: &ir.ToolUse{ID: fmt.Sprintf("call_synth_%d", oi), Kind: p.kind}})
+			out = append(out, opened...)
+			for _, frag := range p.frags {
+				out = append(out, ir.Event{Type: ir.EvToolInput, Index: i, Text: frag})
+			}
 			out = append(out, d.close(i)...)
 		}
 	}

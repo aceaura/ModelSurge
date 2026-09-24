@@ -35,6 +35,10 @@ type Response struct {
 	// Audio Chat 非流式模型音频输出。流式 Chat delta 没有官方音频槽位；
 	// 非 Chat 客户端也无法接收，编码边界必须丢弃并报告。
 	Audio *AudioOutput
+	// Created 上游回显的创建时间（chat created / responses created_at，Unix
+	// 秒）。零值=上游没给，出站才回退本地钟——否则同族往返会把上游的真实
+	// 创建时间换成代理本地钟，客户端按 created 做幂等/排序会拿到假数据。
+	Created int64
 }
 
 // Aggregator 把 IR 事件流聚合成完整 Response。
@@ -203,6 +207,12 @@ func (a *Aggregator) Finish() (*Response, *Error) {
 			} else {
 				b.ToolUse.Input = a.normalizeArgs(rb.buf)
 			}
+		}
+		// 与 EvBlockStop 同口径：托管调用已累积的查询串在断流冲刷时也要
+		// 带出来——只开未关的 server_tool_use 丢查询串等于把「网关搜了什么」
+		// 抹掉一半（调用事实还在，查询内容蒸发）。
+		if rb := a.rawJSON[i]; rb != nil && b.ServerToolUse != nil && len(rb.buf) > 0 {
+			b.ServerToolUse.Input = json.RawMessage(rb.buf)
 		}
 		a.resp.Content = append(a.resp.Content, *b)
 	}

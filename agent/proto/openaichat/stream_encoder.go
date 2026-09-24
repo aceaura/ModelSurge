@@ -394,7 +394,7 @@ func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, nil, fmt.Errorf("openai-chat: decode response: %w", err)
 	}
-	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, SystemFingerprint: r.SystemFingerprint}
+	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, SystemFingerprint: r.SystemFingerprint, Created: r.Created}
 	selected := primaryChoice(r.Choices)
 	if selected != nil && selected.Message != nil {
 		m := selected.Message
@@ -485,10 +485,16 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 		msg.Content = json.RawMessage(marshalString(text))
 	}
 	msg.Annotations = encodeAnnotations(text, cites)
+	// 上游给过创建时间就原值回写；没给才回退本地钟——同族往返不能把上游的
+	// 真实 created 换成代理本地时间（客户端按它做幂等/排序）。
+	created := resp.Created
+	if created == 0 {
+		created = time.Now().Unix()
+	}
 	out := response{
 		ID:      resp.ID,
 		Object:  "chat.completion",
-		Created: time.Now().Unix(),
+		Created: created,
 		Model:   resp.Model,
 		Choices: []choice{{Index: 0, Message: msg, FinishReason: UnmapFinishReason(resp.StopReason)}},
 		Usage:   encodeUsage(&resp.Usage),

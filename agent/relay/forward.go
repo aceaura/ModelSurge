@@ -677,10 +677,16 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 		return true
 	}
 
+	var skippedFrames int
 	feed := func(ev SSEEvent) bool {
 		events, err := dec.Feed(ev.Event, ev.Data)
 		if err != nil {
-			events = []ir.Event{{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeUpstream, Message: "upstream stream decode: " + err.Error()}}}
+			// 单帧畸形（如某条 data 不是合法 JSON）不能升级成 EvError 发出去
+			// 还继续转：错误帧在客户端是终止语义（chat 族还会自带 [DONE]），
+			// 之后再到正文字节就是「[DONE] 之后又收到 data」的非法流。sub2api
+			// 同款口径：跳过坏帧、流不断。损耗计数在收尾注记里报出。
+			skippedFrames++
+			return true
 		}
 		return emit(events)
 	}
@@ -716,6 +722,9 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	// 响应侧损耗收尾：流已开始，头写不了，落 SSE 注释帧 + 日志。
 	respNotes := decoderNotes(dec)
 	respNotes = append(respNotes, enc.Notes()...)
+	if skippedFrames > 0 {
+		respNotes = append(respNotes, fmt.Sprintf("skipped %d malformed upstream SSE frame(s); their content is lost to the receiving side", skippedFrames))
+	}
 	logRespNotes(clientCodec.Name(), respNotes)
 	for _, fr := range proto.SSENoteFrames(respNotes) {
 		n, _ := w.Write(fr)
@@ -901,6 +910,8 @@ func writeResponse(w http.ResponseWriter, clientCodec proto.InboundCodec, req *i
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // 与真流式出口同一套 SSE 头
 	w.WriteHeader(200)
 	enc := proto.NewClientStreamEncoder(clientCodec, req)

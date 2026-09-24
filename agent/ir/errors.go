@@ -33,6 +33,13 @@ const (
 	ErrTypeOverloaded    = "overloaded_error"
 	ErrTypeUpstream      = "upstream_error"
 	ErrTypeContentFilter = "content_filter_error"
+	// ErrTypeConnection 传输/解码级失败：连接不可达、流中断、响应体读不出来或
+	// 解不出、中游上游报错帧但给不出规范类型。与 ErrTypeUpstream 分设的判据是
+	// 重试口径：这类失败换目标换连接可能成（可重试）；ErrTypeUpstream 只承载
+	// ClassifyStatus 未映射的状态码（多为客户端请求自身造成，不可重试）。R86 遗留
+	// 的两职合一曾让聚合路径按 StreamRetryable(upstream_error)=true 重算，把
+	// 405/418/422 这类未映射状态码也换目标重试、白烧账号池。
+	ErrTypeConnection = "connection_error"
 )
 
 // ClassifyStatus 按 HTTP 状态码推断规范错误类型与可重试性。
@@ -116,11 +123,12 @@ func (e *Error) HTTPStatus() int {
 // 非流式两条路径上会得出相反的重试结论。
 //
 // 认证/权限失败要可重试：换一个账号可能就成了。非法请求/未找到/内容过滤不可重试：
-// 换谁都会被同样拒绝，判成可重试只会让调度器把账号池白烧一遍。
-// 未知类型默认可重试，与各族解码器此前的行为一致。
+// 换谁都会被同样拒绝，判成可重试只会让调度器把账号池白烧一遍。upstream_error 只
+// 承载未映射状态码，同样不可重试（与 ClassifyStatus default 同口径）；传输/解码
+// 失败归 connection_error，走 default 的可重试。
 func StreamRetryable(typ string) bool {
 	switch typ {
-	case ErrTypeInvalidReq, ErrTypeNotFound, ErrTypeContentFilter:
+	case ErrTypeInvalidReq, ErrTypeNotFound, ErrTypeContentFilter, ErrTypeUpstream:
 		return false
 	default:
 		return true

@@ -244,7 +244,7 @@ func (s *Server) renderError(w http.ResponseWriter, codec proto.InboundCodec, e 
 
 func (s *Server) renderReplayError(w http.ResponseWriter, codec proto.InboundCodec, err error) {
 	status := 503
-	typ := ir.ErrTypeUpstream
+	typ := ir.ErrTypeConnection
 	if e, ok := err.(replayv1.Error); ok && e.Code == replayv1.CodeUnauthorized {
 		status = 401
 		typ = ir.ErrTypeAuth

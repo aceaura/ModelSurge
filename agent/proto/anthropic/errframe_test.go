@@ -59,8 +59,8 @@ func TestStreamDecodeErrorWithoutTypeKeepsCanonical(t *testing.T) {
 	if e == nil {
 		t.Fatal("没有产出 EvError")
 	}
-	if e.Type != ir.ErrTypeUpstream {
-		t.Errorf("应回落 %q，实得 %q", ir.ErrTypeUpstream, e.Type)
+	if e.Type != ir.ErrTypeConnection {
+		t.Errorf("应回落 %q，实得 %q", ir.ErrTypeConnection, e.Type)
 	}
 	if e.Message != "boom" {
 		t.Errorf("已有的 message 不得丢：msg=%q", e.Message)
@@ -73,7 +73,7 @@ func TestStreamDecodeErrorWithoutBodyKeepsCanonical(t *testing.T) {
 	if e == nil {
 		t.Fatal("没有产出 EvError")
 	}
-	if e.Type != ir.ErrTypeUpstream || e.Message == "" {
+	if e.Type != ir.ErrTypeConnection || e.Message == "" {
 		t.Errorf("应回落规范类型与非空消息：type=%q msg=%q", e.Type, e.Message)
 	}
 }

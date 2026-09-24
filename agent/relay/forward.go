@@ -430,7 +430,7 @@ func (f *Forwarder) openUpstream(ctx context.Context, cand candidate, upReq *ir.
 		if ctx.Err() != nil {
 			return nil, nil, &ir.Error{StatusCode: 499, Type: ir.ErrTypeUpstream, Message: "client disconnected"} // 特殊值：attempt 识别
 		}
-		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream unreachable: " + doErr.Error(), Retryable: true}
+		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "upstream unreachable: " + doErr.Error(), Retryable: true}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
@@ -510,7 +510,7 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 	if !isSSE {
 		full, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
-			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: readErr.Error(), Retryable: true}
+			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: readErr.Error(), Retryable: true}
 		}
 		var irResp *ir.Response
 		var respNotes []string
@@ -521,7 +521,7 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 			irResp, decErr = cand.codec.DecodeResponse(full)
 		}
 		if decErr != nil {
-			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "decode upstream response: " + decErr.Error(), Retryable: true}
+			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "decode upstream response: " + decErr.Error(), Retryable: true}
 		}
 		f.estimateUsageOnResponse(req, irResp, cand.name)
 		if onUsage != nil {
@@ -581,7 +581,7 @@ func (f *Forwarder) awaitFirstEvent(er *EventReader, cancel context.CancelFunc, 
 		ch <- result{ev, ok, err}
 	}()
 	wrapErr := func(err error) *ir.Error {
-		return &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream stream read: " + err.Error(), Retryable: true}
+		return &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "upstream stream read: " + err.Error(), Retryable: true}
 	}
 	if timeout <= 0 {
 		r := <-ch
@@ -600,7 +600,7 @@ func (f *Forwarder) awaitFirstEvent(er *EventReader, cancel context.CancelFunc, 
 		cancel() // 杀掉阻塞中的 body 读取
 		<-ch     // 等读取 goroutine 退出，避免泄露
 		return SSEEvent{}, false, &ir.Error{
-			StatusCode: 504, Type: ir.ErrTypeUpstream,
+			StatusCode: 504, Type: ir.ErrTypeConnection,
 			Message:   fmt.Sprintf("upstream produced no event within %s", timeout),
 			Retryable: true,
 		}
@@ -615,15 +615,15 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 		return false, firstErr
 	}
 	if !ok {
-		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream closed stream without any event", Retryable: true}
+		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "upstream closed stream without any event", Retryable: true}
 	}
 
 	firstEvents, err := dec.Feed(first.Event, first.Data)
 	if err != nil {
-		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event decode: " + err.Error(), Retryable: true}
+		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "upstream first event decode: " + err.Error(), Retryable: true}
 	}
 	if len(firstEvents) == 0 {
-		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event produced no IR event", Retryable: true}
+		return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "upstream first event produced no IR event", Retryable: true}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -699,7 +699,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	for {
 		ev, ok, rerr := er.Next()
 		if rerr != nil {
-			emit([]ir.Event{{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeUpstream, Message: "upstream stream read: " + rerr.Error()}}})
+			emit([]ir.Event{{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream stream read: " + rerr.Error()}}})
 			break
 		}
 		if !ok {
@@ -774,16 +774,16 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 		return nil, nil, firstErr
 	}
 	if !ok {
-		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream closed stream without any event", Retryable: true}
+		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "upstream closed stream without any event", Retryable: true}
 	}
 
 	agg := ir.NewAggregator()
 	firstEvents, err := dec.Feed(first.Event, first.Data)
 	if err != nil {
-		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event decode: " + err.Error(), Retryable: true}
+		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "upstream first event decode: " + err.Error(), Retryable: true}
 	}
 	if len(firstEvents) == 0 {
-		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "upstream first event produced no IR event", Retryable: true}
+		return nil, nil, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "upstream first event produced no IR event", Retryable: true}
 	}
 	for _, e := range firstEvents {
 		agg.Feed(e)
@@ -791,7 +791,7 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 	feed := func(ev SSEEvent) {
 		events, err := dec.Feed(ev.Event, ev.Data)
 		if err != nil {
-			events = []ir.Event{{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeUpstream, Message: "upstream stream decode: " + err.Error()}}}
+			events = []ir.Event{{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream stream decode: " + err.Error()}}}
 		}
 		for _, e := range events {
 			agg.Feed(e)
@@ -800,7 +800,7 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 	for {
 		ev, ok, rerr := er.Next()
 		if rerr != nil {
-			agg.Feed(ir.Event{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeUpstream, Message: "upstream stream read: " + rerr.Error()}})
+			agg.Feed(ir.Event{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream stream read: " + rerr.Error()}})
 			break
 		}
 		if !ok {
@@ -818,7 +818,8 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 		// 类型判（与解码器共用 StreamRetryable 同一张表），不再一律置真：非法请求 /
 		// 未找到 / 内容过滤换谁都会被同样拒绝，强制可重试只会把账号池白烧一遍
 		// （实测一个 invalid_request 打满全部目标才停下）。传输与解码失败是
-		// upstream_error，照旧可重试，换账号确实可能成功。
+		// connection_error，照旧可重试，换账号确实可能成功；upstream_error 只承载
+		// 未映射状态码（多为客户端请求自身造成），不可重试。
 		aggErr.Retryable = ir.StreamRetryable(aggErr.Type)
 		return nil, nil, aggErr
 	}
@@ -1115,5 +1116,5 @@ func replayDispatchError(err error) *ir.Error {
 			return &ir.Error{StatusCode: http.StatusServiceUnavailable, Type: ir.ErrTypeUpstream, Message: e.Message, Retryable: e.Retryable}
 		}
 	}
-	return &ir.Error{StatusCode: http.StatusServiceUnavailable, Type: ir.ErrTypeUpstream, Message: "replay unavailable", Retryable: true}
+	return &ir.Error{StatusCode: http.StatusServiceUnavailable, Type: ir.ErrTypeConnection, Message: "replay unavailable", Retryable: true}
 }

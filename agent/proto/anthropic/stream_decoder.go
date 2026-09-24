@@ -161,7 +161,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 		d.sawError = true
 		d.stopped = true
 		d.messageDeltaSent = true
-		e := &ir.Error{Type: ir.ErrTypeUpstream, Message: "upstream stream error"}
+		e := &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream stream error"}
 		if se.Error != nil {
 			// 类型缺席时保留规范默认值：覆盖成空串会让下游 RenderStreamError 写出
 			// "type":""，客户端无从判断该不该重试。

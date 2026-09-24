@@ -50,15 +50,18 @@ func TestClassifyStatusCoveredCodesAgreeWithStreamRetryable(t *testing.T) {
 	}
 }
 
-// 未显式覆盖的状态码留在 default：upstream_error + 不可重试。这与
-// StreamRetryable(upstream_error)=true 口径相反，是**已知**的——upstream_error 同时
-// 被 relay 用来表示传输/解码失败（那类确实可重试），仅凭类型区分不了两个来源。
-// 把现状钉住，将来改 default 必须是有意的（并同步改 StreamRetryable 的输入口径）。
+// 未显式覆盖的状态码留在 default：upstream_error + 不可重试。拆分之后它与
+// StreamRetryable(upstream_error)=false 同口径——传输/解码失败已改归
+// connection_error（可重试），upstream_error 只剩未映射状态码一个来源。
+// 钉住两侧一致：将来改 default 必须是有意的，并同步 StreamRetryable。
 func TestClassifyStatusUncoveredCodesStayNonRetryable(t *testing.T) {
 	for _, status := range []int{405, 409, 410, 418, 422, 451} {
 		typ, retry := ClassifyStatus(status)
 		if typ != ErrTypeUpstream || retry {
 			t.Errorf("ClassifyStatus(%d) = (%q, %v)，want (%q, false)", status, typ, retry, ErrTypeUpstream)
+		}
+		if StreamRetryable(typ) {
+			t.Errorf("status=%d：ClassifyStatus 判不可重试但 StreamRetryable(%q)=true（两条路径口径相反）", status, typ)
 		}
 	}
 }

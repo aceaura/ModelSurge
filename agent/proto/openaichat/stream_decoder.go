@@ -77,7 +77,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	if chunk.Error != nil {
 		d.done = true
 		d.sawError = true
-		e := &ir.Error{Type: ir.ErrTypeUpstream, Message: "upstream stream error"}
+		e := &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream stream error"}
 		if chunk.Error.Type != "" {
 			e.Type = chunk.Error.Type
 		}

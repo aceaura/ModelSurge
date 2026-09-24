@@ -549,7 +549,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 // 字段缺席时保留规范默认值而不是覆盖成空：type 为空会让下游 RenderStreamError
 // 产出一个没有规范类型的错误帧，客户端无从判断该不该重试。
 func streamErrorOf(se streamEvent, fallbackMsg string) *ir.Error {
-	e := &ir.Error{Type: ir.ErrTypeUpstream, Message: fallbackMsg, Retryable: true}
+	e := &ir.Error{Type: ir.ErrTypeConnection, Message: fallbackMsg, Retryable: true}
 	var b *errorBody
 	switch {
 	case se.Error != nil:

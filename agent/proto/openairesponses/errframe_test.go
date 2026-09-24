@@ -117,8 +117,8 @@ func TestStreamDecodeErrorWithoutDetailsKeepsCanonicalType(t *testing.T) {
 	if len(errs) != 1 {
 		t.Fatalf("期望 1 个 EvError，实得 %d", len(errs))
 	}
-	if errs[0].Type != ir.ErrTypeUpstream {
-		t.Errorf("应回落 %q，实得 %q", ir.ErrTypeUpstream, errs[0].Type)
+	if errs[0].Type != ir.ErrTypeConnection {
+		t.Errorf("应回落 %q，实得 %q", ir.ErrTypeConnection, errs[0].Type)
 	}
 	if errs[0].Message == "" {
 		t.Errorf("错误消息不得为空")
@@ -130,8 +130,8 @@ func TestStreamDecodeFailedWithoutErrorTypeKeepsCanonicalType(t *testing.T) {
 	if len(errs) != 1 {
 		t.Fatalf("期望 1 个 EvError，实得 %d", len(errs))
 	}
-	if errs[0].Type != ir.ErrTypeUpstream {
-		t.Errorf("应回落 %q，实得 %q", ir.ErrTypeUpstream, errs[0].Type)
+	if errs[0].Type != ir.ErrTypeConnection {
+		t.Errorf("应回落 %q，实得 %q", ir.ErrTypeConnection, errs[0].Type)
 	}
 	if errs[0].Code != "c1" || errs[0].Message != "m1" {
 		t.Errorf("已有的 code/message 不得丢：code=%q msg=%q", errs[0].Code, errs[0].Message)
@@ -144,8 +144,8 @@ func TestStreamDecodeBareErrorWithoutTypeKeepsCanonicalType(t *testing.T) {
 	if len(errs) != 1 {
 		t.Fatalf("期望 1 个 EvError，实得 %d", len(errs))
 	}
-	if errs[0].Type != ir.ErrTypeUpstream {
-		t.Errorf("应回落 %q，实得 %q", ir.ErrTypeUpstream, errs[0].Type)
+	if errs[0].Type != ir.ErrTypeConnection {
+		t.Errorf("应回落 %q，实得 %q", ir.ErrTypeConnection, errs[0].Type)
 	}
 	if errs[0].Code != "c2" || errs[0].Message != "m2" {
 		t.Errorf("已有的 code/message 不得丢：code=%q msg=%q", errs[0].Code, errs[0].Message)
@@ -265,7 +265,7 @@ func TestStreamEncodeErrorStillClosesOpenBlocks(t *testing.T) {
 		ir.Event{Type: ir.EvMessageStart, MessageID: "r1", Model: "m"},
 		ir.Event{Type: ir.EvBlockStart, Index: 0, Block: &ir.Block{Type: ir.BlockText}},
 		ir.Event{Type: ir.EvTextDelta, Index: 0, Text: "前半"},
-		ir.Event{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeUpstream, Message: "boom", Retryable: true}},
+		ir.Event{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeConnection, Message: "boom", Retryable: true}},
 	)
 	if !strings.Contains(out, "response.output_item.done") {
 		t.Fatalf("错误后未关闭开着的块：%s", out)

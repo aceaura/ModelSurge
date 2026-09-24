@@ -20,7 +20,8 @@ import (
 // 未写任何字节 → 换上游重发是**安全**的；但安全不等于有用。非法请求 / 内容过滤
 // 换谁都会被同样拒绝，一律置可重试会让调度器把整个账号池烧一遍才停下（实测一个
 // invalid_request 打满全部目标）。可重试性因此按规范类型判（ir.StreamRetryable，
-// 与解码器共用同一张表），传输与解码失败仍是 upstream_error → 可重试。
+// 与解码器共用同一张表），传输与解码失败归 connection_error → 可重试；
+// upstream_error 只剩未映射状态码一个来源 → 不可重试（R86 遗留拆分）。
 
 // poolReplay 每次 Dispatch 发一个新目标，超过 limit 就报池子空了：这样「烧了几个
 // 账号」变成可数的，也不会像忽略 TriedIDs 的夹具那样让重试循环挂死。
@@ -82,9 +83,12 @@ func TestAggregateStreamErrorRetryFollowsCanonicalType(t *testing.T) {
 		{ir.ErrTypeInvalidReq, 1, 1},
 		{ir.ErrTypeContentFilter, 1, 1},
 		{ir.ErrTypeNotFound, 1, 1},
+		// 未映射状态码专用类型：多为客户端请求自身造成，换目标照样被拒，
+		// 不许再烧池（R86 遗留：此前它与传输失败同类型，被误判可重试）。
+		{ir.ErrTypeUpstream, 1, 1},
 		{ir.ErrTypeRateLimit, poolLimit + 1, poolLimit},
 		{ir.ErrTypeOverloaded, poolLimit + 1, poolLimit},
-		{ir.ErrTypeUpstream, poolLimit + 1, poolLimit},
+		{ir.ErrTypeConnection, poolLimit + 1, poolLimit},
 	} {
 		t.Run(tc.errType, func(t *testing.T) {
 			var hits atomic.Int32
@@ -106,7 +110,7 @@ func TestAggregateStreamErrorRetryFollowsCanonicalType(t *testing.T) {
 }
 
 // 传输与解码失败必须保持可重试：这是「强制可重试」原本要保的那一半，改掉写死的
-// true 之后由 upstream_error 类型继续保住。
+// true 之后由 connection_error 类型继续保住。
 func TestAggregateDecodeFailureStillSwitchesTargets(t *testing.T) {
 	var hits atomic.Int32
 	up := sseUpstream(t, []string{poolStart, `event: content_block_delta` + "\n" + `data: {截断的畸形 JSON`}, &hits)

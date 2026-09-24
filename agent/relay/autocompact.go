@@ -148,11 +148,11 @@ func (f *Forwarder) fetchSummary(ctx context.Context, cand candidate, req *ir.Re
 	if !strings.Contains(resp.Header.Get("Content-Type"), "event-stream") {
 		full, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
-			return "", replayv1.Usage{}, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: readErr.Error(), Retryable: true}
+			return "", replayv1.Usage{}, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: readErr.Error(), Retryable: true}
 		}
 		decoded, decErr := cand.codec.DecodeResponse(full)
 		if decErr != nil {
-			return "", replayv1.Usage{}, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "decode upstream response: " + decErr.Error(), Retryable: true}
+			return "", replayv1.Usage{}, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "decode upstream response: " + decErr.Error(), Retryable: true}
 		}
 		irResp = decoded
 	} else {
@@ -176,7 +176,7 @@ func summaryFromResponse(r *ir.Response) (string, replayv1.Usage, *ir.Error) {
 		}
 	}
 	if strings.TrimSpace(sb.String()) == "" {
-		return "", usage, &ir.Error{StatusCode: 502, Type: ir.ErrTypeUpstream, Message: "compress model returned empty summary", Retryable: true}
+		return "", usage, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "compress model returned empty summary", Retryable: true}
 	}
 	return sb.String(), usage, nil
 }

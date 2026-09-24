@@ -64,7 +64,10 @@ func TestHTTPStatusRoundTripsClassifyStatus(t *testing.T) {
 func TestStreamRetryableMatchesClassifyStatus(t *testing.T) {
 	for _, typ := range []string{
 		ErrTypeInvalidReq, ErrTypeAuth, ErrTypePermission, ErrTypeNotFound,
-		ErrTypeRateLimit, ErrTypeOverloaded, ErrTypeContentFilter, ErrTypeUpstream,
+		ErrTypeRateLimit, ErrTypeOverloaded, ErrTypeContentFilter,
+		// upstream_error / connection_error 不在此列：两者都落 HTTPStatus 的
+		// default 500 桶，经状态码往返只会得到 overloaded 的结论，覆盖不了
+		// 它们自身的口径；它们的可重试性由下方的表测试钉住。
 	} {
 		_, want := ClassifyStatus((&Error{Type: typ}).HTTPStatus())
 		if got := StreamRetryable(typ); got != want {
@@ -87,8 +90,11 @@ func TestStreamRetryableTable(t *testing.T) {
 		{ErrTypePermission, true},
 		{ErrTypeRateLimit, true},
 		{ErrTypeOverloaded, true},
+		// 传输/解码失败：换目标换连接可能成
+		{ErrTypeConnection, true},
+		// 未映射状态码专用：多为客户端请求自身造成，与 ClassifyStatus default 同口径
+		{ErrTypeUpstream, false},
 		// 未知类型默认可重试，与各族解码器此前行为一致
-		{ErrTypeUpstream, true},
 		{"", true},
 		{"service_unavailable_error", true},
 	}

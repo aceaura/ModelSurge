@@ -309,8 +309,11 @@ func decodeItem(req *ir.Request, it inputItem, raw json.RawMessage) {
 		if th.Text == "" {
 			// 官方 reasoning item 还有 content 数组形态（reasoning_text，
 			// openai_responses.go ResponseReasoningItem.Content）：summary 为空
-			// 时正文在这里，不读等于把整条思考静默丢掉。
+			// 时正文在这里，不读等于把整条思考静默丢掉。走 content 通道的要
+			// 标记 ContentChannel——同族回写时发 reasoning_text 而非 summary_text，
+			// 否则一次往返就把加密推理的正文从 content 通道挪进了 summary 通道。
 			th.Text = decodeReasoningContent(it.Content)
+			th.ContentChannel = th.Text != ""
 		}
 		if th.Text == "" && th.Signature == "" {
 			return
@@ -985,9 +988,18 @@ func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string]ir.W
 				}
 				flush()
 				it := inputItem{
-					Type:    "reasoning",
-					ID:      b.Thinking.ItemID,
-					Summary: marshal([]summaryPart{{Type: "summary_text", Text: b.Thinking.Text}}),
+					Type: "reasoning",
+					ID:   b.Thinking.ItemID,
+				}
+				if b.Thinking.ContentChannel {
+					// 正文来自 content 通道（reasoning_text）：原样写回 content
+					// 数组。summary 官方是 required，但这条本就为空，发空数组占位；
+					// 绝不能把 content 原文塞进 summary——那会改掉它的语义（summary
+					// 是摘要、content 是加密推理原文），同族往返不再逐字。
+					it.Summary = marshal([]summaryPart{})
+					it.Content = marshal([]contentPart{{Type: "reasoning_text", Text: b.Thinking.Text}})
+				} else {
+					it.Summary = marshal([]summaryPart{{Type: "summary_text", Text: b.Thinking.Text}})
 				}
 				if genuine {
 					it.EncryptedContent = b.Thinking.Signature

@@ -730,8 +730,8 @@ func UsageDetailDropNote(dims []string) string {
 // UsageDropDims 算出把 u 编码进 protoName 家族时会被丢掉的细分维度名。
 // 流式编码器的 Notes() 与非流式 ScanResponseLosses 共用同一判据，保证
 // 同一响应按 stream=true/false 请求报出的损耗一致。
-// 细分维度的原生槽位：服务端工具执行次数与推理区域只有 anthropic 有；
-// 音频与预测加速 token 只有 openai-chat 有。
+// 细分维度的原生槽位：服务端工具执行次数、推理区域与迭代用量细分只有
+// anthropic 有；音频与预测加速 token 只有 openai-chat 有。
 func UsageDropDims(u *ir.Usage, protoName string) []string {
 	if u == nil {
 		return nil
@@ -746,6 +746,9 @@ func UsageDropDims(u *ir.Usage, protoName string) []string {
 		}
 		if u.InferenceGeo != "" {
 			dims = append(dims, "inference geo")
+		}
+		if len(u.Iterations) > 0 {
+			dims = append(dims, "usage iterations breakdown")
 		}
 	}
 	if protoName != "openai-chat" {

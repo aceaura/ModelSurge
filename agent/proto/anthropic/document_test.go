@@ -1,10 +1,12 @@
 package anthropic
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/aceaura/ModelSurge/agent/ir"
+	"github.com/aceaura/ModelSurge/agent/proto"
 )
 
 // R96：document 块的同族往返保真。
@@ -230,8 +232,12 @@ func TestDocumentCacheControlSurvivesWithConfig(t *testing.T) {
 	}
 }
 
-// 流式方向共用 decodeBlock / encodeBlock，配置同样要带得回来。
-func TestStreamDocumentCarriesConfig(t *testing.T) {
+// A3：官方响应侧 ContentBlock 联合（content_block.py 与 beta_content_block.py）
+// 没有 image/document 成员——assistant 回合不产出附件。文档块在响应流里被宽松
+// 解成 BlockMedia 后，编码侧整块跳过：配置（context/citations）与正文都不上线，
+// 损耗经 Notes() 报出。（请求侧 *_param 联合有 document，走 codec.go 的
+// encodeBlocks——上面各 roundTripRequest 用例证明那条路径照常带回配置。）
+func TestStreamDocumentDroppedOnResponseSide(t *testing.T) {
 	frame := `{"type":"content_block_start","index":0,"content_block":{"type":"document",` +
 		`"title":"a.pdf","context":"CTX-HERE","citations":{"enabled":true},` +
 		`"source":{"type":"text","media_type":"text/plain","data":"DOC-BODY"}}}`
@@ -239,6 +245,7 @@ func TestStreamDocumentCarriesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Feed: %v", err)
 	}
+	// 解码器不因「响应侧不该出现 document」就报错，仍宽松解成 BlockMedia。
 	if len(evs) != 1 || evs[0].Block == nil || evs[0].Block.Type != ir.BlockMedia {
 		t.Fatalf("解出的事件不对：%+v", evs)
 	}
@@ -254,10 +261,16 @@ func TestStreamDocumentCarriesConfig(t *testing.T) {
 		}
 	}
 	s := sb.String()
-	for _, want := range []string{`"context":"CTX-HERE"`, `"citations":{"enabled":true}`, "DOC-BODY"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("流式往返丢了 %s：%s", want, s)
+	// 整块跳过：配置与正文都不上线。
+	for _, gone := range []string{`"context":"CTX-HERE"`, `"citations":{"enabled":true}`, "DOC-BODY"} {
+		if strings.Contains(s, gone) {
+			t.Errorf("响应侧仍下发了应丢弃的文档内容 %s：%s", gone, s)
 		}
+	}
+	// 损耗报出，且只报这一份文档（0 图片 / 1 附件）。
+	notes := enc.Notes()
+	if want := proto.MediaOutputDropNote(0, 1); !slices.Contains(notes, want) {
+		t.Errorf("未报文档块丢弃：notes=%q，want 含 %q", notes, want)
 	}
 }
 

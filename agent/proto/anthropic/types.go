@@ -348,6 +348,10 @@ type usage struct {
 	// Speed 实际推理速度档回显（beta usage.speed，∈ standard/fast）。请求侧
 	// 的 speed 声明经它闭环对账；MessageDeltaUsage 没有此键。
 	Speed string `json:"speed,omitempty"`
+	// Iterations beta usage.iterations：按迭代阶段（message/compaction/advisor）
+	// 细分的用量。判别式值域仍在演进，原文透传不建模；stable Usage 无此键，
+	// 仅 beta 往返带得回。
+	Iterations json.RawMessage `json:"iterations,omitempty"`
 }
 
 type serverToolUsage struct {
@@ -375,6 +379,9 @@ type messageDeltaUsage struct {
 	CacheCreationInputTokens int                  `json:"cache_creation_input_tokens,omitempty"`
 	ServerToolUse            *serverToolUsage     `json:"server_tool_use,omitempty"`
 	OutputTokensDetails      *outputTokensDetails `json:"output_tokens_details,omitempty"`
+	// Iterations beta MessageDeltaUsage 也带 iterations（与完整 usage 同形），
+	// 原文透传；stable 无此键，omitempty 保证非 beta 往返不会凭空写出。
+	Iterations json.RawMessage `json:"iterations,omitempty"`
 }
 
 type errorBody struct {

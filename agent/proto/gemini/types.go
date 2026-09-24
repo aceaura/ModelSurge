@@ -47,6 +47,15 @@ type part struct {
 	// 跨族出站跳过并报损耗。
 	ExecutableCode      json.RawMessage `json:"executableCode,omitempty"`
 	CodeExecutionResult json.RawMessage `json:"codeExecutionResult,omitempty"`
+	// ToolCall / ToolResponse 服务端工具调用与结果（genai Part.toolCall /
+	// Part.toolResponse）：客户端把 google_search / url_context / google_maps /
+	// file_search / media_processing 这类服务端工具的历史回传上来。toolType 值域
+	// 异构、args/response 是各工具专属的泛型 map，没有任何 IR 块型能无损接住——
+	// 映成 server_tool_use 会编造出目标族不认的结构。此前 DTO 根本没有这两个字段，
+	// 整段历史在 unmarshal 阶段静默蒸发，客户端的上下文被无声截断。收进不透明块
+	// （From=gemini），跨族出站跳过并报损耗。
+	ToolCall     json.RawMessage `json:"toolCall,omitempty"`
+	ToolResponse json.RawMessage `json:"toolResponse,omitempty"`
 	// VideoMetadata 视频截取元数据（startOffset/endOffset/fps，官方要求只在
 	// 视频 inlineData/fileData 上出现）。RawMessage 延迟到 mediaBlock 决定。
 	VideoMetadata json.RawMessage `json:"videoMetadata,omitempty"`

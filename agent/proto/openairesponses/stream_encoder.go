@@ -736,9 +736,16 @@ func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error
 		// background 模式的非终态：换一个真流式的目标可能成，判可重试。
 		return nil, nil, &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream returned non-terminal status " + r.Status, Retryable: true}
 	}
-	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, Created: r.CreatedAt}
+	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, Created: r.CreatedAt, CompletedAt: r.CompletedAt}
 	if len(r.Metadata) > 0 && string(r.Metadata) != "null" {
 		out.Metadata = r.Metadata
+	}
+	// 显式 null 等同没给（同 Metadata 判据）：不把 4 字节字面量当成有回执。
+	if len(r.PromptCacheDiagnostics) > 0 && string(r.PromptCacheDiagnostics) != "null" {
+		out.ResponsesPromptCacheDiagnostics = r.PromptCacheDiagnostics
+	}
+	if len(r.Moderation) > 0 && string(r.Moderation) != "null" {
+		out.ResponsesModeration = r.Moderation
 	}
 	// 复用请求解码的 item 逻辑：把 output items 当成一条对话的尾部
 	fake := &ir.Request{}
@@ -814,7 +821,12 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	out := responseObj{
 		ID: resp.ID, Object: "response", CreatedAt: created, Model: resp.Model,
 		Status: "completed", Output: rawItems, Usage: encodeUsage(&resp.Usage),
-		Metadata: resp.Metadata,
+		// completed_at 不回退本地钟：它是「上游何时生成完」的回执，代理无从
+		// 得知；上游没给（0）就 omitempty 不写，伪造一个本地完成时间是编造。
+		CompletedAt:            resp.CompletedAt,
+		Metadata:               resp.Metadata,
+		PromptCacheDiagnostics: resp.ResponsesPromptCacheDiagnostics,
+		Moderation:             resp.ResponsesModeration,
 	}
 	// 值集装不下的回显（anthropic 的 batch）丢弃，由 ResponseNotes 报出。
 	if tier, ok := proto.MapServiceTierEcho(resp.ServiceTier, Name); ok {

@@ -52,9 +52,9 @@ func UnmapStopReason(s ir.StopReason) string {
 		// Anthropic 没有「中断」档。取 max_tokens 而非 end_turn：两者都表示
 		// 输出不完整，客户端至少不会把半截结果当成最终答案（end_turn 会）。
 		return "max_tokens"
-	case ir.StopMaxMessages:
-		// responses 的消息数上限档，Anthropic 无对应值；同 aborted 取
-		// max_tokens（输出确实不完整，只是上限的维度不同）。
+	case ir.StopMaxMessages, ir.StopSteered:
+		// responses 的消息数上限档与用户转向截断档，Anthropic 无对应值；同
+		// aborted 取 max_tokens（输出确实不完整，只是上限/成因的维度不同）。
 		return "max_tokens"
 	default:
 		return "end_turn"
@@ -268,6 +268,7 @@ func convUsage(u usage) ir.Usage {
 	}
 	out.InferenceGeo = u.InferenceGeo
 	out.Speed = u.Speed
+	out.Iterations = u.Iterations
 	return out
 }
 
@@ -288,6 +289,7 @@ func convDeltaUsage(u messageDeltaUsage) ir.Usage {
 	if u.OutputTokensDetails != nil {
 		out.ReasoningTokens = u.OutputTokensDetails.ThinkingTokens
 	}
+	out.Iterations = u.Iterations
 	return out
 }
 

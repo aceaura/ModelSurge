@@ -387,8 +387,11 @@ type responseObj struct {
 	ID        string `json:"id"`
 	Object    string `json:"object,omitempty"`
 	CreatedAt int64  `json:"created_at,omitempty"`
-	Model     string `json:"model"`
-	Status    string `json:"status,omitempty"` // completed / incomplete / failed / in_progress
+	// CompletedAt 生成完成时间（官方 response.completed_at，nullable）。原文
+	// 透传，同族往返原值带回；上游没给则 omitempty 不写，绝不拿本地钟伪造。
+	CompletedAt int64  `json:"completed_at,omitempty"`
+	Model       string `json:"model"`
+	Status      string `json:"status,omitempty"` // completed / incomplete / failed / in_progress
 	// Output 保持原始线体数组：解码侧要按 item 原文把未知托管 item 归不透明块，
 	// 编码侧每条在落线前才 marshal（fullOutput / EncodeResponse）。
 	Output            []json.RawMessage  `json:"output,omitempty"`
@@ -400,6 +403,11 @@ type responseObj struct {
 	// Metadata 官方契约随响应原样回显（required）。客户端的请求-响应关联
 	// 数据，同族往返逐字带回。
 	Metadata json.RawMessage `json:"metadata,omitempty"`
+	// PromptCacheDiagnostics 提示缓存诊断联合（官方 response.
+	// prompt_cache_diagnostics）。原文透传，同族往返逐字带回。
+	PromptCacheDiagnostics json.RawMessage `json:"prompt_cache_diagnostics,omitempty"`
+	// Moderation 审核结果回执（官方 response.moderation，nullable）。原文透传。
+	Moderation json.RawMessage `json:"moderation,omitempty"`
 }
 
 // incompleteDetails status=incomplete 时的具体原因：

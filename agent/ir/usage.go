@@ -1,5 +1,7 @@
 package ir
 
+import "encoding/json"
+
 // Usage token 用量，采用 Anthropic 口径作为规范：
 // InputTokens 不含 cache 部分，cache 单独计列。
 // 各 codec 在边界处负责口径换算（OpenAI 的 input_tokens 含 cached_tokens，
@@ -38,7 +40,11 @@ type Usage struct {
 	// standard/fast）。fast 是溢价计费档，客户端拿它核对上游实际按哪档
 	// 执行；请求侧的声明在 Request.Speed。仅 anthropic 有槽位。
 	Speed     string
-	Estimated bool // 本地估算产生（上游未提供）时为 true
+	// Iterations Anthropic beta usage.iterations：按迭代阶段（message/
+	// compaction/advisor）细分的用量。判别式值域仍在演进，不建模成具体结构，
+	// 原文透传——同族往返逐字带回，跨族无槽位（由 UsageDropDims 报出）。
+	Iterations json.RawMessage `json:",omitempty"`
+	Estimated  bool            // 本地估算产生（上游未提供）时为 true
 }
 
 // TotalInput 总输入口径（含 cache），对应 OpenAI prompt_tokens 语义。
@@ -92,6 +98,9 @@ func (u *Usage) MergeNonZero(o Usage) {
 	}
 	if o.Speed != "" {
 		u.Speed = o.Speed
+	}
+	if len(o.Iterations) > 0 {
+		u.Iterations = o.Iterations
 	}
 	u.Estimated = u.Estimated || o.Estimated
 }

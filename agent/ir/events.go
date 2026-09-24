@@ -107,13 +107,19 @@ const (
 	// max_tokens 提示加大输出预算重试仍会被同一上限拦住。只有 responses
 	// 一族有此档，外族出站归 length（输出确实不完整）。
 	StopMaxMessages StopReason = "max_messages"
+	// StopSteered 用户中途转向（steer）导致的安全边界截断（Responses
+	// incomplete_details.reason 的 "steered"）。与 max_tokens 分开：那是输出
+	// 配额耗尽、要加大预算重试；steered 是用户在安全边界处打断了生成、通常已有
+	// 自动后继，加大预算毫无意义。塌成 max_tokens 会让客户端误判补救动作。
+	// 只有 responses 一族有此档，外族出站归「输出不完整」的最近档。
+	StopSteered StopReason = "steered"
 )
 
 // Incomplete 报告该停止原因是否意味着输出不完整——客户端不应把正文当成
 // 最终答案。供编码器与诊断统一判据，避免各处各写一份枚举清单。
 func (s StopReason) Incomplete() bool {
 	switch s {
-	case StopMaxTokens, StopPauseTurn, StopAborted, StopContextWindow:
+	case StopMaxTokens, StopPauseTurn, StopAborted, StopContextWindow, StopSteered:
 		return true
 	}
 	return false

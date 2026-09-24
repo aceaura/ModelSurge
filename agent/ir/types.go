@@ -409,6 +409,12 @@ type Thinking struct {
 	// ItemID Responses reasoning item 的 id（rs_…），同族往返原样带回，
 	// 理由同 ToolUse.ItemID。
 	ItemID string `json:",omitempty"`
+	// ContentChannel 标记这段推理正文来自 Responses reasoning item 的
+	// content 通道（reasoning_text）而非 summary 通道（reasoning_summary_text）。
+	// 两条通道官方并存、语义不同：content 是模型内部推理原文，summary 是给用户
+	// 看的摘要。默认 false=summary（历史行为）。同族编码按此标记选回哪条通道，
+	// 避免把 content 塌缩成 summary 后客户端拿到的推理形态变了味。
+	ContentChannel bool `json:",omitempty"`
 }
 
 // Message 一条对话消息。

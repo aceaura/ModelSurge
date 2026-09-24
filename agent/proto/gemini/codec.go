@@ -25,7 +25,7 @@ func UnmapFinishReason(s ir.StopReason) string {
 		return "MAX_TOKENS"
 	case ir.StopRefusal:
 		return "SAFETY"
-	case ir.StopPauseTurn, ir.StopAborted, ir.StopContextWindow:
+	case ir.StopPauseTurn, ir.StopAborted, ir.StopContextWindow, ir.StopSteered:
 		// Gemini 既没有续跑也没有中断语义。与 chat 侧同理取 MAX_TOKENS 而非
 		// STOP：宁可让客户端知道输出不完整，也别让它把半截结果当成说完了。
 		return "MAX_TOKENS"
@@ -225,6 +225,12 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			case len(p.CodeExecutionResult) > 0 && string(p.CodeExecutionResult) != "null":
 				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockOpaque,
 					Opaque: &ir.Opaque{WireType: "codeExecutionResult", Body: p.CodeExecutionResult, From: Name}})
+			case len(p.ToolCall) > 0 && string(p.ToolCall) != "null":
+				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockOpaque,
+					Opaque: &ir.Opaque{WireType: "toolCall", Body: p.ToolCall, From: Name}})
+			case len(p.ToolResponse) > 0 && string(p.ToolResponse) != "null":
+				msg.Content = append(msg.Content, ir.Block{Type: ir.BlockOpaque,
+					Opaque: &ir.Opaque{WireType: "toolResponse", Body: p.ToolResponse, From: Name}})
 			case p.Thought || p.ThoughtSignature != "":
 				sig, from := p.ThoughtSignature, ir.SigFrom(Name, p.ThoughtSignature)
 				if sig == dummyThoughtSignature {

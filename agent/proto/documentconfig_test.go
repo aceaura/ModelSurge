@@ -87,22 +87,30 @@ func TestResponseScanReportsDocumentConfig(t *testing.T) {
 	}
 }
 
-// 原生形态不得报：anthropic 出站把两项配置原样写回，一条都没丢。
-func TestResponseScanSilentOnDocumentConfigForAnthropic(t *testing.T) {
+// A3 后：anthropic 响应侧 ContentBlock 联合（stable+beta）没有 document 成员，
+// 整块文档连同 context/citations 配置与本体一并丢弃。报 MediaOutputDropNote，
+// 不再报 DocumentConfigDropNote（整块已丢，再单报配置是重复计数），正文保留。
+func TestResponseScanDropsDocumentBlockForAnthropic(t *testing.T) {
 	notes := proto.MustInbound("anthropic").ResponseNotes(docConfigResp(1, 1))
+	if want := proto.MediaOutputDropNote(0, 2); !slices.Contains(notes, want) {
+		t.Fatalf("anthropic 未报文档块丢弃：notes=%q，want 含 %q", notes, want)
+	}
 	for _, n := range notes {
 		if strings.Contains(n, "usage context") || strings.Contains(n, "citation switch") {
-			t.Fatalf("anthropic 入站误报文档配置损耗：%q", n)
+			t.Errorf("整块已丢，不应再重复报配置损耗：%q", n)
 		}
 	}
 	body, err := proto.MustInbound("anthropic").EncodeResponse(docConfigResp(1, 1))
 	if err != nil {
 		t.Fatalf("EncodeResponse: %v", err)
 	}
-	for _, want := range []string{`"context":"how to read this contract"`, `"citations":{"enabled":true}`} {
-		if !strings.Contains(string(body), want) {
-			t.Errorf("anthropic 出站丢了 %s：%s", want, body)
+	for _, gone := range []string{`"context":"how to read this contract"`, `"citations":{"enabled":true}`, "UEQ="} {
+		if strings.Contains(string(body), gone) {
+			t.Errorf("anthropic 响应侧仍带回了应丢弃的文档内容 %s：%s", gone, body)
 		}
+	}
+	if !strings.Contains(string(body), "Here is the file.") {
+		t.Errorf("报了损耗却顺手删了正文：%s", body)
 	}
 }
 

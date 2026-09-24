@@ -71,10 +71,11 @@ func UnmapFinishReason(s ir.StopReason) string {
 		return "tool_calls"
 	case ir.StopRefusal:
 		return "content_filter"
-	case ir.StopPauseTurn, ir.StopAborted, ir.StopContextWindow, ir.StopMaxMessages:
+	case ir.StopPauseTurn, ir.StopAborted, ir.StopContextWindow, ir.StopMaxMessages, ir.StopSteered:
 		// pause_turn 是「这一轮没做完，回传对话继续」，aborted 是「流断了」，
-		// context_window 是输入占满窗口挤断输出，OpenAI 侧都没有对应值。
-		// 取 length 而非 stop：三者都表示输出不完整，
+		// context_window 是输入占满窗口挤断输出，steered 是用户中途转向在安全
+		// 边界处截断，OpenAI 侧都没有对应值。
+		// 取 length 而非 stop：都表示输出不完整，
 		// 客户端至少不会把半截结果当成最终答案（stop 会）。真正的语义无法
 		// 保留，由诊断告知。
 		return "length"

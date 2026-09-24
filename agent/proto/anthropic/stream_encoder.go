@@ -26,6 +26,11 @@ type streamEncoder struct {
 	// 全量下发，不计数；外族块整块跳过，跳过就要报——静默丢掉正是这条注记机制
 	// 要消灭的东西。
 	droppedOpaque int
+	// droppedImages / droppedFiles 响应侧被跳过的图片/文档块数。官方响应
+	// ContentBlock 联合没有 image/document 成员（assistant 回合不产出附件），
+	// 逐字下发是客户端 SDK 解析不了的非法判别式；整块跳过就要报出来。
+	droppedImages int
+	droppedFiles  int
 	// droppedTier 没能下发的档位回显原值：越集、或到得太晚（message_delta
 	// 没有 service_tier 槽位，chat 系上游的晚到回显送不出去）。
 	droppedTier  string
@@ -80,6 +85,19 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			Message *messageStartBody `json:"message"`
 		}{Type: "message_start", Message: em}))}, nil
 	case ir.EvBlockStart:
+		if ev.Block != nil && (ev.Block.Type == ir.BlockImage || ev.Block.Type == ir.BlockMedia) {
+			// A3：官方响应侧 ContentBlock 联合（stable+beta）没有 image/document
+			// 成员——assistant 回合不产出附件。跨族上游（chat/responses）回的图片/
+			// 文档投不进 anthropic 响应，逐字下发是客户端 SDK 解析不了的非法判别式。
+			// 整块跳过+计数，损耗经 Notes() 报出。请求侧 *_param 联合有这两类，
+			// 走的是 codec.go 的 encodeBlocks，不经过这里。
+			if ev.Block.Type == ir.BlockImage {
+				e.droppedImages++
+			} else {
+				e.droppedFiles++
+			}
+			return nil, nil
+		}
 		if ev.Block != nil && !encodableBlock(*ev.Block) {
 			// 外族来源的不透明块：不开块，只计数。逐字下发就是一个客户端不认识
 			// 的块型，而它没有增量形态，不开块 ⇒ 同下标的 EvBlockStop 找不到已
@@ -257,6 +275,11 @@ func (e *streamEncoder) Notes() []string {
 			"dropped %d citation(s) that lack the required encrypted_index or a resolvable cited_text: the receiving side cannot see those sources", e.droppedCitesUnresolved))
 		e.droppedCitesUnresolved = 0
 	}
+	if e.droppedImages > 0 || e.droppedFiles > 0 {
+		notes = append(notes, proto.MediaOutputDropNote(e.droppedImages, e.droppedFiles))
+		e.droppedImages = 0
+		e.droppedFiles = 0
+	}
 	return notes
 }
 
@@ -362,6 +385,8 @@ type messageStartUsage struct {
 	// ServiceTier 档位回显（官方 usage.service_tier）：长在 usage 里，
 	// 顶层写这个键是伪造。
 	ServiceTier string `json:"service_tier,omitempty"`
+	// Iterations beta usage.iterations 原文透传（判别式值域在演进不建模）。
+	Iterations json.RawMessage `json:"iterations,omitempty"`
 }
 
 // encodeMessageStart 构造 message_start 的完整 message 信封。Content 必须是
@@ -383,6 +408,7 @@ func encodeMessageStart(ev ir.Event) *messageStartBody {
 			CacheCreation:            u.CacheCreation,
 			ServerToolUse:            u.ServerToolUse,
 			InferenceGeo:             u.InferenceGeo,
+			Iterations:               u.Iterations,
 		}
 	}
 	return mb
@@ -415,6 +441,7 @@ func encodeUsagePtr(u *ir.Usage) *usage {
 	}
 	out.InferenceGeo = u.InferenceGeo
 	out.Speed = u.Speed
+	out.Iterations = u.Iterations
 	return out
 }
 
@@ -442,6 +469,7 @@ func encodeDeltaUsagePtr(u *ir.Usage) *messageDeltaUsage {
 	if u.ReasoningTokens > 0 {
 		out.OutputTokensDetails = &outputTokensDetails{ThinkingTokens: u.ReasoningTokens}
 	}
+	out.Iterations = u.Iterations
 	return out
 }
 
@@ -489,12 +517,30 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 }
 
 func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
+	// A3：官方响应侧 ContentBlock 联合（stable+beta）没有 image/document 成员，
+	// assistant 回合不产出附件。跨族上游回的图片/文档投不进 anthropic 响应，
+	// 编出来是客户端 SDK 解析不了的非法判别式，整块跳过；损耗由 ResponseNotes
+	// （mediaSlotless=true）报出。请求侧 *_param 联合有这两类，不受影响。
+	content := resp.Content
+	for _, b := range content {
+		if b.Type == ir.BlockImage || b.Type == ir.BlockMedia {
+			filtered := make([]ir.Block, 0, len(content))
+			for _, bb := range content {
+				if bb.Type == ir.BlockImage || bb.Type == ir.BlockMedia {
+					continue
+				}
+				filtered = append(filtered, bb)
+			}
+			content = filtered
+			break
+		}
+	}
 	out := response{
 		ID:           resp.ID,
 		Type:         "message",
 		Role:         "assistant",
 		Model:        resp.Model,
-		Content:      marshal(encodeBlocks(resp.Content)),
+		Content:      marshal(encodeBlocks(content)),
 		StopReason:   UnmapStopReason(resp.StopReason),
 		StopSequence: resp.StopSequence,
 		StopDetails:  encodeStopDetails(resp.StopDetails),
@@ -511,10 +557,12 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// ResponseNotes 非流式编码损耗扫描：外族签名丢弃 + 对象槽位的畸形参数挪键。
-// 本族是附件的原生形态（image / document 块），模型产出的附件不丢。
+// ResponseNotes 非流式编码损耗扫描：外族签名丢弃 + 对象槽位的畸形参数挪键 +
+// 响应侧附件块丢弃。官方响应 ContentBlock 联合（stable+beta）没有 image/
+// document 成员，assistant 回合不产出附件——跨族上游回的图片/文档在
+// EncodeResponse 里整块跳过，mediaSlotless=true 让 ScanResponseLosses 计数报出。
 func (codec) ResponseNotes(resp *ir.Response) []string {
-	notes := proto.ScanResponseLosses(resp, Name, false, true, false)
+	notes := proto.ScanResponseLosses(resp, Name, false, true, true)
 	// cited_text 反推失败或缺 Required 字段（encrypted_index/url）的投影引用在
 	// encodeCitations 里整条丢弃（缺键发出整轮必 400）。非流式不走流式编码器的
 	// 计数器，这里按同一条判据扫出来。

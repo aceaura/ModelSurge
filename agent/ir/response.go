@@ -39,6 +39,11 @@ type Response struct {
 	// 秒）。零值=上游没给，出站才回退本地钟——否则同族往返会把上游的真实
 	// 创建时间换成代理本地钟，客户端按 created 做幂等/排序会拿到假数据。
 	Created int64
+	// CompletedAt 上游回显的生成完成时间（responses completed_at，Unix 秒，
+	// 官方 nullable）。与 Created 配对：客户端拿 completed_at-created_at 量上游
+	// 实际生成时延。仅 responses 一族有槽位，同族往返原值带回；零值=上游没给，
+	// 出站不伪造（omitempty 不写），跨族无槽位不投影。
+	CompletedAt int64
 	// AnthropicContextMgmt 上游实际执行的服务端上下文清理回执（anthropic
 	// beta 响应的 context_management：applied_edits 等）。与请求侧不同键同
 	// 族回写：客户端据此知道哪些历史已被服务端清掉。跨族无槽位。
@@ -51,6 +56,17 @@ type Response struct {
 	// nullable、responses 响应 required）。客户端拿它做请求-响应关联，
 	// 同族必须逐字带回；anthropic 响应无此槽位，跨族不投影。
 	Metadata json.RawMessage `json:",omitempty"`
+	// ResponsesPromptCacheDiagnostics responses 响应侧的提示缓存诊断回执
+	// （官方 response.prompt_cache_diagnostics：cache_miss/cache_hit/
+	// comparison_response_not_found/unavailable 四形态联合）。与 anthropic 的
+	// diagnostics 同语义——客户端据此调优缓存前缀。判别式联合值域在演进，
+	// 原文透传不建模；仅 responses 一族有槽位，跨族不投影。
+	ResponsesPromptCacheDiagnostics json.RawMessage `json:",omitempty"`
+	// ResponsesModeration responses 响应侧的审核结果回执（官方 response.
+	// moderation，nullable）。开了 moderated completions 的客户端靠它门控
+	// 输入/输出审核结果。chat 族对同名字段是「丢弃+注记」，responses 这里
+	// 同族原样带回复原保真；跨族无槽位不投影。
+	ResponsesModeration json.RawMessage `json:",omitempty"`
 }
 
 // Aggregator 把 IR 事件流聚合成完整 Response。

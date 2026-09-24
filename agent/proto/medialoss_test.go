@@ -27,8 +27,10 @@ const (
 )
 
 // mediaSlotlessInbound 助手回合没有任何附件形态的入站协议。gemini 不在此列：
-// 它把本体编成 inlineData / fileData 投得出去。按纪律硬编码，不动态取协议清单。
-var mediaSlotlessInbound = []string{"openai-chat", "openai-responses"}
+// 它把本体编成 inlineData / fileData 投得出去。anthropic 在此列：SDK 响应侧
+// ContentBlock 联合（stable 与 beta 均然）没有 image/document 成员，助手回合
+// 带不回模型产出的附件本体。按纪律硬编码，不动态取协议清单。
+var mediaSlotlessInbound = []string{"openai-chat", "openai-responses", "anthropic"}
 
 func r96cImage() ir.Block {
 	return ir.Block{Type: ir.BlockImage, Image: &ir.Image{MediaType: "image/png", Data: r96cImgData}}
@@ -283,10 +285,11 @@ func TestModelAttachmentsReportedInForeignStreamNotes(t *testing.T) {
 	}
 }
 
-// 原生形态与装得下本体的协议都不得报：anthropic 有 image / document 块，
-// gemini 有 inlineData。误报会让排障的人去查一个并不存在的丢失。
+// 装得下本体的协议不得报：gemini 用 inlineData 投得出去。误报会让排障的人
+// 去查一个并不存在的丢失。（anthropic 已归 mediaSlotlessInbound：其响应侧
+// ContentBlock 联合没有 image/document 成员，带不回本体——见 TestModelAttachmentsResponseNotes。）
 func TestModelAttachmentsSilentWhereDeliverable(t *testing.T) {
-	for _, name := range []string{"anthropic", "gemini"} {
+	for _, name := range []string{"gemini"} {
 		t.Run(name, func(t *testing.T) {
 			_, notes := streamOutNotes(t, name, r96cStream())
 			if len(notes) != 0 {
@@ -296,13 +299,6 @@ func TestModelAttachmentsSilentWhereDeliverable(t *testing.T) {
 				t.Errorf("%s 非流式误报附件损耗：%v", name, got)
 			}
 		})
-	}
-	// anthropic 还要真把文件名带出去（原生形态的唯一槽位）。
-	out := streamOut(t, "anthropic", r96cStream())
-	for _, want := range []string{r96cImgData, r96cDocData, r96cDocName} {
-		if !strings.Contains(out, want) {
-			t.Errorf("anthropic 流式丢了 %q：\n%s", want, out)
-		}
 	}
 }
 

@@ -752,6 +752,8 @@ func mapIncompleteReason(r *responseObj) ir.StopReason {
 			return ir.StopRefusal
 		case "max_messages":
 			return ir.StopMaxMessages
+		case "steered":
+			return ir.StopSteered
 		}
 	}
 	return ir.StopMaxTokens
@@ -767,6 +769,8 @@ func unmapIncompleteReason(s ir.StopReason) string {
 		return "max_output_tokens"
 	case ir.StopMaxMessages:
 		return "max_messages"
+	case ir.StopSteered:
+		return "steered"
 	case ir.StopRefusal:
 		return "content_filter"
 	default:

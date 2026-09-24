@@ -152,6 +152,8 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	// 原值进 IR，跨族映射是出站的事（proto.MapServiceTier）。
 	out.ServiceTier = req.ServiceTier
 	out.PromptCacheKey = req.PromptCacheKey
+	out.PromptCacheRetention = req.PromptCacheRetention
+	out.Store = req.Store
 	out.Verbosity = req.Verbosity
 	out.SafetyIdentifier = req.SafetyIdentifier
 	// 显式 null 等同没给：不归一的话 Clone 往返后变成非空 "null"，
@@ -538,6 +540,8 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.ServiceTier = tier
 	}
 	out.PromptCacheKey = r.PromptCacheKey
+	out.PromptCacheRetention = r.PromptCacheRetention
+	out.Store = r.Store
 	out.Verbosity = r.Verbosity
 	out.SafetyIdentifier = r.SafetyIdentifier
 	out.Moderation = r.Moderation

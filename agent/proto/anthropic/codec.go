@@ -417,14 +417,14 @@ const defaultMaxTokens = 8192
 
 // nativeHosted 规范托管工具种类 -> Anthropic 带版本的 type 与固定 name。
 // 未识别种类原样作为 type 透传（同协议往返场景）。
-func nativeHosted(canonical string) (typ, name string) {
+func nativeHosted(canonical string) (typ, name string, known bool) {
 	switch canonical {
 	case ir.HostedWebSearch:
-		return "web_search_20250305", "web_search"
+		return "web_search_20250305", "web_search", true
 	case ir.HostedCodeExecution:
-		return "code_execution_20250522", "code_execution"
+		return "code_execution_20250522", "code_execution", true
 	default:
-		return canonical, ""
+		return canonical, "", false
 	}
 }
 
@@ -498,9 +498,16 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			// 原生类型名只在同族来路时可信；外族原名（responses 的
 			// web_search_preview、gemini 的 google_search）写进 anthropic 的
 			// type 是必 400 的形状，回落默认带版本名。
-			typ, name := nativeHosted(t.Hosted)
-			if t.HostedType != "" && ir.HostedTypeFamily(t.HostedType) == Name {
+			typ, name, known := nativeHosted(t.Hosted)
+			sameNative := t.HostedType != "" && ir.HostedTypeFamily(t.HostedType) == Name
+			if sameNative {
 				typ = t.HostedType
+			}
+			if !sameNative && !known {
+				// 未识别种类且没有同族原生名可用：canonical（=外族原名）原样写进
+				// type 是上游必 400 的形状，整块丢弃比拒掉整轮诚实
+				// （Diagnose 已按 no cross-protocol mapping 报出）。
+				continue
 			}
 			// 固定名只在种类未识别时才让位给 IR 里的名字：web_search 一族的
 			// name 上游写死校验（必须 "web_search"），外族来路的原生名
@@ -508,7 +515,15 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 			if name == "" {
 				name = t.Name
 			}
-			ht := tool{Type: typ, Name: name}
+			ht := tool{
+				Type:                typ,
+				Name:                name,
+				CacheCtl:            encodeCacheCtl(t.CacheCtl, t.CacheTTL),
+				Strict:              t.Strict,
+				DeferLoading:        t.DeferLoading,
+				EagerInputStreaming: t.EagerInputStreaming,
+				AllowedCallers:      t.AllowedCallers,
+			}
 			if p := t.HostedParams; p != nil {
 				ht.MaxUses = p.MaxUses
 				ht.AllowedDomains = p.AllowedDomains
@@ -677,7 +692,7 @@ func encodeBlock(b ir.Block) block {
 	case ir.BlockText:
 		out.Type = "text"
 		out.Text = b.Text
-		if cs := encodeCitations(b.Text, b.Citations); len(cs) > 0 {
+		if cs, _ := encodeCitations(b.Text, b.Citations); len(cs) > 0 {
 			out.Citations = marshal(cs)
 		}
 	case ir.BlockImage:

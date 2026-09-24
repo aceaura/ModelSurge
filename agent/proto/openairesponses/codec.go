@@ -174,6 +174,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	out.Include = req.Include
 	out.ServiceTier = req.ServiceTier
 	out.PromptCacheKey = req.PromptCacheKey
+	out.PromptCacheRetention = req.PromptCacheRetention
 	out.SafetyIdentifier = req.SafetyIdentifier
 	// context_management 原值进 IR（type/threshold 都是结构化字段，无需
 	// RawMessage 透传；threshold 三态指针保留「没给」）。
@@ -695,9 +696,16 @@ func (c codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		if t.Hosted != "" {
 			// 原生类型名只在同族来路时可信；anthropic 的带版本名或 gemini 的
 			// google_search 写进 responses 的 type 是必 400 的形状，回落默认名。
-			typ := nativeHosted(t.Hosted)
-			if t.HostedType != "" && ir.HostedTypeFamily(t.HostedType) == Name {
+			typ, known := nativeHosted(t.Hosted)
+			sameNative := t.HostedType != "" && ir.HostedTypeFamily(t.HostedType) == Name
+			if sameNative {
 				typ = t.HostedType
+			}
+			if !sameNative && !known {
+				// 未识别种类且没有同族原生名可用：canonical（=外族原名）原样写进
+				// type 是上游必 400 的形状，整块丢弃比拒掉整轮诚实
+				// （Diagnose 已按 no cross-protocol mapping 报出）。
+				continue
 			}
 			ht := tool{Type: typ}
 			if p := t.HostedParams; p != nil {
@@ -805,6 +813,7 @@ func (c codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 		out.ServiceTier = tier
 	}
 	out.PromptCacheKey = r.PromptCacheKey
+	out.PromptCacheRetention = r.PromptCacheRetention
 	out.SafetyIdentifier = r.SafetyIdentifier
 	out.Moderation = r.Moderation
 	out.PromptCacheOptions = r.PromptCacheOptions
@@ -962,7 +971,12 @@ func encodeMessageItems(m ir.Message, forRequest bool, wsResults map[string][]ir
 						typ = "custom_tool_call_output"
 					}
 					item := inputItem{Type: typ, CallID: b.ToolResult.ToolUseID}
-					if text != "" {
+					// output 是 Required 键（OpenAI SDK response_input_item_param）：
+					// 纯图片/空文本的工具结果也必须写 ""，否则编出
+					// {"type":"function_call_output","call_id":...} 的非法形状。
+					if text == "" {
+						item.Output = json.RawMessage(`""`)
+					} else {
 						item.Output = json.RawMessage(marshal(text))
 					}
 					out = append(out, item)
@@ -1065,15 +1079,16 @@ func encodeToolChoice(tc *ir.ToolChoice) any {
 }
 
 // nativeHosted 规范托管工具种类 -> Responses 原生 type。
-// 未识别种类原样透传（同协议往返场景，如 file_search）。
-func nativeHosted(canonical string) string {
+// known=false 表示未识别种类（同协议往返的外来名，如 file_search 由
+// HostedType 同族回写覆盖；没有同族原名可用时不得拿 canonical 凑数）。
+func nativeHosted(canonical string) (typ string, known bool) {
 	switch canonical {
 	case ir.HostedWebSearch:
-		return "web_search"
+		return "web_search", true
 	case ir.HostedCodeExecution:
-		return "code_interpreter"
+		return "code_interpreter", true
 	default:
-		return canonical
+		return canonical, false
 	}
 }
 
@@ -1104,6 +1119,6 @@ func (codec) RenderError(e *ir.Error) (int, []byte) {
 // 不是 response.error 下——官方 SDK 的 ErrorEvent 只读顶层，挂在 response 下等于
 // 错误对客户端完全不可见，还会顺带多出一个 id/model 全空的畸形 response 对象。
 func (codec) RenderStreamError(e *ir.Error) []byte {
-	return []byte("data: " + string(marshal(streamEvent{Type: "error",
+	return []byte("event: error\ndata: " + string(marshal(streamEvent{Type: "error",
 		Error: &errorBody{Code: e.Code, Type: e.Type, Message: e.Message}})) + "\n\n")
 }

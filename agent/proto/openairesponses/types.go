@@ -42,6 +42,8 @@ type request struct {
 	ServiceTier string `json:"service_tier,omitempty"`
 	// PromptCacheKey 提示缓存路由键。
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// PromptCacheRetention 提示缓存留存档位（OpenAI 两系同形同值集）。
+	PromptCacheRetention string `json:"prompt_cache_retention,omitempty"`
 	// SafetyIdentifier 滥用检测标识，user 字段的官方替代。与 user 同一维度。
 	SafetyIdentifier string `json:"safety_identifier,omitempty"`
 	// Moderation 请求级审核策略 {model, policy{input/output}}，原文透传。

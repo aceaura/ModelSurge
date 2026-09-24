@@ -264,6 +264,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 			ev.MessageID = se.Response.ID
 			ev.Model = se.Response.Model
 			ev.ServiceTier = se.Response.ServiceTier
+			ev.Created = se.Response.CreatedAt
 			d.tier = se.Response.ServiceTier
 		}
 		return []ir.Event{ev}, nil
@@ -549,7 +550,6 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 // 字段缺席时保留规范默认值而不是覆盖成空：type 为空会让下游 RenderStreamError
 // 产出一个没有规范类型的错误帧，客户端无从判断该不该重试。
 func streamErrorOf(se streamEvent, fallbackMsg string) *ir.Error {
-	e := &ir.Error{Type: ir.ErrTypeConnection, Message: fallbackMsg, Retryable: true}
 	var b *errorBody
 	switch {
 	case se.Error != nil:
@@ -557,6 +557,13 @@ func streamErrorOf(se streamEvent, fallbackMsg string) *ir.Error {
 	case se.Response != nil:
 		b = se.Response.Error
 	}
+	return errorFromBody(b, fallbackMsg)
+}
+
+// errorFromBody 错误体 -> IR 错误。非流式响应的 response.error 与流式错误事件
+// 共用：两种入路的字段语义与兜底判据完全一致，各写一份只会口径漂移。
+func errorFromBody(b *errorBody, fallbackMsg string) *ir.Error {
+	e := &ir.Error{Type: ir.ErrTypeConnection, Message: fallbackMsg, Retryable: true}
 	if b == nil {
 		return e
 	}

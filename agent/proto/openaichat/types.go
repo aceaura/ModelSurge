@@ -43,6 +43,10 @@ type request struct {
 	ServiceTier string `json:"service_tier,omitempty"`
 	// PromptCacheKey 提示缓存路由键。
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// PromptCacheRetention 提示缓存留存档位（OpenAI 两系同形同值集）。
+	PromptCacheRetention string `json:"prompt_cache_retention,omitempty"`
+	// Store 是否要求上游留存响应（三态：nil=客户端没提）。
+	Store *bool `json:"store,omitempty"`
 	// Verbosity 输出啰嗦程度档位（low/medium/high），顶层字段。
 	Verbosity string `json:"verbosity,omitempty"`
 	// SafetyIdentifier 滥用检测标识，user 字段的官方替代。与 user 同一维度，
@@ -234,9 +238,20 @@ func (t *tool) UnmarshalJSON(data []byte) error {
 	*t = tool{Type: "function", Function: toolFunc{
 		Name:        flat.Name,
 		Description: flat.Description,
-		Parameters:  flat.InputSchema,
+		// input_schema 与 parameters 都是声明过的接收键，谁有值用谁：
+		// 只取前者会让发 {name, parameters} 扁平形态的客户端 schema 静默
+		// 变 nil，出站工具没有 parameters。
+		Parameters: coalesceRaw(flat.InputSchema, flat.Parameters),
 	}}
 	return nil
+}
+
+// coalesceRaw 取第一个非空的原始 JSON；两个键都是声明过的接收形态时用它兜底。
+func coalesceRaw(a, b json.RawMessage) json.RawMessage {
+	if len(a) > 0 {
+		return a
+	}
+	return b
 }
 
 // truncateJSON 截断原始 JSON 用于错误信息（与 codec 错误口径一致，防超长）。

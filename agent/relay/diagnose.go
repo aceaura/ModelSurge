@@ -597,6 +597,10 @@ func samplingNotes(req *ir.Request, protoName string, caps proto.Capabilities) [
 		notes = append(notes,
 			"dropped prompt cache key: the target protocol has no cache routing field, repeated prefixes may recompute instead of hitting the cache")
 	}
+	if req.PromptCacheRetention != "" && !caps.PromptCacheKey {
+		notes = append(notes,
+			"dropped prompt cache retention: the target protocol has no cache retention field, cached prefixes expire by the upstream default policy")
+	}
 	if req.Verbosity != "" && !caps.OpenAIExtras {
 		notes = append(notes,
 			"dropped verbosity setting: the target protocol has no output-length steering field, the model decides how verbose to be")

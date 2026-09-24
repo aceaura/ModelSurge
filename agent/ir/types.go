@@ -746,6 +746,9 @@ type Request struct {
 	// PromptCacheKey 提示缓存路由键（OpenAI 两系的 prompt_cache_key）。
 	// 值可能是客户端自选串，诊断与日志一律不回显值本身。
 	PromptCacheKey string
+	// PromptCacheRetention 提示缓存留存档位（OpenAI 两系的
+	// prompt_cache_retention，同形同值集）。与路由键同维度但独立成键。
+	PromptCacheRetention string
 
 	// 以下两维只有 Anthropic 一族有，外族没有任何对应物。收进 IR 只为
 	// 同协议回写 + 跨协议诊断，不作映射尝试（不同 SafetySettings 组并列）。

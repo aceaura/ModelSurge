@@ -21,7 +21,14 @@ func assertDenseOutputIndex(t *testing.T, out string) []int {
 	var seen []int
 	completed := -1
 	for _, frame := range strings.Split(out, "\n\n") {
-		frame = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(frame), "data:"))
+		// 帧可能带 event: 行（responses 族每帧都带）：只取 data: 行解析。
+		data := ""
+		for _, line := range strings.Split(frame, "\n") {
+			if d, ok := strings.CutPrefix(strings.TrimSpace(line), "data:"); ok {
+				data = strings.TrimSpace(d)
+			}
+		}
+		frame = data
 		if frame == "" || frame == "[DONE]" {
 			continue
 		}

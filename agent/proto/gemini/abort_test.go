@@ -107,3 +107,18 @@ func TestEncodeResponseAborted(t *testing.T) {
 		t.Fatalf("非流式响应没带中断档：%s", body)
 	}
 }
+
+// R104 终止守卫：错误帧已是终止帧（EvError 置 finished），之后再发
+// message_delta 的 finishChunk 就是把失败伪装成正常结束。
+func TestStreamEncodeSuppressesFinishChunkAfterError(t *testing.T) {
+	enc := New().NewStreamEncoder()
+	if _, err := enc.Encode(ir.Event{Type: ir.EvMessageStart, MessageID: "r1", Model: "g"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enc.Encode(ir.Event{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeOverloaded, Message: "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if frames, _ := enc.Encode(ir.Event{Type: ir.EvMessageDelta, StopReason: ir.StopEndTurn}); len(frames) != 0 {
+		t.Errorf("错误之后又发出 finish chunk：%q", frames)
+	}
+}

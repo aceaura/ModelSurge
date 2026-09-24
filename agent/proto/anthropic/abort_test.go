@@ -139,3 +139,27 @@ func TestEncodeResponseAborted(t *testing.T) {
 		t.Fatalf("非流式响应没带中断档：%s", body)
 	}
 }
+
+// R104 终止守卫：错误帧已是终止帧（sawError），之后 relay 自造错误序列里
+// dec.Finish() 交来的 aborted message_delta / message_stop 一律不得再发——
+// 发出去就是把限流/断流伪装成正常收尾。
+func TestStreamEncodeSuppressesStopFramesAfterError(t *testing.T) {
+	enc := New().NewStreamEncoder()
+	if _, err := enc.Encode(ir.Event{Type: ir.EvMessageStart, MessageID: "m", Model: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enc.Encode(ir.Event{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeRateLimit, Message: "rl"}}); err != nil {
+		t.Fatal(err)
+	}
+	if frames, _ := enc.Encode(ir.Event{Type: ir.EvMessageDelta, StopReason: ir.StopAborted}); len(frames) != 0 {
+		t.Errorf("错误之后又发出 message_delta：%q", frames)
+	}
+	if frames, _ := enc.Encode(ir.Event{Type: ir.EvMessageStop}); len(frames) != 0 {
+		t.Errorf("错误之后又发出 message_stop：%q", frames)
+	}
+	for _, fr := range enc.Finish() {
+		if strings.Contains(string(fr), "message_stop") || strings.Contains(string(fr), "message_delta") {
+			t.Errorf("错误之后 Finish 补了终止帧：%q", fr)
+		}
+	}
+}

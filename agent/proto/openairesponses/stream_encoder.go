@@ -126,6 +126,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Model != "" {
 			e.model = ev.Model
 		}
+		// 上游给过创建时间就原值逐帧回写（覆盖构造时的本地钟）；没给才用本地钟。
+		if ev.Created != 0 {
+			e.created = ev.Created
+		}
 		e.mapTier(ev.ServiceTier)
 		if ev.Container != nil {
 			e.droppedContainer = true
@@ -212,6 +216,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvBlockStop:
 		return e.blockStop(ev.Index), nil
 	case ir.EvMessageDelta:
+		// 错误帧已是终止帧（EvError 置 completed）：再发 response.completed
+		// 就是把失败伪装成正常结束。
+		if e.completed {
+			return nil, nil
+		}
 		e.stopReason = ev.StopReason
 		e.mergeUsage(ev.Usage)
 		// 晚到的档位回显还补得上：终止帧的 response 对象也带 service_tier。
@@ -628,7 +637,9 @@ func (e *streamEncoder) mapTier(raw string) {
 }
 
 func (e *streamEncoder) frame(ev streamEvent) []byte {
-	return []byte("data: " + string(marshal(ev)) + "\n\n")
+	// 官方 Responses API 每帧都带 event: 行（anthropic 侧 sseFrame 早就有）：
+	// 按 SSE 事件名分发的客户端对只有 data: 的流一个事件都认不出。
+	return []byte("event: " + ev.Type + "\ndata: " + string(marshal(ev)) + "\n\n")
 }
 
 func blockTypeOf(b *ir.Block) ir.BlockType {
@@ -667,6 +678,16 @@ func (codec) DecodeResponse(body []byte) (*ir.Response, error) {
 	var r responseObj
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("openai-responses: decode response: %w", err)
+	}
+	// 终态失败的响应不得伪造成 completed：此前只判 incomplete，failed/cancelled
+	// 走到这里会产出 200+空 output 的"成功"，error.code/message 全丢——而流式
+	// 路径同事件是报错的，两条路径口径相反（OpenAI SDK status 六值为权威形状）。
+	switch r.Status {
+	case "failed", "cancelled":
+		return nil, errorFromBody(r.Error, "upstream response "+r.Status)
+	case "queued", "in_progress":
+		// background 模式的非终态：换一个真流式的目标可能成，判可重试。
+		return nil, &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream returned non-terminal status " + r.Status, Retryable: true}
 	}
 	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, Created: r.CreatedAt}
 	// 复用请求解码的 item 逻辑：把 output items 当成一条对话的尾部

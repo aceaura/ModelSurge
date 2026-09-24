@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -521,6 +522,13 @@ func (f *Forwarder) attempt(ctx context.Context, w http.ResponseWriter, clientCo
 			irResp, decErr = cand.codec.DecodeResponse(full)
 		}
 		if decErr != nil {
+			// 解码器返回的 *ir.Error 已带规范类型/错误码/可重试判定（如
+			// status=failed 的上游响应），原样上交；只有裸 error 才按
+			// 传输失败包成 connection_error。
+			var ie *ir.Error
+			if errors.As(decErr, &ie) {
+				return false, ie
+			}
 			return false, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "decode upstream response: " + decErr.Error(), Retryable: true}
 		}
 		f.estimateUsageOnResponse(req, irResp, cand.name)
@@ -640,8 +648,14 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	var startUsage ir.Usage // message_start 携带的 input/cache 用量，记账时与 delta 合并
 	sum := newRespSummarizer(f.paramLog, requestIDFrom(ctx), cand.name, "sse", requestLogFrom(ctx).started)
 	csum := newClientSummarizer(f.paramLog, requestIDFrom(ctx), clientCodec.Name(), true, requestLogFrom(ctx).started)
+	// 编码失败的错误帧也是终止帧：置位后后续事件一律不再下发，enc.Finish()
+	// 的收尾帧同样跳过——否则错误帧之后还会漏出正文/finish 帧。
+	terminalErr := false
 	emit := func(events []ir.Event) bool {
 		for _, ev := range events {
+			if terminalErr {
+				continue
+			}
 			if ev.Type == ir.EvMessageStart && ev.Usage != nil {
 				startUsage = *ev.Usage
 			}
@@ -661,6 +675,7 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 			if err != nil {
 				csum.encErr()
 				frames = [][]byte{clientCodec.RenderStreamError(&ir.Error{Type: ir.ErrTypeUpstream, Message: err.Error()})}
+				terminalErr = true
 			}
 			csum.framesAdd(len(frames))
 			for _, fr := range frames {
@@ -713,11 +728,13 @@ func (f *Forwarder) streamUpstreamToClient(ctx context.Context, cancel context.C
 	}
 	emit(dec.Finish())
 	f.recordTruncation(dec, cand.name)
-	fin := enc.Finish()
-	csum.framesAdd(len(fin))
-	for _, fr := range fin {
-		n, _ := w.Write(fr)
-		csum.wrote(n)
+	if !terminalErr {
+		fin := enc.Finish()
+		csum.framesAdd(len(fin))
+		for _, fr := range fin {
+			n, _ := w.Write(fr)
+			csum.wrote(n)
+		}
 	}
 	// 响应侧损耗收尾：流已开始，头写不了，落 SSE 注释帧 + 日志。
 	respNotes := decoderNotes(dec)
@@ -788,10 +805,15 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 	for _, e := range firstEvents {
 		agg.Feed(e)
 	}
+	var skippedFrames int
 	feed := func(ev SSEEvent) {
 		events, err := dec.Feed(ev.Event, ev.Data)
 		if err != nil {
-			events = []ir.Event{{Type: ir.EvError, Err: &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream stream decode: " + err.Error()}}}
+			// 与流式路径同口径（R103/sub2api 缓冲路径同款 continue）：单帧畸形
+			// 跳帧续流、计数收尾报出；升级成 EvError 会让整轮失败并换账号重发
+			// 一份上游垃圾——同一份垃圾，流式客户端丢一帧，非流式客户端 502。
+			skippedFrames++
+			return
 		}
 		for _, e := range events {
 			agg.Feed(e)
@@ -825,6 +847,9 @@ func (f *Forwarder) aggregateUpstream(ctx context.Context, cand candidate, req *
 	}
 	notes := decoderNotes(dec)
 	notes = append(notes, agg.Notes()...)
+	if skippedFrames > 0 {
+		notes = append(notes, fmt.Sprintf("skipped %d malformed upstream SSE frame(s); their content is lost to the receiving side", skippedFrames))
+	}
 	return resp, notes, nil
 }
 

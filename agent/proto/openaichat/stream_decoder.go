@@ -23,6 +23,8 @@ type streamDecoder struct {
 	tier string
 	// fingerprint 后端配置指纹：同 tier 的到达规律，随首帧与收尾交付。
 	fingerprint string
+	// created 上游给的创建时间（Unix 秒），随首帧交付；零值=上游没给。
+	created int64
 
 	nextBlock  int
 	textIdx    int
@@ -62,6 +64,21 @@ func (codec) NewStreamDecoder() proto.StreamDecoder {
 	}
 }
 
+// chatErrorFromBody 错误体 -> IR 错误。流内错误帧与非流式 200 响应的顶层
+// error 共用：两处字段语义一致，各写一份只会口径漂移。
+func chatErrorFromBody(b *errorBody, fallbackMsg string) *ir.Error {
+	e := &ir.Error{Type: ir.ErrTypeConnection, Message: fallbackMsg}
+	if b.Type != "" {
+		e.Type = b.Type
+	}
+	if b.Message != "" {
+		e.Message = b.Message
+	}
+	e.Code = b.Code
+	e.Retryable = ir.StreamRetryable(e.Type)
+	return e
+}
+
 func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	if data == "[DONE]" {
 		d.done = true
@@ -77,16 +94,7 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	if chunk.Error != nil {
 		d.done = true
 		d.sawError = true
-		e := &ir.Error{Type: ir.ErrTypeConnection, Message: "upstream stream error"}
-		if chunk.Error.Type != "" {
-			e.Type = chunk.Error.Type
-		}
-		if chunk.Error.Message != "" {
-			e.Message = chunk.Error.Message
-		}
-		e.Code = chunk.Error.Code
-		e.Retryable = ir.StreamRetryable(e.Type)
-		return []ir.Event{{Type: ir.EvError, Err: e}}, nil
+		return []ir.Event{{Type: ir.EvError, Err: chatErrorFromBody(chunk.Error, "upstream stream error")}}, nil
 	}
 	var out []ir.Event
 	if chunk.ID != "" {
@@ -101,9 +109,12 @@ func (d *streamDecoder) Feed(event, data string) ([]ir.Event, error) {
 	if chunk.SystemFingerprint != "" {
 		d.fingerprint = chunk.SystemFingerprint
 	}
+	if chunk.Created != 0 {
+		d.created = chunk.Created
+	}
 	if !d.started {
 		d.started = true
-		out = append(out, ir.Event{Type: ir.EvMessageStart, MessageID: d.id, Model: d.model, ServiceTier: d.tier, SystemFingerprint: d.fingerprint})
+		out = append(out, ir.Event{Type: ir.EvMessageStart, MessageID: d.id, Model: d.model, ServiceTier: d.tier, SystemFingerprint: d.fingerprint, Created: d.created})
 	}
 	if chunk.Usage != nil {
 		d.usage.MergeNonZero(decodeUsage(chunk.Usage))

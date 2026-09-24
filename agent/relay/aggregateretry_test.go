@@ -109,16 +109,23 @@ func TestAggregateStreamErrorRetryFollowsCanonicalType(t *testing.T) {
 	}
 }
 
-// 传输与解码失败必须保持可重试：这是「强制可重试」原本要保的那一半，改掉写死的
-// true 之后由 connection_error 类型继续保住。
-func TestAggregateDecodeFailureStillSwitchesTargets(t *testing.T) {
+// 单帧畸形（一条 data 不是合法 JSON）不该升级成整轮失败：跳帧续流、一个目标聚合
+// 出响应，损耗在 X-ModelSurge-Notes 报出。与流式路径同口径——同一份上游垃圾，
+// 流式客户端丢一帧，非流式客户端不该吃 502 更不该为它烧账号池。
+func TestAggregateMalformedFrameSkippedNotRetried(t *testing.T) {
 	var hits atomic.Int32
-	up := sseUpstream(t, []string{poolStart, `event: content_block_delta` + "\n" + `data: {截断的畸形 JSON`}, &hits)
+	up := sseUpstream(t, []string{poolStart, poolText, `event: content_block_delta` + "\n" + `data: {截断的畸形 JSON`}, &hits)
 	rp := &poolReplay{baseURL: up.URL, limit: poolLimit}
-	poolForward(t, rp, "m", false)
+	w := poolForward(t, rp, "m", false)
 
-	if rp.calls != poolLimit+1 {
-		t.Errorf("解码失败应换目标重发到池子见底：Dispatch=%d hits=%d", rp.calls, hits.Load())
+	if w.Code != http.StatusOK {
+		t.Fatalf("跳帧后应正常聚合出响应：status=%d body=%s", w.Code, w.Body.String())
+	}
+	if rp.calls != 1 || hits.Load() != 1 {
+		t.Errorf("单帧畸形不该换目标重发：Dispatch=%d hits=%d", rp.calls, hits.Load())
+	}
+	if h := w.Header().Get("X-ModelSurge-Notes"); !strings.Contains(h, "skipped 1 malformed upstream SSE frame(s)") {
+		t.Errorf("跳帧损耗没进注记：X-ModelSurge-Notes=%q", h)
 	}
 }
 

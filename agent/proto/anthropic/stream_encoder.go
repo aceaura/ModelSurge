@@ -34,10 +34,13 @@ type streamEncoder struct {
 	customTools      int
 	// droppedCites 先于正文块到达而被丢弃的引用条数。块内偏移相对累积正文
 	// 计算，块没开时引用无处可贴，只能丢——但要报出来。
-	droppedCites     int
-	tierSent         bool
-	messageDeltaSent bool
-	stopped          bool
+	droppedCites int
+	// droppedCitesUnresolved cited_text 反推失败被丢弃的引用条数（跨族投影
+	// 的标注缺有效区间）。丢弃避免整轮 400，但必须报出来。
+	droppedCitesUnresolved int
+	tierSent                 bool
+	messageDeltaSent         bool
+	stopped                  bool
 	// sawError 已下发错误帧。错误帧就是终止帧，Finish() 不得再补
 	// message_delta+message_stop，否则限流会被告诉客户端「你输出超长了」，
 	// 紧接的 message_stop 又把失败伪装成正常结束。
@@ -101,7 +104,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			return nil, nil
 		}
 		var frames [][]byte
-		for _, raw := range encodeCitations(e.text[ev.Index], ev.Citations) {
+		raws, unresolved := encodeCitations(e.text[ev.Index], ev.Citations)
+		e.droppedCitesUnresolved += unresolved
+		for _, raw := range raws {
 			frames = append(frames, e.deltaFrame(ev.Index, delta{Type: "citations_delta", Citation: raw}))
 		}
 		return frames, nil
@@ -134,6 +139,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}
 		return append(frames, sseFrame("content_block_stop", marshal(streamEvent{Type: "content_block_stop", Index: ev.Index}))), nil
 	case ir.EvMessageDelta:
+		// 错误帧已是终止帧：relay 自造错误的序列里 dec.Finish() 还会交来
+		// aborted 的 message_delta，发出去就把限流/断流伪装成正常收尾。
+		if e.sawError {
+			return nil, nil
+		}
 		e.messageDeltaSent = true
 		// message_delta 没有 service_tier 槽位：晚到的回显（chat 系上游的
 		// 后续 chunk 才带）即便值集装得下也送不出去，照实报出。
@@ -146,6 +156,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 			Usage: encodeUsagePtr(ev.Usage),
 		}))}, nil
 	case ir.EvMessageStop:
+		if e.sawError {
+			return nil, nil
+		}
 		e.stopped = true
 		return [][]byte{sseFrame("message_stop", marshal(streamEvent{Type: "message_stop"}))}, nil
 	case ir.EvPing:
@@ -221,6 +234,11 @@ func (e *streamEncoder) Notes() []string {
 		notes = append(notes, fmt.Sprintf(
 			"dropped %d citation(s) that arrived before their text block opened: the receiving side cannot see those sources", e.droppedCites))
 		e.droppedCites = 0
+	}
+	if e.droppedCitesUnresolved > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d citation(s) whose cited text could not be resolved against the block text: the receiving side cannot see those sources", e.droppedCitesUnresolved))
+		e.droppedCitesUnresolved = 0
 	}
 	return notes
 }
@@ -444,5 +462,23 @@ func (codec) EncodeResponse(resp *ir.Response) ([]byte, error) {
 // ResponseNotes 非流式编码损耗扫描：外族签名丢弃 + 对象槽位的畸形参数挪键。
 // 本族是附件的原生形态（image / document 块），模型产出的附件不丢。
 func (codec) ResponseNotes(resp *ir.Response) []string {
-	return proto.ScanResponseLosses(resp, Name, false, true, false)
+	notes := proto.ScanResponseLosses(resp, Name, false, true, false)
+	// cited_text 反推失败的引用在 encodeCitations 里整条丢弃（带空 cited_text
+	// 发出整轮必 400）。非流式不走流式编码器的计数器，这里按同一条判据扫出来。
+	unresolved := 0
+	for _, b := range resp.Content {
+		if b.Type != ir.BlockText {
+			continue
+		}
+		for _, c := range b.Citations {
+			if len(c.Raw) == 0 && ir.ResolveCitedText(b.Text, c) == "" {
+				unresolved++
+			}
+		}
+	}
+	if unresolved > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"dropped %d citation(s) whose cited text could not be resolved against the block text: the receiving side cannot see those sources", unresolved))
+	}
+	return notes
 }

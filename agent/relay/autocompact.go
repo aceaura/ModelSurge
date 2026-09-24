@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"strings"
@@ -152,6 +153,12 @@ func (f *Forwarder) fetchSummary(ctx context.Context, cand candidate, req *ir.Re
 		}
 		decoded, decErr := cand.codec.DecodeResponse(full)
 		if decErr != nil {
+			// 解码器返回的 *ir.Error 已带规范类型与可重试判定，原样上交
+			// （如 status=failed 的压缩响应），裸 error 才按传输失败包装。
+			var ie *ir.Error
+			if errors.As(decErr, &ie) {
+				return "", replayv1.Usage{}, ie
+			}
 			return "", replayv1.Usage{}, &ir.Error{StatusCode: 502, Type: ir.ErrTypeConnection, Message: "decode upstream response: " + decErr.Error(), Retryable: true}
 		}
 		irResp = decoded

@@ -86,6 +86,10 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		if ev.Model != "" {
 			e.model = ev.Model
 		}
+		// 上游给过创建时间就原值逐帧回写（覆盖构造时的本地钟）；没给才用本地钟。
+		if ev.Created != 0 {
+			e.created = ev.Created
+		}
 		e.mapTier(ev.ServiceTier)
 		if ev.SystemFingerprint != "" && e.fingerprint == "" {
 			e.fingerprint = ev.SystemFingerprint
@@ -179,6 +183,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 	case ir.EvBlockStop:
 		return e.finishToolArgs(ev.Index), nil
 	case ir.EvMessageDelta:
+		// EvError 已置 stopped 且自带 [DONE]：错误之后再补 finish chunk 会让
+		// 限流被读成「输出超长」（relay 自造错误的兜底路径正是这个序列）。
+		if e.stopped {
+			return nil, nil
+		}
 		// 晚到的档位回显（EvMessageStart 之后才解码出来）在 chat 还补得上：
 		// 后续 chunk 都带 service_tier。
 		e.mapTier(ev.ServiceTier)
@@ -193,6 +202,9 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}
 		return frames, nil
 	case ir.EvMessageStop:
+		if e.stopped {
+			return nil, nil // 错误帧自带 [DONE]，不得再发第二个
+		}
 		e.stopped = true
 		return [][]byte{[]byte("data: [DONE]\n\n")}, nil
 	case ir.EvPing:
@@ -314,6 +326,15 @@ func (e *streamEncoder) finishToolArgs(index int) [][]byte {
 			Index: idx, Type: "function", Function: functionCall{Arguments: string(input)},
 		}}}, "")}
 	}
+	// 零增量的工具调用（无参工具是常态）：客户端只从 delta 拼参数，一个 delta
+	// 都不发就拼出 ""，json.loads 直接崩。补一个 "{}" 增量——与本仓 anthropic
+	// 流式关块补 "{}" delta、chat 非流式归一 "{}" 同一口径；空串也不算坏参数。
+	if len(raw) == 0 {
+		idx := e.toolIdx[index]
+		return [][]byte{e.chunk(&message{ToolCalls: []toolCall{{
+			Index: idx, Type: "function", Function: functionCall{Arguments: "{}"},
+		}}}, "")}
+	}
 	if _, valid := ir.NormalizeToolInput(raw); !valid {
 		e.badToolArgs++
 	}
@@ -393,6 +414,11 @@ func (codec) DecodeResponseWithNotes(body []byte) (*ir.Response, []string, error
 	var r response
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, nil, fmt.Errorf("openai-chat: decode response: %w", err)
+	}
+	// 怪异上游 200 返回 {"error":{...}} 时必须报错，不得产出 choices 为空的
+	// 伪造成功补全（new-api 非流式路径同样先查顶层 error 再解析）。
+	if r.Error != nil {
+		return nil, nil, chatErrorFromBody(r.Error, "upstream error")
 	}
 	out := &ir.Response{ID: r.ID, Model: r.Model, ServiceTier: r.ServiceTier, SystemFingerprint: r.SystemFingerprint, Created: r.Created}
 	selected := primaryChoice(r.Choices)

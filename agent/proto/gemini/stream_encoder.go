@@ -212,6 +212,11 @@ func (e *streamEncoder) Encode(ev ir.Event) ([][]byte, error) {
 		}
 		return nil, nil
 	case ir.EvMessageDelta:
+		// 错误帧已是终止帧（EvError 置 finished）：再发 finishChunk 就是把
+		// 失败伪装成正常结束。
+		if e.finished {
+			return nil, nil
+		}
 		e.finished = true
 		if ev.ServiceTier != "" && e.droppedTier == "" {
 			e.droppedTier = ev.ServiceTier

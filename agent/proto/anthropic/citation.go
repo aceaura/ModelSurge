@@ -87,11 +87,13 @@ func citationsToIR(elems []json.RawMessage) []ir.Citation {
 // 没有 Raw 的（跨协议投影来的引用）只能落进 web_search_result_location。
 // cited_text 是该形态的必填字段，缺失时按范围从正文反推；反推不出来就整条丢弃
 // ——带空 cited_text 发出去上游会 400，丢一条引用好过整轮被拒。
-func encodeCitations(text string, cs []ir.Citation) []json.RawMessage {
+// dropped 记反推失败的条数：丢弃本身是对的，不报出来就是静默丢失（R95 判据），
+// 调用方必须把计数并进损耗注记。
+func encodeCitations(text string, cs []ir.Citation) (out []json.RawMessage, dropped int) {
 	if len(cs) == 0 {
-		return nil
+		return nil, 0
 	}
-	out := make([]json.RawMessage, 0, len(cs))
+	out = make([]json.RawMessage, 0, len(cs))
 	for _, c := range cs {
 		if len(c.Raw) > 0 {
 			out = append(out, c.Raw)
@@ -99,6 +101,7 @@ func encodeCitations(text string, cs []ir.Citation) []json.RawMessage {
 		}
 		cited := ir.ResolveCitedText(text, c)
 		if cited == "" {
+			dropped++
 			continue
 		}
 		b, err := json.Marshal(citationOut{
@@ -111,7 +114,7 @@ func encodeCitations(text string, cs []ir.Citation) []json.RawMessage {
 		out = append(out, b)
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, dropped
 	}
-	return out
+	return out, dropped
 }

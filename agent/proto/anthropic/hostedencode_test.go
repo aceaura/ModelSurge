@@ -96,3 +96,83 @@ func TestEncodeRequestDropsUnmappedCrossFamilyHosted(t *testing.T) {
 		t.Fatalf("跨族托管工具没被丢弃/同族没保留：%s", out)
 	}
 }
+
+// R105（乙2）：未建模的托管工具声明参数——computer 的 display_width_px/
+// display_height_px（官方 Required）、web_fetch 的 citations/max_content_tokens——
+// 解码即丢会让同族往返编出缺 Required 键的非法定义。同族回写整块回吐原文。
+func TestHostedToolRawRoundTripKeepsUnmodeledParams(t *testing.T) {
+	body := []byte(`{"model":"claude","max_tokens":64,"messages":[{"role":"user","content":"hi"}],` +
+		`"tools":[` +
+		`{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768},` +
+		`{"type":"web_fetch_20250910","name":"web_fetch","max_uses":2,"citations":{"enabled":true},"max_content_tokens":4096}` +
+		`]}`)
+	req, err := codec{}.DecodeRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Tools) != 2 {
+		t.Fatalf("托管工具没解出来：%+v", req.Tools)
+	}
+	// 走一遍 Clone（R98 判据：JSON 往返后原文槽位不得变字面量 null 也不得丢）。
+	out, err := codec{}.EncodeRequest(req.Clone())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`"display_width_px":1024`, `"display_height_px":768`,
+		`"citations":{"enabled":true}`, `"max_content_tokens":4096`, `"max_uses":2`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("未建模声明参数丢了 %s：%s", want, s)
+		}
+	}
+	if strings.Contains(s, `"Raw":`) || strings.Contains(s, `null`) {
+		t.Errorf("原文槽位泄漏或伪造 null：%s", s)
+	}
+}
+
+// 原文回吐不得盖住同族的版本指名：原文里的 type 是客户端指名的版本，
+// 硬编码默认版本把它偷换掉就是另一种丢。
+func TestHostedToolRawKeepsClientPinnedVersion(t *testing.T) {
+	body := []byte(`{"model":"claude","max_tokens":64,"messages":[{"role":"user","content":"hi"}],` +
+		`"tools":[{"type":"web_search_20260201","name":"web_search","max_uses":1}]}`)
+	req, err := codec{}.DecodeRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := codec{}.EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"type":"web_search_20260201"`) {
+		t.Errorf("客户端指名版本被默认版本偷换：%s", out)
+	}
+}
+
+// 跨族出站忽略 HostedRaw：外族原生名没有可信槽位，原文块不得泄漏。
+// （responses 出站只认 HostedType 同族名；anthropic 原文到不了那边。）
+func TestHostedToolRawIgnoredCrossFamily(t *testing.T) {
+	req := &ir.Request{
+		Model: "claude", MaxTokens: 64,
+		Messages: []ir.Message{{Role: ir.RoleUser, Content: []ir.Block{{Type: ir.BlockText, Text: "hi"}}}},
+		Tools: []ir.Tool{{
+			Hosted: "web_search", HostedType: "web_search_preview", Name: "web_search",
+			HostedRaw: json.RawMessage(`{"type":"web_search_20250305","name":"web_search","max_uses":9}`),
+		}},
+	}
+	out, err := codec{}.EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	// 外族 HostedType（responses 的 web_search_preview）回落默认带版本名；
+	// HostedRaw 是同族通道，HostedType 不是同族时不得回吐原文
+	// （泄漏标记是原文独有的 "max_uses":9——fallback 类型名恰与原文相同不算泄漏）。
+	if strings.Contains(s, `"max_uses":9`) {
+		t.Errorf("HostedRaw 在非同族来路上泄漏：%s", s)
+	}
+	if !strings.Contains(s, `"type":"web_search_20250305"`) {
+		t.Errorf("外族来路没回落默认带版本名：%s", s)
+	}
+}

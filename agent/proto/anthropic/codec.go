@@ -83,12 +83,22 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 	for _, m := range req.Messages {
 		out.Messages = append(out.Messages, ir.Message{Role: ir.Role(m.Role), Content: decodeContent(m.Content)})
 	}
-	for _, t := range req.Tools {
+	// 托管工具定义再留一份原文：computer 的 display_*、web_fetch 的
+	// max_content_tokens 等未建模声明参数，同族回写时靠 HostedRaw 整块保真。
+	var rawTools struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	_ = json.Unmarshal(body, &rawTools)
+	for i, t := range req.Tools {
 		hosted := ""
 		if t.Type != "" && t.Type != "custom" {
 			hosted = ir.CanonicalHosted(t.Type)
 		}
 		ctl, ttl := decodeCacheCtl(t.CacheCtl)
+		var hostedRaw json.RawMessage
+		if hosted != "" && i < len(rawTools.Tools) {
+			hostedRaw = rawTools.Tools[i]
+		}
 		out.Tools = append(out.Tools, ir.Tool{
 			Name:        t.Name,
 			Description: t.Description,
@@ -98,6 +108,7 @@ func (codec) DecodeRequest(body []byte) (*ir.Request, error) {
 			// 版本会把客户端指名的版本偷换掉。
 			HostedType:   t.Type,
 			HostedParams: hostedParamsOf(t),
+			HostedRaw:    hostedRaw,
 			CacheCtl:     ctl,
 			CacheTTL:     ttl,
 			Strict:       t.Strict,
@@ -507,6 +518,13 @@ func (codec) EncodeRequest(req *ir.Request) ([]byte, error) {
 				// 未识别种类且没有同族原生名可用：canonical（=外族原名）原样写进
 				// type 是上游必 400 的形状，整块丢弃比拒掉整轮诚实
 				// （Diagnose 已按 no cross-protocol mapping 报出）。
+				continue
+			}
+			if sameNative && len(t.HostedRaw) > 0 {
+				// 同族来路且有原文：整块回吐——未建模的声明参数（computer 的
+				// display_*、web_fetch 的 max_content_tokens）建模跟进永远慢半拍，
+				// 逐字段重建必丢未来新增键。
+				out.Tools = append(out.Tools, tool{Raw: t.HostedRaw})
 				continue
 			}
 			// 固定名只在种类未识别时才让位给 IR 里的名字：web_search 一族的

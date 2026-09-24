@@ -217,6 +217,20 @@ type tool struct {
 	AllowedDomains []string        `json:"allowed_domains,omitempty"`
 	BlockedDomains []string        `json:"blocked_domains,omitempty"`
 	UserLocation   json.RawMessage `json:"user_location,omitempty"`
+	// Raw 同族回写的托管工具原始定义。标 json:"-" 不参与逐字段序列化：
+	// MarshalJSON 见到它就把整块原样吐出去（与 block.OpaqueRaw 同一手法）。
+	Raw json.RawMessage `json:"-"`
+}
+
+// MarshalJSON 有原文的托管工具整块原样写出，其余按字段序列化。
+// 逐字段重建会丢掉 tool 没建模的声明参数（computer 的 display_width_px/
+// display_height_px、web_fetch 的 citations/max_content_tokens 及未来新增键）。
+func (t tool) MarshalJSON() ([]byte, error) {
+	if len(t.Raw) > 0 {
+		return t.Raw, nil
+	}
+	type plain tool
+	return json.Marshal(plain(t))
 }
 
 type toolChoice struct {

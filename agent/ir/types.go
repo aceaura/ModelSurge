@@ -436,7 +436,13 @@ type Tool struct {
 	// HostedParams 托管工具声明参数；nil 表示客户端一个参数都没给，
 	// 同族回写时一个键也不造（缺省保持缺省）。
 	HostedParams *HostedParams `json:",omitempty"`
-	Kind         ToolKind
+	// HostedRaw 托管工具定义的原始 JSON。未建模的声明参数（computer 的
+	// display_width_px/display_height_px、web_fetch 的 citations/max_content_tokens
+	// 及未来新增键）建模跟进永远慢半拍，同族回写时整块原样吐出才能全保真；
+	// 外族出站忽略（没有同族原生名可信时 HostedType 已回落默认名）。
+	// omitempty 承重：Clone 走 JSON 往返，没它空值会变字面量 null 再被当原文。
+	HostedRaw json.RawMessage `json:",omitempty"`
+	Kind      ToolKind
 	// Format 是 Responses custom tool 的文本/grammar 格式对象；外族只能降级成
 	// 一个必填 input 字符串参数的 function tool。
 	Format json.RawMessage `json:",omitempty"`
